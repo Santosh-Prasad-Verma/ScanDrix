@@ -46,12 +46,12 @@ jobs:
         run: |
           go run ./core/cmd/migrate up
 
-      - name: Run Workspace Test Suite (-race -cover)
+      - name: Run Workspace Test Suite (-race)
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
           DATABASE_URL: postgresql://codehound:devpassword@localhost:5433/codehound_dev?sslmode=disable
         run: |
-          go test -v -race -cover ./shared/... ./core/... ./cli/... ./workers/...
+          go test -v -race ./shared/... ./core/... ./cli/... ./workers/...
 
       - name: Run Linter & Static Analysis
         run: |
