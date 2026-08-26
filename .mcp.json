@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "localstack": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@localstack/localstack-mcp-server"
+      ],
+      "env": {
+        "AWS_ENDPOINT_URL": "http://localhost:4566"
+      }
+    },
+    "aws-iac": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-iac-mcp-server@latest"
+      ],
+      "env": {
+        "AWS_PROFILE": "localstack",
+        "AWS_REGION": "us-east-1"
+      }
+    },
+    "aws-serverless": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-serverless-mcp-server@latest",
+        "--allow-write"
+      ],
+      "env": {
+        "AWS_PROFILE": "localstack",
+        "AWS_REGION": "us-east-1"
+      }
+    }
+  }
+}

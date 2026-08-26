@@ -1,0 +1,62 @@
+name: CodeHound Enterprise CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-verify:
+    name: Test & Build with Doppler Secrets
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: codehound_dev
+          POSTGRES_USER: codehound
+          POSTGRES_PASSWORD: devpassword
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24+
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@v3
+
+      - name: Run Schema Migrations (UP)
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          DATABASE_URL: postgresql://codehound:devpassword@localhost:5433/codehound_dev?sslmode=disable
+        run: |
+          go run ./core/cmd/migrate up
+
+      - name: Run Workspace Test Suite (-race -cover)
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          DATABASE_URL: postgresql://codehound:devpassword@localhost:5433/codehound_dev?sslmode=disable
+        run: |
+          go test -v -race -cover ./shared/... ./core/... ./cli/... ./workers/...
+
+      - name: Run Linter & Static Analysis
+        run: |
+          go vet ./shared/... ./core/... ./cli/... ./workers/...
+
+      - name: Compile All Binaries (Release Build)
+        run: |
+          make build

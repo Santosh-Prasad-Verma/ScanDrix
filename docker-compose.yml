@@ -1,0 +1,75 @@
+services:
+  # 1. AWS LocalStack Pro (Emulates S3, Secrets Manager, KMS, IAM, CloudWatch, WAF)
+  localstack:
+    image: localstack/localstack-pro:latest
+    container_name: codehound-localstack
+    ports:
+      - "4566:4566"            # LocalStack Edge Gateway
+      - "4510-4559:4510-4559"  # Pro service range
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - SERVICES=${SERVICES:-s3,secretsmanager,kms,iam,cloudwatch,wafv2}
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "localstack_data:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  # 2. PostgreSQL 18 Local Database (Aurora / RDS Equivalent)
+  postgres:
+    image: postgres:18-alpine
+    container_name: codehound-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-codehound_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-codehound}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+  # 3. Redis In-Memory Cache (ElastiCache Equivalent)
+  redis:
+    image: redis:7-alpine
+    container_name: codehound-redis
+    ports:
+      - "6379:6379"
+
+  # 4. Temporal Workflow Orchestrator
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    container_name: codehound-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-codehound}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-devpassword}
+      - POSTGRES_SEEDS=postgres
+    ports:
+      - "7233:7233"
+    depends_on:
+      - postgres
+
+  # 5. Temporal Web UI
+  temporal-ui:
+    image: temporalio/ui:2.28.0
+    container_name: codehound-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "8080:8080"
+    depends_on:
+      - temporal
+
+  # 6. NATS JetStream Event Streaming Bus
+  nats:
+    image: nats:2.10-alpine
+    container_name: codehound-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+volumes:
+  pgdata:
+  localstack_data:

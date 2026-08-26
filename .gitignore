@@ -1,0 +1,52 @@
+# Environment variables and secrets
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+*.der
+id_rsa*
+id_ed25519*
+credentials.json
+service-account*.json
+secrets/
+
+# LocalStack runtime data
+.localstack/
+localstack_data/
+
+# Go build output
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Node dependencies & logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# IDE & OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local agent workflows & reference repos
+.agents/
+.agent/
+references/
+reference/
+
+# Docker volume mounts
+pgdata/
+
