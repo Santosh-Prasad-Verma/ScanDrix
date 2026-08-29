@@ -32,13 +32,7 @@ jobs:
 
       - name: Run Tests with Race Detector
         run: |
-          go test -v -race -coverprofile=coverage.out ./...
-
-      - name: Upload Coverage Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-coverage-report
-          path: coverage.out
+          go test -v -race ./...
 
   compile-binaries:
     name: "Compile All 9 Go Binaries"

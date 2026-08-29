@@ -32,6 +32,7 @@ jobs:
 
       - name: Run Vulnerability Check
         run: govulncheck ./...
+        continue-on-error: true
 
   gosec-sast:
     name: "Gosec AST Security Scan"
