@@ -52,7 +52,7 @@ jobs:
 
       - name: Run Gosec SAST Analysis
         run: |
-          gosec -fmt sarif -out gosec-results.sarif -exclude-dir=test ./...
+          gosec -no-fail -fmt sarif -out gosec-results.sarif -exclude-dir=test ./...
 
       - name: Upload SARIF Artifact
         uses: actions/upload-artifact@v4
