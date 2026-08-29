@@ -1,75 +1,174 @@
+version: "3.9"
+
 services:
-  # 1. AWS LocalStack Pro (Emulates S3, Secrets Manager, KMS, IAM, CloudWatch, WAF)
-  localstack:
-    image: localstack/localstack-pro:latest
-    container_name: codehound-localstack
-    ports:
-      - "4566:4566"            # LocalStack Edge Gateway
-      - "4510-4559:4510-4559"  # Pro service range
-    environment:
-      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-      - SERVICES=${SERVICES:-s3,secretsmanager,kms,iam,cloudwatch,wafv2}
-      - DOCKER_HOST=unix:///var/run/docker.sock
-    volumes:
-      - "localstack_data:/var/lib/localstack"
-      - "/var/run/docker.sock:/var/run/docker.sock"
-
-  # 2. PostgreSQL 18 Local Database (Aurora / RDS Equivalent)
+  # ----------------------------------------------------------------------------
+  # PostgreSQL with pgvector (Relational Store + 1536-dim HNSW Vector Embeddings)
+  # ----------------------------------------------------------------------------
   postgres:
-    image: postgres:18-alpine
-    container_name: codehound-postgres
+    image: pgvector/pgvector:pg16
+    container_name: scandrix-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-codehound_dev}
-      POSTGRES_USER: ${POSTGRES_USER:-codehound}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-scandrix}
+      POSTGRES_USER: ${POSTGRES_USER:-scandrix_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scandrix_dev_password}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scandrix_app} -d ${POSTGRES_DB:-scandrix}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-network
 
-  # 3. Redis In-Memory Cache (ElastiCache Equivalent)
+  # ----------------------------------------------------------------------------
+  # MongoDB (Audit Trail, Unstructured Payloads, Finding State Ledger)
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: scandrix-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-scandrix_audit}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # RabbitMQ (Quorum Queues, Dead Letter Exchanges, Review Worker Distribution)
+  # ----------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: scandrix-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-scandrix_admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-scandrix_mq_password}
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Web management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # Redis (L2 Cache, Token Bucket Rate Limiting, Monotonic Fencing Locks)
+  # ----------------------------------------------------------------------------
   redis:
-    image: redis:7-alpine
-    container_name: codehound-redis
+    image: redis:7.2-alpine
+    container_name: scandrix-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-network
 
-  # 4. Temporal Workflow Orchestrator
-  temporal:
-    image: temporalio/auto-setup:1.24.2
-    container_name: codehound-temporal
+  # ----------------------------------------------------------------------------
+  # ScanDrix REST API Service
+  # ----------------------------------------------------------------------------
+  scandrix-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-api
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-api"]
     environment:
-      - DB=postgresql
-      - DB_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-codehound}
-      - POSTGRES_PWD=${POSTGRES_PASSWORD:-devpassword}
-      - POSTGRES_SEEDS=postgres
-    ports:
-      - "7233:7233"
-    depends_on:
-      - postgres
-
-  # 5. Temporal Web UI
-  temporal-ui:
-    image: temporalio/ui:2.28.0
-    container_name: codehound-temporal-ui
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
+      - PORT=8080
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
     ports:
       - "8080:8080"
     depends_on:
-      - temporal
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-network
 
-  # 6. NATS JetStream Event Streaming Bus
-  nats:
-    image: nats:2.10-alpine
-    container_name: codehound-nats
-    command: ["-js", "-m", "8222"]
+  # ----------------------------------------------------------------------------
+  # ScanDrix Webhooks Ingestion Service (Fire-and-forget, Outbox writes)
+  # ----------------------------------------------------------------------------
+  scandrix-webhooks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-webhooks
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-webhooks"]
+    environment:
+      - PORT=8081
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # ScanDrix Review Worker (Pipeline execution, multi-agent debate, suggestion check)
+  # ----------------------------------------------------------------------------
+  scandrix-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-worker"]
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-network
 
 volumes:
-  pgdata:
-  localstack_data:
+  postgres_data:
+  mongo_data:
+  rabbitmq_data:
+  redis_data:
+
+networks:
+  scandrix-network:
+    driver: bridge

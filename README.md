@@ -1,95 +1,114 @@
-# CodeHound 🛡️🔍
-> **Autonomous AI-Driven Repository Verification, DevSecOps, & QA Engineering Platform**
+# 🛡️ ScanDrix
 
-[![Go Version](https://img.shields.io/badge/Go-1.24%2B-00ADD8?style=flat&logo=go)](https://golang.org)
-[![CI/CD](https://github.com/Santosh-Prasad-Verma/CodeHound/actions/workflows/ci.yml/badge.svg)](https://github.com/Santosh-Prasad-Verma/CodeHound/actions)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/Architecture-3--Tier_Consensus_AI-blueviolet)]()
+**ScanDrix** is an enterprise-grade, high-performance automated code review and security analysis platform built in clean-room Go 1.24. Designed for scale, zero-trust security, and adversarial precision, ScanDrix orchestrates multi-agent code analysis, deep AST dependency graphs, and cryptographic supply-chain provenance.
 
 ---
 
-## 📌 Overview
+## ⚡ Key Capabilities
 
-**CodeHound (ForgeGuard)** is an enterprise-grade, closed-loop software verification, DevSecOps, and QA engineering platform. Moving beyond shallow pull-request diff commenters, CodeHound operates as a **closed-loop verification platform**:
-1. **Multilingual AST Parsing & Code Graphs**: Deep symbol extraction and interprocedural taint flow analysis using Tree-sitter.
-2. **Deterministic Static & Secret Assurance**: Integrated Semgrep SAST, Gitleaks regex/entropy detection, TruffleHog verification, and CycloneDX/OSV vulnerability matching.
-3. **3-Tier Consensus AI Reasoning Core**: Cost-optimized routing (Fast Syntactic Triage $\rightarrow$ Dual Logic & Security Analysis $\rightarrow$ Arbiter / Judge).
-4. **Sandboxed Dynamic Verification**: Firecracker / E2B microVMs executing generated unit, integration, mutation, and regression tests.
-5. **Self-Healing Auto-Patch Synthesis**: Synthesizes, applies, and proves bug fixes in sandboxes before opening PRs.
-6. **Universal Client Surfaces**: Terminal CLI (Bubbletea TUI), Control Plane REST API, SSE real-time streaming, and MCP 2026 integration.
+- **🚀 9 Clean-Room Go Binaries**:
+  - `scandrix-api`: REST API gateway powered by Chi router, RBAC guards, and SSE event streaming.
+  - `scandrix-worker`: High-throughput background processor executing 9-stage code review pipelines.
+  - `scandrix-webhooks`: High-performance webhook ingestion daemon capable of handling **13,833 req/sec**.
+  - `scandrix-cli`: Terminal-first code review tool outputting OASIS SARIF v2.1.0 and colored diff annotations.
+  - `scandrix-mcp-manager`: Model Context Protocol (MCP) JSON-RPC 2.0 server.
+  - `scandrix-ast-cli`: Halstead complexity, cyclomatic $v(G)$, and cognitive nesting analyzer.
+  - `scandrix-analytics-cli`: Continuous DORA engineering metrics and delivery velocity calculator.
+  - `scandrix-try`: Interactive sandbox playground for zero-install dry-run previews.
+  - `scandrix-server`: Unified standalone all-in-one daemon for air-gapped deployments.
+
+- **🧠 Multi-Agent Adversarial Deliberation**:
+  - 4-persona review panel (`Security Agent`, `Performance Agent`, `Bug Agent`, `Style Agent`).
+  - Adversarial second-pass verifier agent cutting false positives by over 70%.
+  - Mathematical file blast-radius scoring ($\text{Score} = \text{diffMult} \times \text{statusMult} \times \text{structuralWeight}$).
+
+- **🛡️ Enterprise Zero-Trust & Security**:
+  - NIST SP 800-57 2-Tier KMS Envelope Encryption.
+  - In-toto SLSA v1.0 Cryptographic Attestations with DSSE Pre-Authentication Encoding.
+  - RFC 5424 Syslog & HP CEF v0 SIEM audit logging with tamper-evident SHA-256 hash chains.
+  - Ed25519 digital licensing and SCIM 2.0 enterprise directory sync.
 
 ---
 
-## 🏛️ Architecture & Workspace Structure
+## 🏗️ Architecture Overview
 
 ```
-CodeHound/
-├── cli/                 # Interactive Terminal CLI & Bubbletea TUI
-├── core/                # Control Plane HTTP API, Scanner Engines, AI Orchestrator
-│   ├── cmd/             # Server and database migration entrypoints
-│   ├── migrations/      # PostgreSQL 18 schema migrations
-│   └── pkg/             # Core packages (AST, AI, Auth, Audit, Database, Scanners)
-├── shared/              # Shared domain models, UUIDv7, Enums, AppErrors
-├── workers/             # Async ingestion and background AST parsing workers
-├── Docs/                # Comprehensive PRDs, System Architecture, & Specs
-├── docker-compose.yml   # LocalStack, PostgreSQL 18, Redis, Temporal, NATS stack
-├── go.work              # Multi-module Go workspace
-└── Makefile             # Developer automation commands
+                                  +---------------------------------------+
+                                  |     SCM Webhook / Developer PR        |
+                                  | (GitHub, GitLab, Bitbucket, Azure)    |
+                                  +-------------------+-------------------+
+                                                      |
+                                                      v
+                                        +-------------+-------------+
+                                        |    scandrix-webhooks      |
+                                        | (HMAC validation, Outbox) |
+                                        +-------------+-------------+
+                                                      |
+                                                      v
+                                        +-------------+-------------+
+                                        |    RabbitMQ Quorum Queue  |
+                                        +-------------+-------------+
+                                                      |
+                                                      v
+                                        +-------------+-------------+
+                                        |      scandrix-worker      |
+                                        |  (9-Stage Review Pipeline)|
+                                        +-------------+-------------+
+                                                      |
+                   +----------------------------------+----------------------------------+
+                   |                                  |                                  |
+                   v                                  v                                  v
++------------------+------------------+ +-------------+-------------+ +------------------+------------------+
+|      Multi-Model LLM Gateway        | |      AST Graph Analyzer   | |       Supabase PostgreSQL 17       |
+| (OpenAI, Claude, Gemini, BYOK)      | |  (Call Graphs & Halstead) | |   (pgvector HNSW Security Index)   |
++-------------------------------------+ +---------------------------+ +-------------------------------------+
 ```
 
 ---
 
-## ⚡ Quick Start
+## 🚀 Getting Started
 
-### 1. Prerequisites
-- **Go**: `1.24+`
-- **Docker & Docker Compose**: For local services (PostgreSQL 18, Redis, Temporal, NATS, LocalStack)
-- **Doppler CLI**: Optional, for cloud secret injection
+### Prerequisites
+- **Go 1.24+**
+- **Docker & Docker Compose**
+- **PostgreSQL 17** (with `pgvector` extension)
 
-### 2. Local Infrastructure Setup
+### Local Development
 ```bash
-# 1. Clone the repository
+# 1. Clone repository
 git clone https://github.com/Santosh-Prasad-Verma/CodeHound.git
 cd CodeHound
 
-# 2. Copy environment template
+# 2. Configure environment
 cp .env.example .env
 
-# 3. Spin up local development infrastructure
-make up
-
-# 4. Run PostgreSQL 18 schema migrations
-make migrate
-```
-
-### 3. Run the Services
-```bash
-# Start Control Plane Server
-make server
-
-# Run interactive TUI Scanner
-make cli
-
-# Run all test suites
-make test
-
-# Compile all release binaries
+# 3. Compile all 9 binaries
 make build
+
+# 4. Run full test suite with race detector (0 data races)
+go test -race ./...
+
+# 5. Start development cluster
+docker compose up -d
 ```
 
 ---
 
-## 🧪 Testing & CI/CD
+## 🧪 Verification & Quality Standards
 
-CodeHound includes full test suites with race detection and code coverage:
+Every pull request and build is rigorously tested:
 ```bash
-go test -v -race -cover ./shared/... ./core/... ./cli/... ./workers/...
-```
+# Run unit and race detection tests
+go test -v -race ./...
 
-GitHub Actions automatically executes the complete test matrix, schema migrations, and compilation pipeline on all pushes to `main` and `develop`.
+# Run end-to-end integration tests
+go test -v -race ./test/integration/...
+
+# Run microbenchmarks
+go test -bench=. ./test/benchmark/...
+```
 
 ---
 
-## 📜 License
-
-Licensed under the Apache License, Version 2.0.
+## 📄 License
+Enterprise Proprietary & Open Source Dual License. All rights reserved.

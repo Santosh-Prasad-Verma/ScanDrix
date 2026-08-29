@@ -1,0 +1,85 @@
+name: "ScanDrix CLI: Cross-Platform Release"
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-matrix:
+    name: "Cross-Compile CLI Distribution"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output_name: scandrix-cli-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output_name: scandrix-cli-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            output_name: scandrix-cli-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output_name: scandrix-cli-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            output_name: scandrix-cli-windows-amd64.exe
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Compile Binary (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o dist/${{ matrix.output_name }} ./cmd/cli
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: dist/${{ matrix.output_name }}
+
+  publish-release:
+    name: "Publish GitHub Release & Checksums"
+    runs-on: ubuntu-latest
+    needs: release-matrix
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Release Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA-256 Checksums
+        run: |
+          cd release-assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          name: "ScanDrix CLI ${{ github.ref_name }}"
+          generate_release_notes: true
+          draft: false
+          prerelease: false

@@ -1,0 +1,538 @@
+syntax = "proto3";
+
+// Scandrix v1 is the service-to-service API for deterministic software
+// assurance. Tenant identity and actor authorization are verified by gRPC
+// interceptors; identifiers in request messages are bound to that identity
+// before any work is accepted.
+package scandrix.v1;
+
+option go_package = "github.com/scandrix/scandrix/pkg/gen/v1;scandrixv1";
+option java_multiple_files = true;
+option java_package = "ai.scandrix.v1";
+option csharp_namespace = "Scandrix.V1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// ReviewService executes deterministic review stages and exposes their durable
+// progress stream. A PASS status is emitted only after the applicable stage has
+// completed; NOT_TESTED is never a substitute for PASS.
+service ReviewService {
+  rpc ExecuteReview(ExecuteReviewRequest) returns (ExecuteReviewResponse);
+  rpc StreamReviewProgress(StreamReviewProgressRequest)
+      returns (stream ReviewProgressEvent);
+  rpc EvaluatePolicy(EvaluatePolicyRequest) returns (EvaluatePolicyResponse);
+}
+
+// AttackPathService calculates a bounded, evidence-backed code-to-cloud attack
+// path. It does not infer reachability from an LLM response.
+service AttackPathService {
+  rpc CalculateAttackPath(CalculateAttackPathRequest)
+      returns (CalculateAttackPathResponse);
+}
+
+// RemediationService synthesizes a candidate patch and verifies it in an
+// isolated sandbox. It never applies a patch to a repository unless a valid
+// human authorization for the requested Tier-4 action is supplied.
+service RemediationService {
+  rpc SynthesizeAndVerifyFix(SynthesizeFixRequest)
+      returns (SynthesizeFixResponse);
+}
+
+// AnalysisStatus is the canonical outcome for every analysis or verification
+// stage. Clients must inspect this field rather than treating an absent boolean
+// as a successful result.
+enum AnalysisStatus {
+  ANALYSIS_STATUS_UNSPECIFIED = 0;
+  PASS = 1;
+  PASS_WITH_WARNINGS = 2;
+  FAIL = 3;
+  PARTIAL_ANALYSIS = 4;
+  NOT_TESTED = 5;
+  ERROR = 6;
+}
+
+enum FindingSeverity {
+  FINDING_SEVERITY_UNSPECIFIED = 0;
+  FINDING_SEVERITY_INFO = 1;
+  FINDING_SEVERITY_LOW = 2;
+  FINDING_SEVERITY_MEDIUM = 3;
+  FINDING_SEVERITY_HIGH = 4;
+  FINDING_SEVERITY_CRITICAL = 5;
+}
+
+enum FindingStatus {
+  FINDING_STATUS_UNSPECIFIED = 0;
+  FINDING_STATUS_CANDIDATE = 1;
+  FINDING_STATUS_CONFIRMED = 2;
+  FINDING_STATUS_SUPPRESSED = 3;
+  FINDING_STATUS_ACCEPTED_RISK = 4;
+  FINDING_STATUS_REMEDIATED = 5;
+  FINDING_STATUS_FALSE_POSITIVE = 6;
+}
+
+enum ReviewExecutionState {
+  REVIEW_EXECUTION_STATE_UNSPECIFIED = 0;
+  REVIEW_EXECUTION_STATE_QUEUED = 1;
+  REVIEW_EXECUTION_STATE_RUNNING = 2;
+  REVIEW_EXECUTION_STATE_COMPLETED = 3;
+  REVIEW_EXECUTION_STATE_CANCELLED = 4;
+  REVIEW_EXECUTION_STATE_EXPIRED = 5;
+}
+
+enum ReviewStage {
+  REVIEW_STAGE_UNSPECIFIED = 0;
+  REVIEW_STAGE_QUEUED = 1;
+  REVIEW_STAGE_NORMALIZING_DIFF = 2;
+  REVIEW_STAGE_PARSING_AST = 3;
+  REVIEW_STAGE_RUNNING_SAST = 4;
+  REVIEW_STAGE_RUNNING_SCA = 5;
+  REVIEW_STAGE_RUNNING_SECRETS = 6;
+  REVIEW_STAGE_RUNNING_IAC = 7;
+  REVIEW_STAGE_BUILDING_CODE_TO_CLOUD_GRAPH = 8;
+  REVIEW_STAGE_EVALUATING_POLICY = 9;
+  REVIEW_STAGE_FINALIZING = 10;
+  REVIEW_STAGE_COMPLETED = 11;
+}
+
+enum ReviewProgressEventType {
+  REVIEW_PROGRESS_EVENT_TYPE_UNSPECIFIED = 0;
+  REVIEW_PROGRESS_EVENT_TYPE_STAGE_STARTED = 1;
+  REVIEW_PROGRESS_EVENT_TYPE_STAGE_PROGRESS = 2;
+  REVIEW_PROGRESS_EVENT_TYPE_STAGE_COMPLETED = 3;
+  REVIEW_PROGRESS_EVENT_TYPE_FINDING_EMITTED = 4;
+  REVIEW_PROGRESS_EVENT_TYPE_REVIEW_COMPLETED = 5;
+  REVIEW_PROGRESS_EVENT_TYPE_HEARTBEAT = 6;
+  REVIEW_PROGRESS_EVENT_TYPE_ERROR = 7;
+}
+
+enum DiffEncoding {
+  DIFF_ENCODING_UNSPECIFIED = 0;
+  DIFF_ENCODING_UTF8_UNIFIED = 1;
+  DIFF_ENCODING_GZIP_UTF8_UNIFIED = 2;
+}
+
+enum PolicyDecision {
+  POLICY_DECISION_UNSPECIFIED = 0;
+  POLICY_DECISION_COMPLIANT = 1;
+  POLICY_DECISION_NON_COMPLIANT = 2;
+  POLICY_DECISION_INDETERMINATE = 3;
+}
+
+enum GovernanceSource {
+  GOVERNANCE_SOURCE_UNSPECIFIED = 0;
+  GOVERNANCE_SOURCE_SECURITY_POLICY = 1;
+  GOVERNANCE_SOURCE_SECURITY_MEMORY = 2;
+  GOVERNANCE_SOURCE_DEVELOPER_PREFERENCE = 3;
+}
+
+enum AttackNodeType {
+  ATTACK_NODE_TYPE_UNSPECIFIED = 0;
+  ATTACK_NODE_TYPE_INGRESS = 1;
+  ATTACK_NODE_TYPE_AUTH_BOUNDARY = 2;
+  ATTACK_NODE_TYPE_DATAFLOW_HOP = 3;
+  ATTACK_NODE_TYPE_VULNERABILITY = 4;
+  ATTACK_NODE_TYPE_ASSET_SINK = 5;
+}
+
+enum AttackEdgeType {
+  ATTACK_EDGE_TYPE_UNSPECIFIED = 0;
+  ATTACK_EDGE_TYPE_CALLS = 1;
+  ATTACK_EDGE_TYPE_FLOWS_TO = 2;
+  ATTACK_EDGE_TYPE_EXPOSES = 3;
+  ATTACK_EDGE_TYPE_DEPENDS_ON = 4;
+  ATTACK_EDGE_TYPE_DEPLOYS_TO = 5;
+  ATTACK_EDGE_TYPE_AUTHORIZES = 6;
+}
+
+enum SandboxTier {
+  SANDBOX_TIER_UNSPECIFIED = 0;
+  // Docker plus gVisor with all Linux capabilities dropped. Intended for
+  // bounded, trusted CI diff verification.
+  SANDBOX_TIER_STANDARD_GVISOR = 1;
+  // Ephemeral Firecracker microVM. Required for untrusted test execution,
+  // dynamic probing, and patch compilation.
+  SANDBOX_TIER_STRONG_FIRECRACKER = 2;
+}
+
+enum RemediationState {
+  REMEDIATION_STATE_UNSPECIFIED = 0;
+  REMEDIATION_STATE_QUEUED = 1;
+  REMEDIATION_STATE_SYNTHESIZING = 2;
+  REMEDIATION_STATE_VERIFYING = 3;
+  REMEDIATION_STATE_VERIFIED = 4;
+  REMEDIATION_STATE_REJECTED = 5;
+  REMEDIATION_STATE_FAILED = 6;
+  REMEDIATION_STATE_APPLIED = 7;
+}
+
+enum PatchDeliveryMode {
+  PATCH_DELIVERY_MODE_UNSPECIFIED = 0;
+  // The default. A patch is returned as a candidate and no source-control
+  // mutation is performed.
+  PATCH_DELIVERY_MODE_CANDIDATE_ONLY = 1;
+  // A Tier-4 repository mutation. Requires HumanAuthorization.
+  PATCH_DELIVERY_MODE_APPLY_TO_BRANCH = 2;
+}
+
+enum VerificationCheckType {
+  VERIFICATION_CHECK_TYPE_UNSPECIFIED = 0;
+  VERIFICATION_CHECK_TYPE_BUILD = 1;
+  VERIFICATION_CHECK_TYPE_EXISTING_TESTS = 2;
+  VERIFICATION_CHECK_TYPE_GENERATED_TESTS = 3;
+  VERIFICATION_CHECK_TYPE_SECURITY_RESCAN = 4;
+  VERIFICATION_CHECK_TYPE_POLICY_EVALUATION = 5;
+}
+
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_AST_PATH = 1;
+  EVIDENCE_KIND_TAINT_DATAFLOW = 2;
+  EVIDENCE_KIND_DEPENDENCY_LOCK = 3;
+  EVIDENCE_KIND_RUNTIME_REACHABILITY = 4;
+  EVIDENCE_KIND_REPRODUCTION = 5;
+}
+
+// RequestContext provides correlation and idempotency data. Authentication
+// metadata remains authoritative; the server rejects a tenant_id that does not
+// match the authenticated principal.
+message RequestContext {
+  string tenant_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string trace_id = 4;
+  string actor_id = 5;
+}
+
+message SourceControlReference {
+  string provider = 1;
+  string repository_url = 2;
+  string branch_name = 3;
+  string commit_sha = 4;
+  string base_sha = 5;
+  string pull_request_id = 6;
+}
+
+message ExecuteReviewRequest {
+  // A caller correlation ID. The server returns the durable review_id that is
+  // used for status and progress retrieval.
+  string review_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string commit_sha = 4;
+  string base_sha = 5;
+  bytes raw_diff_payload = 6;
+  bool is_staged_local = 7;
+  RequestContext request_context = 8;
+  DiffEncoding diff_encoding = 9;
+  SourceControlReference source_control = 10;
+  repeated ReviewStage requested_stages = 11;
+  string policy_snapshot_id = 12;
+}
+
+message ExecuteReviewResponse {
+  string review_id = 1;
+  AnalysisStatus analysis_status = 2;
+  double composite_risk_score = 3;
+  uint32 blocking_findings_count = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  ReviewExecutionState execution_state = 6;
+  google.protobuf.Timestamp accepted_at = 7;
+  string progress_stream_token = 8;
+  RiskAssessment risk_assessment = 9;
+  FindingSummary finding_summary = 10;
+}
+
+message StreamReviewProgressRequest {
+  string review_id = 1;
+  string tenant_id = 2;
+  RequestContext request_context = 3;
+  uint64 after_sequence = 4;
+  bool include_heartbeats = 5;
+  google.protobuf.Duration heartbeat_interval = 6;
+}
+
+message ReviewProgressEvent {
+  string review_id = 1;
+  uint64 sequence = 2;
+  ReviewStage stage = 3;
+  AnalysisStatus stage_status = 4;
+  double progress_percentage = 5;
+  string message = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  ReviewProgressEventType event_type = 8;
+
+  oneof payload {
+    StageOutcome stage_outcome = 9;
+    Finding finding = 10;
+    ReviewCompletion review_completion = 11;
+    OperationError operation_error = 12;
+  }
+}
+
+message StageOutcome {
+  ReviewStage stage = 1;
+  AnalysisStatus status = 2;
+  string result_digest = 3;
+  repeated AnalysisWarning warnings = 4;
+  google.protobuf.Timestamp completed_at = 5;
+}
+
+message ReviewCompletion {
+  AnalysisStatus analysis_status = 1;
+  RiskAssessment risk_assessment = 2;
+  FindingSummary finding_summary = 3;
+  google.protobuf.Timestamp completed_at = 4;
+}
+
+message AnalysisWarning {
+  string code = 1;
+  string message = 2;
+  ReviewStage affected_stage = 3;
+}
+
+message OperationError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+}
+
+message FindingSummary {
+  uint32 candidate_count = 1;
+  uint32 confirmed_count = 2;
+  uint32 blocking_count = 3;
+  map<string, uint32> count_by_severity = 4;
+}
+
+message RiskVector {
+  double security = 1;
+  double reliability = 2;
+  double architecture = 3;
+  double supply_chain = 4;
+  double performance = 5;
+  double compliance = 6;
+}
+
+message RiskAssessment {
+  RiskVector vector = 1;
+  double composite_score = 2;
+  double data_completeness_index = 3;
+  double uncertainty_penalty_multiplier = 4;
+  double asset_criticality_multiplier = 5;
+  double exposure_multiplier = 6;
+  google.protobuf.Timestamp calculated_at = 7;
+}
+
+message SourceLocation {
+  string file_path = 1;
+  uint32 start_line = 2;
+  uint32 end_line = 3;
+  uint32 start_column = 4;
+  uint32 end_column = 5;
+}
+
+message TaintHop {
+  SourceLocation location = 1;
+  string symbol = 2;
+  string operation = 3;
+  uint32 sequence = 4;
+}
+
+message DependencyProof {
+  string package_name = 1;
+  string package_version = 2;
+  string lockfile_path = 3;
+  string lockfile_entry = 4;
+  string package_digest = 5;
+}
+
+message RuntimeReachabilityProof {
+  string trace_id = 1;
+  string ingress_node_id = 2;
+  string target_node_id = 3;
+  repeated string path_node_ids = 4;
+  string trace_digest = 5;
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+message ReproductionRecord {
+  string recipe_digest = 1;
+  string sandbox_image_digest = 2;
+  int32 exit_code = 3;
+  string output_digest = 4;
+  google.protobuf.Timestamp recorded_at = 5;
+}
+
+// EvidencePacket is a cryptographically integrity-protected deterministic
+// proof. A server must not return FINDING_STATUS_CONFIRMED without at least one
+// packet containing a supported deterministic proof and a SHA-256 Merkle root.
+message EvidencePacket {
+  string packet_id = 1;
+  SourceLocation primary_location = 2;
+  repeated EvidenceKind kinds = 3;
+  string ast_node_path = 4;
+  repeated TaintHop taint_dataflow_trace = 5;
+  DependencyProof dependency_proof = 6;
+  RuntimeReachabilityProof runtime_reachability = 7;
+  ReproductionRecord reproduction_record = 8;
+  string evidence_merkle_root = 9;
+  string hash_algorithm = 10;
+  google.protobuf.Timestamp recorded_at = 11;
+}
+
+message Finding {
+  string finding_id = 1;
+  string rule_id = 2;
+  FindingSeverity severity = 3;
+  FindingStatus status = 4;
+  string title = 5;
+  string description = 6;
+  SourceLocation location = 7;
+  double confidence = 8;
+  bool blocking = 9;
+  repeated EvidencePacket evidence_packets = 10;
+  RiskAssessment risk_assessment = 11;
+}
+
+message PolicyViolation {
+  string violation_id = 1;
+  string rule_id = 2;
+  string message = 3;
+  FindingSeverity severity = 4;
+  string resource_id = 5;
+  GovernanceSource governing_source = 6;
+  uint32 precedence_rank = 7;
+}
+
+message EvaluatePolicyRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  // Canonical YAML policy document. The server records and returns its digest.
+  string policy_yaml = 3;
+  string review_id = 4;
+  RequestContext request_context = 5;
+  string policy_id = 6;
+  string policy_revision = 7;
+  repeated Finding findings = 8;
+  repeated string security_memory_ids = 9;
+}
+
+message EvaluatePolicyResponse {
+  PolicyDecision decision = 1;
+  repeated PolicyViolation violations = 2;
+  AnalysisStatus analysis_status = 3;
+  string policy_digest = 4;
+  GovernanceSource decisive_source = 5;
+  google.protobuf.Timestamp evaluated_at = 6;
+  repeated AnalysisWarning warnings = 7;
+}
+
+message AttackPathNode {
+  string node_id = 1;
+  AttackNodeType node_type = 2;
+  string name = 3;
+  string resource_urn = 4;
+  uint32 asset_tier = 5;
+  map<string, string> metadata = 6;
+}
+
+message AttackPathEdge {
+  string from_node_id = 1;
+  string to_node_id = 2;
+  double friction_cost = 3;
+  AttackEdgeType edge_type = 4;
+  string evidence_packet_id = 5;
+}
+
+message CalculateAttackPathRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string ingress_node_id = 3;
+  string target_asset_sink_id = 4;
+  RequestContext request_context = 5;
+  repeated string excluded_node_ids = 6;
+  double maximum_friction_cost = 7;
+  bool include_evidence = 8;
+}
+
+message CalculateAttackPathResponse {
+  bool path_exists = 1;
+  double exploitability_index = 2;
+  repeated string path_node_ids = 3;
+  uint32 total_hops = 4;
+  double total_friction_cost = 5;
+  repeated AttackPathNode path_nodes = 6;
+  repeated AttackPathEdge path_edges = 7;
+  AnalysisStatus analysis_status = 8;
+  repeated EvidencePacket evidence_packets = 9;
+  repeated AnalysisWarning warnings = 10;
+  google.protobuf.Timestamp calculated_at = 11;
+}
+
+// HumanAuthorization binds a signed approval to an exact, time-limited
+// mutation request. It is required for PATCH_DELIVERY_MODE_APPLY_TO_BRANCH and
+// is recorded in the immutable agent action ledger by the server.
+message HumanAuthorization {
+  string authorization_id = 1;
+  string approver_id = 2;
+  string key_id = 3;
+  bytes signature = 4;
+  string signed_payload_sha256 = 5;
+  google.protobuf.Timestamp issued_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+message SynthesizeFixRequest {
+  string tenant_id = 1;
+  string finding_id = 2;
+  SandboxTier sandbox_tier = 3;
+  RequestContext request_context = 4;
+  string source_commit_sha = 5;
+  string target_branch = 6;
+  PatchDeliveryMode delivery_mode = 7;
+  HumanAuthorization human_authorization = 8;
+  bool run_generated_tests = 9;
+  repeated VerificationCheckType requested_checks = 10;
+}
+
+message VerificationCheck {
+  VerificationCheckType check_type = 1;
+  AnalysisStatus status = 2;
+  string output_digest = 3;
+  int32 exit_code = 4;
+  google.protobuf.Timestamp completed_at = 5;
+}
+
+message SandboxExecution {
+  SandboxTier tier = 1;
+  string sandbox_id = 2;
+  string sandbox_image_digest = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  string execution_log_digest = 6;
+}
+
+message ProofOfFix {
+  string proof_id = 1;
+  string proof_of_fix_hash = 2;
+  string hash_algorithm = 3;
+  repeated VerificationCheck checks = 4;
+  repeated EvidencePacket evidence_packets = 5;
+  string verifier_version = 6;
+  google.protobuf.Timestamp verified_at = 7;
+}
+
+message SynthesizeFixResponse {
+  string patch_id = 1;
+  string unified_diff = 2;
+  RemediationState remediation_state = 3;
+  AnalysisStatus verification_status = 4;
+  string proof_of_fix_hash = 5;
+  ProofOfFix proof_of_fix = 6;
+  SandboxExecution sandbox_execution = 7;
+  PatchDeliveryMode delivery_mode = 8;
+  string delivery_reference = 9;
+  repeated AnalysisWarning warnings = 10;
+  google.protobuf.Timestamp completed_at = 11;
+}

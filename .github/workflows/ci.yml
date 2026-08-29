@@ -1,4 +1,4 @@
-name: CodeHound Enterprise CI/CD
+name: "ScanDrix CI: Build & Test Gate"
 
 on:
   push:
@@ -6,57 +6,64 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test-and-verify:
-    name: Test & Build with Doppler Secrets
+  lint-and-test:
+    name: "Lint & Race-Detector Unit Tests"
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_DB: codehound_dev
-          POSTGRES_USER: codehound
-          POSTGRES_PASSWORD: devpassword
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
-      - name: Checkout Codebase
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Go 1.24+
+      - name: Set up Go 1.24
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: true
 
-      - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@v3
-
-      - name: Run Schema Migrations (UP)
-        env:
-          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-          DATABASE_URL: postgresql://codehound:devpassword@localhost:5433/codehound_dev?sslmode=disable
+      - name: Verify Module Dependencies
         run: |
-          go run ./core/cmd/migrate up
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
-      - name: Run Workspace Test Suite (-race)
-        env:
-          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-          DATABASE_URL: postgresql://codehound:devpassword@localhost:5433/codehound_dev?sslmode=disable
+      - name: Run Tests with Race Detector
         run: |
-          go test -v -race ./shared/... ./core/... ./cli/... ./workers/...
+          go test -v -race -coverprofile=coverage.out ./...
 
-      - name: Run Linter & Static Analysis
-        run: |
-          go vet ./shared/... ./core/... ./cli/... ./workers/...
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: coverage.out
 
-      - name: Compile All Binaries (Release Build)
+  compile-binaries:
+    name: "Compile All 9 Go Binaries"
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build All 9 Applications
         run: |
-          make build
+          mkdir -p bin
+          go build -o bin/scandrix-api ./cmd/api
+          go build -o bin/scandrix-server ./cmd/server
+          go build -o bin/scandrix-webhooks ./cmd/webhooks
+          go build -o bin/scandrix-worker ./cmd/worker
+          go build -o bin/scandrix-cli ./cmd/cli
+          go build -o bin/scandrix-mcp-manager ./cmd/mcp-manager
+          go build -o bin/scandrix-ast-cli ./cmd/ast-cli
+          go build -o bin/scandrix-analytics-cli ./cmd/analytics-cli
+          go build -o bin/scandrix-try ./cmd/try
+          ls -lh bin/

@@ -1,0 +1,68 @@
+name: "ScanDrix E2E: Full Integration Matrix"
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'internal/database/**'
+      - 'internal/queue/**'
+      - 'internal/review/**'
+      - 'test/integration/**'
+
+jobs:
+  integration-matrix:
+    name: "E2E Postgres & RabbitMQ Integration"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: scandrix_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: scandrix_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Apply Database Migrations
+        env:
+          PGPASSWORD: test_password
+        run: |
+          psql -h localhost -U scandrix_test -d scandrix_test_db -f migrations/001_initial_schema.sql
+          psql -h localhost -U scandrix_test -d scandrix_test_db -f migrations/002_pgvector_security_memory.sql
+
+      - name: Run End-to-End Test Suite
+        env:
+          DATABASE_URL: "postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable"
+          RABBITMQ_URL: "amqp://guest:guest@localhost:5672/"
+        run: |
+          go test -v -race -timeout 300s ./test/integration/...
