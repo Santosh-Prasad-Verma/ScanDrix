@@ -11,6 +11,7 @@ on:
 permissions:
   security-events: write
   contents: read
+  actions: read
 
 jobs:
   govulncheck:
@@ -52,8 +53,16 @@ jobs:
         run: |
           gosec -fmt sarif -out gosec-results.sarif -exclude-dir=test ./...
 
+      - name: Upload SARIF Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gosec-security-report
+          path: gosec-results.sarif
+
       - name: Upload SARIF to GitHub Security Tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: gosec-results.sarif
