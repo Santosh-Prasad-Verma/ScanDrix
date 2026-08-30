@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/controllers"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/cache/limiter"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 func TestAuthRateLimiterThrottling(t *testing.T) {
@@ -67,54 +69,57 @@ func TestAuthRateLimiterThrottling(t *testing.T) {
 	}
 }
 
-func TestAuthTokenRotationAndLogout(t *testing.T) {
+func TestAuthFailClosedWhenRepoNil(t *testing.T) {
 	authService := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
 	ctrl := controllers.NewAuthController(authService, nil)
 	router := ctrl.Routes()
 
-	// 1. Register a new user -> Receive access token + refresh token
+	// 1. /login must fail with 503 Service Unavailable when repo is nil
+	loginPayload := `{"email":"engineer@company.com","password":"StrongPassword123!"}`
+	reqLogin := httptest.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(loginPayload))
+	wLogin := httptest.NewRecorder()
+	router.ServeHTTP(wLogin, reqLogin)
+
+	if wLogin.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable from /login when repo is nil, got %d: %s", wLogin.Code, wLogin.Body.String())
+	}
+
+	// 2. /register must fail with 503 Service Unavailable when repo is nil
 	regPayload := `{"email":"engineer@company.com","password":"StrongPassword123!","display_name":"Engineer"}`
 	reqReg := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(regPayload))
 	wReg := httptest.NewRecorder()
 	router.ServeHTTP(wReg, reqReg)
 
-	if wReg.Code != http.StatusCreated {
-		t.Fatalf("expected 201 Created, got %d: %s", wReg.Code, wReg.Body.String())
+	if wReg.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable from /register when repo is nil, got %d: %s", wReg.Code, wReg.Body.String())
 	}
 
-	var authResp dtos.AuthTokenResponse
-	if err := json.NewDecoder(wReg.Body).Decode(&authResp); err != nil {
-		t.Fatalf("failed decoding auth response: %v", err)
-	}
-
-	if authResp.AccessToken == "" || authResp.RefreshToken == "" {
-		t.Fatal("expected non-empty access and refresh tokens")
-	}
-
-	// 2. Call /refresh with the refresh token -> Expect new rotated tokens
-	refreshPayload, _ := json.Marshal(dtos.RefreshTokenRequest{
-		RefreshToken: authResp.RefreshToken,
-	})
-	reqRefresh := httptest.NewRequest(http.MethodPost, "/refresh", bytes.NewReader(refreshPayload))
+	// 3. /refresh must fail with 503 Service Unavailable when repo is nil
+	refreshPayload := `{"refresh_token":"some_refresh_token"}`
+	reqRefresh := httptest.NewRequest(http.MethodPost, "/refresh", bytes.NewBufferString(refreshPayload))
 	wRefresh := httptest.NewRecorder()
 	router.ServeHTTP(wRefresh, reqRefresh)
 
-	if wRefresh.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK from /refresh, got %d: %s", wRefresh.Code, wRefresh.Body.String())
+	if wRefresh.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable from /refresh when repo is nil, got %d: %s", wRefresh.Code, wRefresh.Body.String())
+	}
+}
+
+func TestAuthProtectedEndpoints(t *testing.T) {
+	authService := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
+	ctrl := controllers.NewAuthController(authService, nil)
+	router := ctrl.Routes()
+
+	userID := uuid.New()
+	wsID := uuid.New()
+	accessToken, refreshToken, err := authService.GenerateTokenPair(userID, wsID, models.RoleOwner)
+	if err != nil {
+		t.Fatalf("failed generating token pair: %v", err)
 	}
 
-	var rotatedResp dtos.AuthTokenResponse
-	if err := json.NewDecoder(wRefresh.Body).Decode(&rotatedResp); err != nil {
-		t.Fatalf("failed decoding rotated response: %v", err)
-	}
-
-	if rotatedResp.AccessToken == "" || rotatedResp.RefreshToken == "" {
-		t.Fatal("expected new rotated tokens from /refresh")
-	}
-
-	// 3. Call protected /me endpoint with rotated access token -> Expect 200 OK
+	// 1. Call protected /me endpoint with valid access token -> Expect 200 OK
 	reqMe := httptest.NewRequest(http.MethodGet, "/me", nil)
-	reqMe.Header.Set("Authorization", "Bearer "+rotatedResp.AccessToken)
+	reqMe.Header.Set("Authorization", "Bearer "+accessToken)
 	wMe := httptest.NewRecorder()
 	router.ServeHTTP(wMe, reqMe)
 
@@ -122,9 +127,9 @@ func TestAuthTokenRotationAndLogout(t *testing.T) {
 		t.Fatalf("expected 200 OK from /me with valid JWT, got %d: %s", wMe.Code, wMe.Body.String())
 	}
 
-	// 4. Call /me with tampered token -> Expect 401 Unauthorized
+	// 2. Call /me with tampered token -> Expect 401 Unauthorized
 	reqTampered := httptest.NewRequest(http.MethodGet, "/me", nil)
-	reqTampered.Header.Set("Authorization", "Bearer "+rotatedResp.AccessToken+"invalid")
+	reqTampered.Header.Set("Authorization", "Bearer "+accessToken+"invalid")
 	wTampered := httptest.NewRecorder()
 	router.ServeHTTP(wTampered, reqTampered)
 
@@ -132,9 +137,9 @@ func TestAuthTokenRotationAndLogout(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized for tampered token, got %d", wTampered.Code)
 	}
 
-	// 5. Call /logout with refresh token
+	// 3. Call /logout with refresh token
 	logoutPayload, _ := json.Marshal(dtos.LogoutRequest{
-		RefreshToken: rotatedResp.RefreshToken,
+		RefreshToken: refreshToken,
 	})
 	reqLogout := httptest.NewRequest(http.MethodPost, "/logout", bytes.NewReader(logoutPayload))
 	wLogout := httptest.NewRecorder()

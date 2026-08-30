@@ -53,13 +53,6 @@ func (c *UsageController) handleGetUsage(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// If no reviews recorded yet (new workspace or mock), provide baseline quota preview
-	if promptTokens == 0 && completionTokens == 0 {
-		promptTokens = 1420000
-		completionTokens = 380000
-		costUSD = 5.40
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.TokenUsageResponse{
 		TotalPromptTokens:     promptTokens,
@@ -70,6 +63,7 @@ func (c *UsageController) handleGetUsage(w http.ResponseWriter, r *http.Request)
 		BillingPeriodEnd:      startOfMonth.AddDate(0, 1, 0),
 	})
 }
+
 
 func (c *UsageController) handleUpdateSpendLimit(w http.ResponseWriter, r *http.Request) {
 	wsID, err := auth.WorkspaceFromContext(r.Context())

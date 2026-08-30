@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -125,27 +126,24 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 
 	receipt := fmt.Sprintf("rcpt_%s_%d", wsID.String()[:8], time.Now().Unix())
 
-	var orderID string
-	// If Razorpay API credentials are configured, call upstream Razorpay API
-	if s.keyID != "" && s.keySecret != "" {
-		req := OrderRequest{
-			Amount:   amount,
-			Currency: curr,
-			Receipt:  receipt,
-			Notes: map[string]string{
-				"workspace_id": wsID.String(),
-				"plan_tier":    string(normTier),
-			},
-		}
-		orderResp, err := s.client.CreateOrder(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed creating razorpay order: %w", err)
-		}
-		orderID = orderResp.ID
-	} else {
-		// Mock / Dev fallback order ID when keys are not yet configured in local test
-		orderID = fmt.Sprintf("order_mock_%s_%d", wsID.String()[:8], time.Now().Unix())
+	if s.keyID == "" || s.keySecret == "" || s.client == nil {
+		return nil, errors.New("razorpay credentials not configured: RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set")
 	}
+
+	req := OrderRequest{
+		Amount:   amount,
+		Currency: curr,
+		Receipt:  receipt,
+		Notes: map[string]string{
+			"workspace_id": wsID.String(),
+			"plan_tier":    string(normTier),
+		},
+	}
+	orderResp, err := s.client.CreateOrder(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating razorpay order: %w", err)
+	}
+	orderID := orderResp.ID
 
 	// Persist pending transaction
 	tx := &models.BillingTransaction{
@@ -192,7 +190,12 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 		}
 	}
 
-	planTier := license.NormalizeTier(license.LicenseTier(req.PlanTier))
+	return s.applyWorkspaceUpgrade(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, req.PlanTier, req.RecipientEmail, req.RecipientName)
+}
+
+// applyWorkspaceUpgrade executes database plan elevation, quota updates, and email notifications.
+func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UUID, orderID, paymentID, signature, planTierStr, recipientEmailParam, recipientNameParam string) (*models.OrganizationLicense, error) {
+	planTier := license.NormalizeTier(license.LicenseTier(planTierStr))
 	quota := license.GetPlanQuota(planTier)
 
 	// Expiry: 30 days active subscription
@@ -214,7 +217,7 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 		}
 
 		// Update transaction status
-		_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, "captured")
+		_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, signature, "captured")
 
 		// Upgrade workspace in PostgreSQL
 		err := s.repo.UpgradeWorkspacePlan(ctx, wsID, string(planTier), maxSeats, expiresAt, features)
@@ -253,12 +256,11 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 				orgName = lic.OrganizationName
 			}
 		}
-
-		if recipientEmail == "" && req.RecipientEmail != "" {
-			recipientEmail = req.RecipientEmail
+		if recipientEmail == "" && recipientEmailParam != "" {
+			recipientEmail = recipientEmailParam
 		}
-		if req.RecipientName != "" {
-			recipientName = req.RecipientName
+		if recipientNameParam != "" {
+			recipientName = recipientNameParam
 		}
 		if recipientEmail == "" {
 			recipientEmail = "billing@" + wsID.String()[:8] + ".scandrix.internal"
@@ -278,14 +280,14 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 
 			// 5a. Send Itemized Tax Invoice & Payment Receipt Email
 			inv := templates.InvoiceDetails{
-				InvoiceNumber:    templates.GenerateInvoiceNumber(req.OrderID),
+				InvoiceNumber:    templates.GenerateInvoiceNumber(orderID),
 				RecipientName:    recipientName,
 				RecipientEmail:   recipientEmail,
 				OrganizationName: orgName,
 				PlanTier:         string(planTier),
 				AmountFormatted:  amountFormatted,
-				OrderID:          req.OrderID,
-				PaymentID:        req.PaymentID,
+				OrderID:          orderID,
+				PaymentID:        paymentID,
 				PaymentProvider:  "Razorpay",
 				PaymentMethod:    "UPI / NetBanking / Cards",
 				BillingDate:      time.Now().UTC(),
@@ -380,12 +382,12 @@ func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, sig
 			planTierStr = "TEAM"
 		}
 
-		_, _ = s.VerifyAndUpgrade(ctx, wsID, VerifyPaymentRequest{
-			OrderID:   orderID,
-			PaymentID: paymentID,
-			Signature: signature,
-			PlanTier:  planTierStr,
-		})
+		if err := func() error {
+			_, err := s.applyWorkspaceUpgrade(ctx, wsID, orderID, paymentID, signature, planTierStr, "", "")
+			return err
+		}(); err != nil {
+			slog.Error("Razorpay webhook upgrade failed", "workspace_id", wsID, "order_id", orderID, "error", err)
+		}
 
 	case "payment.failed":
 		orderID := event.Payload.Payment.Entity.OrderID

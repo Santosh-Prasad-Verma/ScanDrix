@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -170,17 +169,34 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 		return fmt.Errorf("invalid base64 signature: %w", err)
 	}
 
+	// In XMLDSig Enveloped Signature, strip the <Signature>...</Signature> element before computing document digest
+	dataForDigest := xmlData
+	if idxStart := bytes.Index(xmlData, []byte("<Signature")); idxStart != -1 {
+		if idxEnd := bytes.Index(xmlData[idxStart:], []byte("</Signature>")); idxEnd != -1 {
+			dataForDigest = append(append([]byte{}, xmlData[:idxStart]...), xmlData[idxStart+idxEnd+len("</Signature>"):]...)
+		}
+	}
+
 	// Compute digest over SignedInfo or XML content
 	var digest []byte
 	var hashFunc crypto.Hash
-	if strings.Contains(sig.SignedInfo.SignatureMethod.Algorithm, "rsa-sha256") {
-		h256 := sha256.Sum256(xmlData)
+	algo := strings.ToLower(sig.SignedInfo.SignatureMethod.Algorithm)
+	if strings.Contains(algo, "rsa-sha256") || strings.Contains(algo, "sha256") {
+		h256 := sha256.Sum256(dataForDigest)
 		digest = h256[:]
 		hashFunc = crypto.SHA256
+	} else if strings.Contains(algo, "rsa-sha384") || strings.Contains(algo, "sha384") {
+		h384 := crypto.SHA384.New()
+		h384.Write(dataForDigest)
+		digest = h384.Sum(nil)
+		hashFunc = crypto.SHA384
+	} else if strings.Contains(algo, "rsa-sha512") || strings.Contains(algo, "sha512") {
+		h512 := crypto.SHA512.New()
+		h512.Write(dataForDigest)
+		digest = h512.Sum(nil)
+		hashFunc = crypto.SHA512
 	} else {
-		h1 := sha1.Sum(xmlData)
-		digest = h1[:]
-		hashFunc = crypto.SHA1
+		return fmt.Errorf("insecure or unsupported signature algorithm '%s': only RSA-SHA256/384/512 are accepted (CWE-327)", sig.SignedInfo.SignatureMethod.Algorithm)
 	}
 
 	if err := rsa.VerifyPKCS1v15(rsaPub, hashFunc, digest, sigBytes); err != nil {
@@ -223,11 +239,12 @@ func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience s
 		}
 	}
 
-	// 3. Cryptographic Signature Verification (if IdP cert configured or present)
-	if h.idpCert != nil {
-		if err := h.VerifySignature(xmlData, h.idpCert); err != nil {
-			return nil, err
-		}
+	// 3. Cryptographic Signature Verification (IdP certificate is mandatory, Master Rule 5.1 & CWE-1390)
+	if h.idpCert == nil {
+		return nil, errors.New("cannot verify SAML assertion: IdP certificate is not configured (refusing unsigned authentication)")
+	}
+	if err := h.VerifySignature(xmlData, h.idpCert); err != nil {
+		return nil, err
 	}
 
 	// 4. Extract attributes

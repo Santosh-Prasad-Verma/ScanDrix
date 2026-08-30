@@ -2,9 +2,16 @@ package sso_test
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +38,28 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
 	}
 
 	// 2. SAML Assertion Verification & Extraction
-	samlXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed generating test RSA key: %v", err)
+	}
+
+	certTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &rsaKey.PublicKey, rsaKey)
+	if err != nil {
+		t.Fatalf("failed creating test certificate: %v", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+
+	if err := samlHandler.SetIdPCertificate(certPEM); err != nil {
+		t.Fatalf("failed setting IdP cert: %v", err)
+	}
+
+	unsignedXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol">
   <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion">
     <Issuer>https://idp.okta.com/exk123</Issuer>
@@ -53,6 +81,16 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
     </AttributeStatement>
   </Assertion>
 </Response>`, now.Add(-10*time.Minute).Format(time.RFC3339), now.Add(10*time.Minute).Format(time.RFC3339))
+
+	// Sign XML with RSA-SHA256
+	h256 := sha256.Sum256([]byte(unsignedXML))
+	sigBytes, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h256[:])
+	if err != nil {
+		t.Fatalf("failed signing test XML: %v", err)
+	}
+	sigBase64 := base64.StdEncoding.EncodeToString(sigBytes)
+
+	samlXML := strings.Replace(unsignedXML, "</Response>", fmt.Sprintf("<Signature xmlns=\"http://www.w3.org/2000/09/xmldsig#\"><SignedInfo><SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"/></SignedInfo><SignatureValue>%s</SignatureValue></Signature></Response>", sigBase64), 1)
 
 	samlIdent, err := samlHandler.ParseAndVerifyAssertion([]byte(samlXML), entityID, now)
 	if err != nil {

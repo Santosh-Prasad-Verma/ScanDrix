@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/scandrix/backend/internal/config"
+	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/integrations/github"
 	"github.com/scandrix/backend/internal/llm"
@@ -142,6 +143,14 @@ func main() {
 	// Outbox Relay goroutine: polls PostgreSQL outbox_events and publishes to RabbitMQ
 	go runOutboxRelay(ctx, repo, broker)
 
+	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup)
+	cronScheduler := cron.NewScheduler()
+	cronScheduler.Register(cron.NewStaleReviewWatchdog(repo, 15*time.Minute, 30))
+	cronScheduler.Register(cron.NewLicenseSeatPruner(repo, 24*time.Hour, 30))
+	cronScheduler.Register(cron.NewSSOSessionCleanup(repo, 1*time.Hour))
+	cronScheduler.Register(cron.NewDORAAggregatorCron(repo, 6*time.Hour))
+	cronScheduler.Start(ctx)
+
 	// RabbitMQ Consumer worker
 	if broker != nil {
 		go runConsumer(ctx, broker, workerPool, reviewConsumer)
@@ -153,9 +162,11 @@ func main() {
 
 	slog.Info("Worker daemon draining active tasks and shutting down...")
 	cancel()
+	cronScheduler.Stop()
 	workerPool.Stop()
 	slog.Info("Worker daemon terminated gracefully")
 }
+
 
 func runOutboxRelay(ctx context.Context, repo *database.Repository, broker *queue.Broker) {
 	ticker := time.NewTicker(2 * time.Second)

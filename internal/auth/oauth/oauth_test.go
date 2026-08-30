@@ -117,11 +117,13 @@ func TestGitLabExchangeCodeSuccess(t *testing.T) {
 		case "/api/v4/user":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":         789,
-				"username":   "tanuki",
-				"name":       "GitLab Tanuki",
-				"email":      "tanuki@gitlab.com",
-				"avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/789/avatar.png",
+				"id":           789,
+				"username":     "tanuki",
+				"name":         "GitLab Tanuki",
+				"email":        "tanuki@gitlab.com",
+				"state":        "active",
+				"confirmed_at": "2023-01-01T00:00:00.000Z",
+				"avatar_url":   "https://gitlab.com/uploads/-/system/user/avatar/789/avatar.png",
 			})
 		default:
 			http.NotFound(w, r)

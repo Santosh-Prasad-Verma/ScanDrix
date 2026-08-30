@@ -209,11 +209,15 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 		if avatar, ok := rawUser["avatar_url"].(string); ok {
 			profile.AvatarURL = avatar
 		}
-		if email, ok := rawUser["email"].(string); ok && email != "" {
-			profile.Email = email
-		} else if cfg.EmailURL != "" {
-			// Query /user/emails if primary email is private
+		if cfg.EmailURL != "" {
+			// Always fetch verified primary email from GitHub /user/emails
 			profile.Email = s.fetchGitHubPrimaryEmail(ctx, tokenResp.AccessToken, cfg.EmailURL)
+		}
+		if profile.Email == "" {
+			// Fallback only if public profile has email
+			if email, ok := rawUser["email"].(string); ok && email != "" {
+				profile.Email = email
+			}
 		}
 	} else if provider == ProviderGitLab {
 		if id, ok := rawUser["id"].(float64); ok {
@@ -228,8 +232,13 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 		if avatar, ok := rawUser["avatar_url"].(string); ok {
 			profile.AvatarURL = avatar
 		}
-		if email, ok := rawUser["email"].(string); ok {
-			profile.Email = email
+		// Check that GitLab user state is active or confirmed
+		state, _ := rawUser["state"].(string)
+		confirmedAt, _ := rawUser["confirmed_at"].(string)
+		if email, ok := rawUser["email"].(string); ok && email != "" {
+			if state == "active" || confirmedAt != "" {
+				profile.Email = email
+			}
 		}
 	}
 

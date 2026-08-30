@@ -101,6 +101,30 @@ services:
     networks:
       - scandrix-dev-net
 
+  scandrix-webhooks:
+    build:
+      context: .
+      dockerfile: docker/webhooks.Dockerfile
+    container_name: scandrix-webhooks-dev
+    restart: unless-stopped
+    environment:
+      - PORT=8081
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-dev-net
+
+
 volumes:
   scandrix_pgdata_dev:
   scandrix_mqdata_dev:

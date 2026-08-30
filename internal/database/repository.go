@@ -471,6 +471,28 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*UserRec
 	return &u, nil
 }
 
+// GetUserByID fetches a user record by primary UUID.
+func (r *Repository) GetUserByID(ctx context.Context, userUUID uuid.UUID) (*UserRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, errors.New("database repository unavailable")
+	}
+
+	query := `
+		SELECT uuid, email, password, role, status, organization_id, "createdAt", "updatedAt"
+		FROM users
+		WHERE uuid = $1
+		LIMIT 1;
+	`
+	var u UserRecord
+	err := r.client.Pool.QueryRow(ctx, query, userUUID).Scan(
+		&u.UUID, &u.Email, &u.Password, &u.Role, &u.Status, &u.OrganizationID, &u.CreatedAt, &u.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // CreateUser persists a new user with bcrypt password into the users table.
 func (r *Repository) CreateUser(ctx context.Context, email, passwordHash, role string, orgID *uuid.UUID) (*UserRecord, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
@@ -1749,11 +1771,100 @@ func (r *Repository) GetWorkspaceOwner(ctx context.Context, wsID uuid.UUID) (ema
 	return email, displayName, nil
 }
 
+// GetCockpitMetrics aggregates real review, finding, repository, and developer stats for a workspace.
+func (r *Repository) GetCockpitMetrics(ctx context.Context, wsID uuid.UUID) (*models.CockpitMetrics, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return &models.CockpitMetrics{
+			PassRatePercentage: 100.0,
+		}, nil
+	}
 
+	query := `
+		SELECT 
+			COUNT(DISTINCT r.id) AS total_reviews,
+			COALESCE(COUNT(DISTINCT f.id), 0) AS total_findings,
+			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'CRITICAL' THEN f.id END), 0) AS critical_findings,
+			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'HIGH' THEN f.id END), 0) AS high_findings,
+			CASE 
+				WHEN COUNT(DISTINCT r.id) = 0 THEN 100.0
+				ELSE (COUNT(DISTINCT CASE WHEN r.findings_count = 0 THEN r.id END)::FLOAT / COUNT(DISTINCT r.id)::FLOAT) * 100.0
+			END AS pass_rate,
+			(SELECT COUNT(*) FROM tracked_repositories WHERE workspace_id = $1 AND is_active = TRUE) AS active_repos,
+			(SELECT COUNT(*) FROM account_profiles WHERE workspace_id = $1) AS total_devs
+		FROM pull_request_reviews r
+		LEFT JOIN code_findings f ON f.review_id = r.id AND f.workspace_id = $1
+		WHERE r.workspace_id = $1;
+	`
 
+	var m models.CockpitMetrics
+	err := r.client.Pool.QueryRow(ctx, query, wsID).Scan(
+		&m.TotalReviews,
+		&m.TotalFindings,
+		&m.CriticalFindings,
+		&m.HighFindings,
+		&m.PassRatePercentage,
+		&m.ActiveRepositories,
+		&m.TotalDevelopers,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying cockpit metrics: %w", err)
+	}
 
+	return &m, nil
+}
 
+// TimeoutStaleReviews identifies in-flight reviews that exceeded recovery thresholds and marks them FAILED.
+func (r *Repository) TimeoutStaleReviews(ctx context.Context, olderThanMinutes int) (int64, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return 0, nil
+	}
 
+	query := `
+		UPDATE pull_request_reviews
+		SET state = 'FAILED', completed_at = NOW()
+		WHERE state IN ('PROCESSING', 'QUEUED', 'RECEIVED')
+		  AND created_at < NOW() - ($1 || ' minutes')::interval;
+	`
+	tag, err := r.client.Pool.Exec(ctx, query, fmt.Sprintf("%d", olderThanMinutes))
+	if err != nil {
+		return 0, fmt.Errorf("failed timing out stale reviews: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
 
+// PruneExpiredCLISessions deletes expired terminal authorization device sessions to prevent replay attacks.
+func (r *Repository) PruneExpiredCLISessions(ctx context.Context) (int64, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return 0, nil
+	}
 
+	query := `
+		DELETE FROM cli_auth_sessions
+		WHERE expires_at < NOW()
+		   OR (status = 'consumed' AND "updatedAt" < NOW() - INTERVAL '24 hours');
+	`
+	tag, err := r.client.Pool.Exec(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("failed pruning expired CLI sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
 
+// PruneInactiveLicenseSeats downgrades inactive members to VIEWER to reclaim allocated seats.
+func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDays int) (int64, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return 0, nil
+	}
+
+	query := `
+		UPDATE account_profiles
+		SET role = 'VIEWER', updated_at = NOW()
+		WHERE UPPER(role) NOT IN ('OWNER', 'ADMIN', 'VIEWER')
+		  AND updated_at < NOW() - ($1 || ' days')::interval;
+	`
+	tag, err := r.client.Pool.Exec(ctx, query, fmt.Sprintf("%d", inactivityDays))
+	if err != nil {
+		return 0, fmt.Errorf("failed pruning inactive license seats: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

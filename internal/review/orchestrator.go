@@ -85,7 +85,9 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 	patches, err := diff.ParseUnifiedDiff(strings.NewReader(task.RawDiff))
 	if err != nil {
 		slog.Error("Failed to parse unified diff", "error", err)
-		_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateFailed, 0)
+		if o.repo != nil {
+			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateFailed, 0)
+		}
 		return fmt.Errorf("diff parse failed: %w", err)
 	}
 

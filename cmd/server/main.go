@@ -17,6 +17,7 @@ import (
 	"github.com/scandrix/backend/internal/auth/oauth"
 	"github.com/scandrix/backend/internal/billing/razorpay"
 	"github.com/scandrix/backend/internal/config"
+	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/enterprise/scim"
 	"github.com/scandrix/backend/internal/llm"
@@ -116,12 +117,22 @@ func main() {
 		}
 	}()
 
+	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup)
+	cronScheduler := cron.NewScheduler()
+	cronScheduler.Register(cron.NewStaleReviewWatchdog(repo, 15*time.Minute, 30))
+	cronScheduler.Register(cron.NewLicenseSeatPruner(repo, 24*time.Hour, 30))
+	cronScheduler.Register(cron.NewSSOSessionCleanup(repo, 1*time.Hour))
+	cronScheduler.Register(cron.NewDORAAggregatorCron(repo, 6*time.Hour))
+	cronScheduler.Start(ctx)
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	slog.Info("Shutting down API server gracefully...")
+	cronScheduler.Stop()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
 }
+

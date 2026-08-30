@@ -19,7 +19,13 @@ func (m Model) RenderFindingsView(width, height int) string {
 	}
 
 	leftWidth := width*45/100 - 2
+	if leftWidth < 30 {
+		leftWidth = 30
+	}
 	rightWidth := width - leftWidth - 6
+	if rightWidth < 30 {
+		rightWidth = 30
+	}
 	paneHeight := height - 8
 	if paneHeight < 10 {
 		paneHeight = 10
@@ -28,7 +34,11 @@ func (m Model) RenderFindingsView(width, height int) string {
 	// 1. Left Pane: Findings List
 	var listRows []string
 	listRows = append(listRows, lipgloss.NewStyle().Bold(true).Foreground(ColorHighlight).Render("  SEVERITY  FINDING & LOCATION"))
-	listRows = append(listRows, lipgloss.NewStyle().Foreground(ColorMuted).Render("  " + strings.Repeat("─", leftWidth-4)))
+	sepCount := leftWidth - 4
+	if sepCount < 1 {
+		sepCount = 1
+	}
+	listRows = append(listRows, lipgloss.NewStyle().Foreground(ColorMuted).Render("  "+strings.Repeat("─", sepCount)))
 
 	for i, f := range m.filteredFindings {
 		isSelected := (i == m.cursorIndex)
@@ -52,11 +62,16 @@ func (m Model) RenderFindingsView(width, height int) string {
 		}
 
 		title := f.Title
-		if len(title) > leftWidth-20 {
-			title = title[:leftWidth-23] + "..."
+		maxTitleLen := leftWidth - 20
+		if maxTitleLen > 5 && len(title) > maxTitleLen {
+			title = title[:maxTitleLen-3] + "..."
 		}
 
-		fileLoc := fmt.Sprintf("%s:%d", truncatePath(f.FilePath, leftWidth-12), f.StartLine)
+		truncateLimit := leftWidth - 12
+		if truncateLimit < 10 {
+			truncateLimit = 10
+		}
+		fileLoc := fmt.Sprintf("%s:%d", truncatePath(f.FilePath, truncateLimit), f.StartLine)
 
 		rowText := fmt.Sprintf("%s%s %s\n     %s", cursor, badge, title, lipgloss.NewStyle().Foreground(ColorMuted).Render(fileLoc))
 

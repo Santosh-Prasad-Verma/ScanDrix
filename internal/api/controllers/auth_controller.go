@@ -160,30 +160,31 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	userID := uuid.New()
-	userRole := models.RoleOwner
-	displayName := req.Email
+	// Fail closed if database repository is uninitialized (Master Rule 5.7)
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	// Live database authentication with Bcrypt password verification (Master Rule 2.1 & 5.1)
-	if c.repo != nil {
-		user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
-		if err != nil || !auth.VerifyPassword(req.Password, user.Password) {
-			http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
-			return
-		}
-
-		if user.Status != "active" {
-			http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
-			return
-		}
-
-		userID = user.UUID
-		if user.OrganizationID != nil {
-			wsID = *user.OrganizationID
-		}
-		userRole = models.UserRole(user.Role)
+	user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
+	if err != nil || !auth.VerifyPassword(req.Password, user.Password) {
+		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+		return
 	}
+
+	if user.Status != "active" {
+		http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
+		return
+	}
+
+	userID := user.UUID
+	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if user.OrganizationID != nil {
+		wsID = *user.OrganizationID
+	}
+	userRole := models.UserRole(user.Role)
+	displayName := req.Email
 
 	accessToken, refreshToken, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -226,24 +227,27 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Fail closed if database repository is uninitialized (Master Rule 5.7)
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	wsID := uuid.New()
-	userID := uuid.New()
 	userRole := models.RoleOwner
 
-	if c.repo != nil {
-		pwHash, err := auth.HashPassword(req.Password)
-		if err != nil {
-			http.Error(w, `{"error":"failed processing credentials"}`, http.StatusInternalServerError)
-			return
-		}
-
-		user, err := c.repo.CreateUser(r.Context(), req.Email, pwHash, "owner", nil)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"user registration failed: %s"}`, err.Error()), http.StatusConflict)
-			return
-		}
-		userID = user.UUID
+	pwHash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		http.Error(w, `{"error":"failed processing credentials"}`, http.StatusInternalServerError)
+		return
 	}
+
+	user, err := c.repo.CreateUser(r.Context(), req.Email, pwHash, "owner", nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"user registration failed: %s"}`, err.Error()), http.StatusConflict)
+		return
+	}
+	userID := user.UUID
 
 	accessToken, refreshToken, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -282,21 +286,39 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	userID := uuid.New()
-	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	userRole := models.RoleOwner
-
-	if c.repo != nil {
-		record, err := c.repo.GetRefreshToken(r.Context(), req.RefreshToken)
-		if err != nil || record.Used || time.Now().After(record.ExpiryDate) {
-			http.Error(w, `{"error":"invalid, expired, or already used refresh token"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// 1. Invalidate used token (One-time rotation, Master Rule 5.1)
-		_ = c.repo.MarkRefreshTokenUsed(r.Context(), req.RefreshToken)
-		userID = record.UserUUID
+	// Fail closed if database repository is uninitialized (Master Rule 5.7)
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
 	}
+
+	record, err := c.repo.GetRefreshToken(r.Context(), req.RefreshToken)
+	if err != nil || record.Used || time.Now().After(record.ExpiryDate) {
+		http.Error(w, `{"error":"invalid, expired, or already used refresh token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 1. Invalidate used token (One-time rotation, Master Rule 5.1)
+	_ = c.repo.MarkRefreshTokenUsed(r.Context(), req.RefreshToken)
+
+	// 2. Load refreshed user and derive workspace & role
+	user, err := c.repo.GetUserByID(r.Context(), record.UserUUID)
+	if err != nil {
+		http.Error(w, `{"error":"user account not found"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if user.Status != "active" {
+		http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
+		return
+	}
+
+	userID := user.UUID
+	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if user.OrganizationID != nil {
+		wsID = *user.OrganizationID
+	}
+	userRole := models.UserRole(user.Role)
 
 	newAccess, newRefresh, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {

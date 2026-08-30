@@ -175,6 +175,7 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 	}
 
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
 	var execErr error
 	var once sync.Once
 
@@ -187,7 +188,11 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 	for dispatchedCount < len(g.nodes) {
 		select {
 		case <-ctx.Done():
-			return results, ctx.Err()
+			errMu.Lock()
+			if execErr == nil {
+				execErr = ctx.Err()
+			}
+			errMu.Unlock()
 		case readyNodeID := <-readyCh:
 			dispatchedCount++
 			node := g.nodes[readyNodeID]
@@ -221,7 +226,9 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 
 				if taskErr != nil {
 					once.Do(func() {
+						errMu.Lock()
 						execErr = fmt.Errorf("node '%s' failed: %w", n.ID, taskErr)
+						errMu.Unlock()
 						cancel()
 					})
 				} else {
@@ -237,16 +244,19 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 			}(node)
 		}
 
-		if execErr != nil {
+		errMu.Lock()
+		hasErr := (execErr != nil)
+		errMu.Unlock()
+		if hasErr {
 			break
 		}
 	}
 
 	wg.Wait()
 
-	if execErr != nil {
-		return results, execErr
-	}
+	errMu.Lock()
+	finalErr := execErr
+	errMu.Unlock()
 
-	return results, nil
+	return results, finalErr
 }

@@ -56,13 +56,34 @@ func TestBillingControllerPlanQuery(t *testing.T) {
 
 func TestBillingControllerOrderAndVerifyFlow(t *testing.T) {
 	wsID := uuid.New()
+	keyID := "rzp_test_123"
 	keySecret := "sec_checkout_123"
 	limiter := llm.NewTokenBudgetLimiter()
 
-	billingSvc := razorpay.NewBillingService(nil, limiter, nil, "https://app.scandrix.dev", "", keySecret, "wh_sec_123")
-	ctrl := controllers.NewBillingController(billingSvc, nil, limiter)
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "order_test_ctrl_999",
+			"entity": "order",
+			"amount": 249900,
+			"amount_due": 249900,
+			"currency": "INR",
+			"receipt": "rcpt_test_ctrl",
+			"status": "created"
+		}`))
+	}))
+	defer mockServer.Close()
 
+	client := razorpay.NewRazorpayClient(keyID, keySecret)
+	client.SetBaseURL(mockServer.URL)
+
+	billingSvc := razorpay.NewBillingService(nil, limiter, nil, "https://app.scandrix.dev", keyID, keySecret, "wh_sec_123")
+	billingSvc.SetClient(client)
+
+	ctrl := controllers.NewBillingController(billingSvc, nil, limiter)
 	router := ctrl.ProtectedRoutes()
+
 
 	// 1. Create order
 	orderBody, _ := json.Marshal(dtos.CreateOrderDTO{
