@@ -15,6 +15,8 @@ import (
 	"github.com/scandrix/backend/internal/config"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/integrations/webhooks"
+	"github.com/scandrix/backend/internal/queue/relay"
+	"github.com/scandrix/backend/internal/webhooks/ingestion"
 )
 
 func main() {
@@ -43,9 +45,15 @@ func main() {
 	repo := database.NewRepository(dbClient)
 	handler := webhooks.NewIngestionHandler(repo, cfg.GitHubWebhookSecret, cfg.GitLabWebhookSecret)
 
+	secretsMap := map[string]string{
+		"github": cfg.GitHubWebhookSecret,
+		"gitlab": cfg.GitLabWebhookSecret,
+	}
+	resolver := ingestion.NewStaticSecretResolver(secretsMap)
+	multiIngestion := ingestion.NewIngestionHandler(resolver, relay.NewOutboxStore())
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
@@ -54,7 +62,10 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Provider routes: GitHub, GitLab, Bitbucket, Azure DevOps, Forgejo
 	r.Post("/api/v1/webhooks/github", handler.HandleGitHub)
+	r.Post("/api/v1/webhooks/ingest", multiIngestion.ServeHTTP)
+	r.Post("/api/v1/webhooks/{provider}", multiIngestion.ServeHTTP)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.WebhooksPort),

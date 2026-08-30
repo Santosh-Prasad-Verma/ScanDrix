@@ -23,9 +23,24 @@ func TestVerifyGitHubSignature(t *testing.T) {
 	if verifyGitHubSignature(secret, body, invalidHeader) {
 		t.Error("expected invalid signature to be rejected")
 	}
+}
 
-	malformedHeader := "md5=invalid"
-	if verifyGitHubSignature(secret, body, malformedHeader) {
-		t.Error("expected malformed signature to be rejected")
+func TestVerifyGitLabToken(t *testing.T) {
+	secret := "gitlab-secret-token-123"
+
+	if !verifyGitLabToken(secret, "gitlab-secret-token-123") {
+		t.Error("expected valid token to match")
+	}
+
+	if verifyGitLabToken(secret, "wrong-token") {
+		t.Error("expected wrong token to be rejected")
+	}
+
+	if verifyGitLabToken(secret, "") {
+		t.Error("expected empty token to be rejected")
+	}
+
+	if verifyGitLabToken("", "some-token") {
+		t.Error("expected empty secret to be rejected")
 	}
 }

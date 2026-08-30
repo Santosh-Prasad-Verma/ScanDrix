@@ -30,6 +30,8 @@ CREATE INDEX IF NOT EXISTS idx_security_memory_fingerprint ON security_memory(wo
 ALTER TABLE security_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE security_memory FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS tenant_isolation_security_memory ON security_memory;
 CREATE POLICY tenant_isolation_security_memory ON security_memory
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+

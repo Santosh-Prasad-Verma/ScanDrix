@@ -128,3 +128,108 @@ func TestReviewConsumerAndWorkerPool(t *testing.T) {
 		t.Fatalf("expected 8 processed tasks, got %d", processed)
 	}
 }
+
+func TestTaskZeroAttemptReachesRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	inbox := relay.NewInboxDeduplicator()
+
+	failingExecutor := func(ctx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
+		return nil, errors.New("temporary upstream service failure")
+	}
+
+	cfg := consumer.ConsumerConfig{
+		MaxRetries:  3,
+		ClaimTTL:    1 * time.Minute,
+		Concurrency: 2,
+	}
+
+	reviewConsumer := consumer.NewReviewConsumer(cfg, inbox, failingExecutor)
+	taskID := uuid.New()
+
+	// Initial task payload arrives with AttemptCount: 0
+	taskPayload := consumer.ReviewTaskPayload{
+		TaskID:            taskID,
+		WorkspaceID:       uuid.New(),
+		Provider:          models.ProviderGitHub,
+		RepoNamespace:     "acme/retry-test",
+		PullRequestNumber: 99,
+		AttemptCount:      0,
+	}
+
+	// Attempt 1: should return RETRY with AttemptCount: 1
+	r1 := reviewConsumer.ProcessTask(ctx, taskPayload)
+	if r1.Status != consumer.TaskStatusRetry || r1.AttemptCount != 1 {
+		t.Fatalf("expected RETRY with attempt 1, got status=%s attempt=%d", r1.Status, r1.AttemptCount)
+	}
+
+	// Attempt 2: Even if raw payload is redelivered without prior mutation, inbox tracks attempt count
+	r2 := reviewConsumer.ProcessTask(ctx, taskPayload)
+	if r2.Status != consumer.TaskStatusRetry || r2.AttemptCount != 2 {
+		t.Fatalf("expected RETRY with attempt 2, got status=%s attempt=%d", r2.Status, r2.AttemptCount)
+	}
+
+	// Attempt 3: MaxRetries (3) reached -> DEAD_LETTER
+	r3 := reviewConsumer.ProcessTask(ctx, taskPayload)
+	if r3.Status != consumer.TaskStatusDeadLetter || r3.AttemptCount != 3 {
+		t.Fatalf("expected DEAD_LETTER with attempt 3, got status=%s attempt=%d", r3.Status, r3.AttemptCount)
+	}
+
+	deadLetters := reviewConsumer.GetDeadLetters()
+	if len(deadLetters) != 1 || deadLetters[0].TaskID != taskID {
+		t.Fatalf("expected task %s in DLQ, got %+v", taskID, deadLetters)
+	}
+}
+
+func TestWorkerPoolGracefulShutdown(t *testing.T) {
+	ctx := context.Background()
+	inbox := relay.NewInboxDeduplicator()
+
+	var completedCounter int64
+	var callbackCounter int64
+
+	slowExecutor := func(ctx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
+		time.Sleep(10 * time.Millisecond)
+		atomic.AddInt64(&completedCounter, 1)
+		return nil, nil
+	}
+
+	cfg := consumer.ConsumerConfig{
+		MaxRetries:  3,
+		ClaimTTL:    1 * time.Minute,
+		Concurrency: 3,
+	}
+
+	reviewConsumer := consumer.NewReviewConsumer(cfg, inbox, slowExecutor)
+	pool := consumer.NewWorkerPool(3, reviewConsumer)
+	pool.Start(ctx)
+
+	const taskCount = 12
+	for i := 0; i < taskCount; i++ {
+		task := consumer.ReviewTaskPayload{
+			TaskID:            uuid.New(),
+			WorkspaceID:       uuid.New(),
+			Provider:          models.ProviderGitHub,
+			RepoNamespace:     "acme/shutdown-test",
+			PullRequestNumber: i + 1,
+		}
+		pool.SubmitJob(consumer.WorkerJob{
+			Task: task,
+			OnComplete: func(res consumer.TaskExecutionResult) {
+				if res.Status == consumer.TaskStatusSuccess {
+					atomic.AddInt64(&callbackCounter, 1)
+				}
+			},
+		})
+	}
+
+	// Stop must wait for all in-flight and queued jobs to complete
+	pool.Stop()
+
+	if atomic.LoadInt64(&completedCounter) != taskCount {
+		t.Fatalf("expected %d tasks to complete execution on pool.Stop(), got %d", taskCount, completedCounter)
+	}
+	if atomic.LoadInt64(&callbackCounter) != taskCount {
+		t.Fatalf("expected %d OnComplete callbacks to fire, got %d", taskCount, callbackCounter)
+	}
+}
+

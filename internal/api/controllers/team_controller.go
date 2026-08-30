@@ -9,15 +9,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/pkg/models"
 )
 
 // TeamController manages developer teams and team member assignments.
-type TeamController struct{}
+type TeamController struct {
+	repo *database.Repository
+}
 
-// NewTeamController initializes the team controller.
-func NewTeamController() *TeamController {
-	return &TeamController{}
+// NewTeamController initializes the team controller with database persistence.
+func NewTeamController(repo *database.Repository) *TeamController {
+	return &TeamController{repo: repo}
 }
 
 // Routes mounts team endpoints.
@@ -46,16 +49,33 @@ func (c *TeamController) handleCreateTeam(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	teamID := uuid.New()
+	var team *models.Team
+	if c.repo != nil {
+		var err error
+		team, err = c.repo.CreateTeam(r.Context(), wsID, req.Name, req.Description)
+		if err != nil {
+			http.Error(w, `{"error":"failed creating team"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		team = &models.Team{
+			ID:          uuid.New(),
+			WorkspaceID: wsID,
+			Name:        req.Name,
+			Description: req.Description,
+			CreatedAt:   time.Now().UTC(),
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(dtos.TeamResponse{
-		ID:          teamID,
-		WorkspaceID: wsID,
-		Name:        req.Name,
-		Description: req.Description,
-		MemberCount: 1,
-		CreatedAt:   time.Now().UTC(),
+		ID:          team.ID,
+		WorkspaceID: team.WorkspaceID,
+		Name:        team.Name,
+		Description: team.Description,
+		MemberCount: 0,
+		CreatedAt:   team.CreatedAt,
 	})
 }
 
@@ -66,25 +86,31 @@ func (c *TeamController) handleListTeams(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	var teams []models.Team
+	if c.repo != nil {
+		var err error
+		teams, err = c.repo.ListTeams(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed listing teams"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	res := make([]dtos.TeamResponse, 0, len(teams))
+	for _, t := range teams {
+		members, _ := c.repo.ListTeamMembers(r.Context(), t.ID)
+		res = append(res, dtos.TeamResponse{
+			ID:          t.ID,
+			WorkspaceID: t.WorkspaceID,
+			Name:        t.Name,
+			Description: t.Description,
+			MemberCount: len(members),
+			CreatedAt:   t.CreatedAt,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]dtos.TeamResponse{
-		{
-			ID:          uuid.MustParse("00000000-0000-0000-0002-000000000001"),
-			WorkspaceID: wsID,
-			Name:        "Core Platform & Security",
-			Description: "Maintains identity, reviews, and infrastructure",
-			MemberCount: 8,
-			CreatedAt:   time.Now().AddDate(0, -2, 0),
-		},
-		{
-			ID:          uuid.MustParse("00000000-0000-0000-0002-000000000002"),
-			WorkspaceID: wsID,
-			Name:        "Product Engineering",
-			Description: "Builds user-facing web and mobile applications",
-			MemberCount: 14,
-			CreatedAt:   time.Now().AddDate(0, -1, 0),
-		},
-	})
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (c *TeamController) handleListTeamMembers(w http.ResponseWriter, r *http.Request) {
@@ -95,27 +121,27 @@ func (c *TeamController) handleListTeamMembers(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	members, err := c.repo.ListTeamMembers(r.Context(), teamID)
+	if err != nil {
+		http.Error(w, `{"error":"failed listing members"}`, http.StatusInternalServerError)
+		return
+	}
+
+	res := make([]dtos.TeamMemberResponse, 0, len(members))
+	for _, m := range members {
+		res = append(res, dtos.TeamMemberResponse{
+			ID:          m.ID,
+			TeamID:      m.TeamID,
+			UserID:      m.UserID,
+			Email:       m.Email,
+			DisplayName: m.Email,
+			Role:        models.UserRole(m.Role),
+			JoinedAt:    m.CreatedAt,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]dtos.TeamMemberResponse{
-		{
-			ID:          uuid.New(),
-			TeamID:      teamID,
-			UserID:      uuid.New(),
-			Email:       "alice@company.com",
-			DisplayName: "Alice Smith",
-			Role:        models.RoleAdmin,
-			JoinedAt:    time.Now().AddDate(0, -1, 0),
-		},
-		{
-			ID:          uuid.New(),
-			TeamID:      teamID,
-			UserID:      uuid.New(),
-			Email:       "bob@company.com",
-			DisplayName: "Bob Jones",
-			Role:        models.RoleMember,
-			JoinedAt:    time.Now().AddDate(0, 0, -14),
-		},
-	})
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +162,19 @@ func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Requ
 		req.Role = models.RoleMember
 	}
 
+	userID := uuid.New()
+	err = c.repo.AddTeamMember(r.Context(), teamID, userID, req.Email, string(req.Role))
+	if err != nil {
+		http.Error(w, `{"error":"failed adding member"}`, http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(dtos.TeamMemberResponse{
 		ID:          uuid.New(),
 		TeamID:      teamID,
-		UserID:      uuid.New(),
+		UserID:      userID,
 		Email:       req.Email,
 		DisplayName: req.Email,
 		Role:        req.Role,
@@ -150,5 +183,24 @@ func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Requ
 }
 
 func (c *TeamController) handleRemoveTeamMember(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	teamID, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid team id"}`, http.StatusBadRequest)
+		return
+	}
+
+	userIDStr := chi.URLParam(r, "userId")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := c.repo.RemoveTeamMember(r.Context(), teamID, userID); err != nil {
+		http.Error(w, `{"error":"failed removing team member"}`, http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }

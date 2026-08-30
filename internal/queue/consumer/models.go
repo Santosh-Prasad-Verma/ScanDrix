@@ -44,9 +44,17 @@ const (
 
 // TaskExecutionResult logs worker execution telemetry.
 type TaskExecutionResult struct {
-	TaskID    uuid.UUID     `json:"task_id"`
-	Status    TaskStatus    `json:"status"`
-	Duration  time.Duration `json:"duration"`
-	ErrorMsg  string        `json:"error_msg,omitempty"`
-	Timestamp time.Time     `json:"timestamp"`
+	TaskID       uuid.UUID     `json:"task_id"`
+	Status       TaskStatus    `json:"status"`
+	AttemptCount int           `json:"attempt_count"`
+	Duration     time.Duration `json:"duration"`
+	ErrorMsg     string        `json:"error_msg,omitempty"`
+	Timestamp    time.Time     `json:"timestamp"`
 }
+
+// WorkerJob encapsulates a task payload and its optional post-execution completion handler.
+type WorkerJob struct {
+	Task       ReviewTaskPayload
+	OnComplete func(res TaskExecutionResult)
+}
+

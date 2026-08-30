@@ -79,7 +79,7 @@ func main() {
 	fmt.Println("🌳 Scandrix AST Graph Backfill Daemon")
 	fmt.Printf("   Dry-Run: %v | Force: %v | Limit: %d\n", dryRun, force, limit)
 
-	targetWS := uuid.Nil
+	var targetWS uuid.UUID
 	if workspaceID != "" {
 		parsedWS, err := uuid.Parse(workspaceID)
 		if err != nil {
@@ -101,7 +101,7 @@ func main() {
 		ID:          uuid.New(),
 		WorkspaceID: targetWS,
 		EventType:   "ast.graph.build",
-		Payload:     []byte(fmt.Sprintf(`{"workspace_id":"%s","force":%v,"limit":%d}`, targetWS, force, limit)),
+		Payload:     fmt.Appendf(nil, `{"workspace_id":"%s","force":%v,"limit":%d}`, targetWS, force, limit),
 		Status:      models.OutboxPending,
 		CreatedAt:   time.Now().UTC(),
 	}

@@ -9,10 +9,11 @@ import (
 type WorkerPool struct {
 	concurrency int
 	consumer    *ReviewConsumer
-	taskChan    chan ReviewTaskPayload
+	jobChan     chan WorkerJob
 	results     chan TaskExecutionResult
 	wg          sync.WaitGroup
-	stopChan    chan struct{}
+	mu          sync.RWMutex
+	isClosing   bool
 }
 
 // NewWorkerPool initializes the concurrent worker pool.
@@ -23,9 +24,8 @@ func NewWorkerPool(concurrency int, consumer *ReviewConsumer) *WorkerPool {
 	return &WorkerPool{
 		concurrency: concurrency,
 		consumer:    consumer,
-		taskChan:    make(chan ReviewTaskPayload, 100),
+		jobChan:     make(chan WorkerJob, 100),
 		results:     make(chan TaskExecutionResult, 100),
-		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -37,24 +37,50 @@ func (p *WorkerPool) Start(ctx context.Context) {
 	}
 }
 
-// Submit queues a task for immediate worker pickup.
-func (p *WorkerPool) Submit(task ReviewTaskPayload) {
-	p.taskChan <- task
+// Submit queues a task for immediate worker pickup. Returns false if the pool is stopping.
+func (p *WorkerPool) Submit(task ReviewTaskPayload) bool {
+	return p.SubmitJob(WorkerJob{Task: task})
 }
 
-// Stop gracefully terminates workers after flushing queued tasks.
+// SubmitJob queues a task with an optional completion callback. Returns false if the pool is stopping.
+func (p *WorkerPool) SubmitJob(job WorkerJob) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.isClosing {
+		return false
+	}
+
+	p.jobChan <- job
+	return true
+}
+
+// Stop gracefully terminates workers after draining and completing all queued tasks.
 func (p *WorkerPool) Stop() {
-	close(p.taskChan)
+	p.mu.Lock()
+	if p.isClosing {
+		p.mu.Unlock()
+		return
+	}
+	p.isClosing = true
+	close(p.jobChan)
+	p.mu.Unlock()
+
 	p.wg.Wait()
 	close(p.results)
 }
 
+
 func (p *WorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()
 
-	for task := range p.taskChan {
-		res := p.consumer.ProcessTask(ctx, task)
-		p.results <- res
+	for job := range p.jobChan {
+		res := p.consumer.ProcessTask(ctx, job.Task)
+		if job.OnComplete != nil {
+			job.OnComplete(res)
+		} else {
+			p.results <- res
+		}
 	}
 }
 
@@ -62,3 +88,4 @@ func (p *WorkerPool) worker(ctx context.Context) {
 func (p *WorkerPool) ResultsChannel() <-chan TaskExecutionResult {
 	return p.results
 }
+

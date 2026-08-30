@@ -37,6 +37,56 @@ func (p *WebhookParser) Parse(provider models.SCMProvider, eventType string, bod
 }
 
 func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedWebhookEvent, error) {
+	if eventType == "pull_request_review_comment" || eventType == "issue_comment" {
+		var commentData struct {
+			Action string `json:"action"`
+			Issue  *struct {
+				Number int `json:"number"`
+			} `json:"issue"`
+			PullRequest *struct {
+				Number int `json:"number"`
+			} `json:"pull_request"`
+			Comment struct {
+				ID       int64  `json:"id"`
+				Body     string `json:"body"`
+				Path     string `json:"path"`
+				DiffHunk string `json:"diff_hunk"`
+				User     struct {
+					Login string `json:"login"`
+				} `json:"user"`
+			} `json:"comment"`
+			Repository struct {
+				FullName string `json:"full_name"`
+			} `json:"repository"`
+		}
+
+		if err := json.Unmarshal(body, &commentData); err != nil {
+			return nil, err
+		}
+
+		prNum := 0
+		if commentData.PullRequest != nil {
+			prNum = commentData.PullRequest.Number
+		} else if commentData.Issue != nil {
+			prNum = commentData.Issue.Number
+		}
+
+		return &NormalizedWebhookEvent{
+			ID:                uuid.New(),
+			Provider:          models.ProviderGitHub,
+			Action:            ActionCommentCreated,
+			RepoNamespace:     commentData.Repository.FullName,
+			PullRequestNumber: prNum,
+			CommentID:         commentData.Comment.ID,
+			CommentBody:       commentData.Comment.Body,
+			CommentFilePath:   commentData.Comment.Path,
+			DiffHunk:          commentData.Comment.DiffHunk,
+			Sender:            commentData.Comment.User.Login,
+			RawPayload:        body,
+			ReceivedAt:        time.Now().UTC(),
+		}, nil
+	}
+
 	if eventType != "pull_request" {
 		return &NormalizedWebhookEvent{Action: ActionIgnored}, nil
 	}

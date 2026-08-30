@@ -52,8 +52,14 @@ func (rc *ResilientConsumer) Start(ctx context.Context) {
 				deliveries, err := rc.broker.Consume(rc.queueName, rc.workerCount*2)
 				if err != nil {
 					slog.Warn("Failed subscribing to queue, retrying in 3s...", "error", err)
-					time.Sleep(3 * time.Second)
-					continue
+					select {
+					case <-ctx.Done():
+						return
+					case <-rc.stopChan:
+						return
+					case <-time.After(3 * time.Second):
+						continue
+					}
 				}
 
 				rc.dispatchLoop(ctx, deliveries)

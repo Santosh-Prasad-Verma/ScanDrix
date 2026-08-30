@@ -81,14 +81,31 @@ func (c *WorkspaceController) handleGetCurrentWorkspace(w http.ResponseWriter, r
 }
 
 func (c *WorkspaceController) handleGetCockpitMetrics(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	metrics := &models.CockpitMetrics{
+		PassRatePercentage: 100.0,
+	}
+	if c.repo != nil {
+		m, err := c.repo.GetCockpitMetrics(r.Context(), wsID)
+		if err == nil && m != nil {
+			metrics = m
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.CockpitMetricsResponse{
-		TotalReviews:       142,
-		TotalFindings:      8,
-		CriticalFindings:   1,
-		HighFindings:       2,
-		PassRatePercentage: 94.3,
-		ActiveRepositories: 12,
-		TotalDevelopers:    28,
+		TotalReviews:       metrics.TotalReviews,
+		TotalFindings:      metrics.TotalFindings,
+		CriticalFindings:   metrics.CriticalFindings,
+		HighFindings:       metrics.HighFindings,
+		PassRatePercentage: metrics.PassRatePercentage,
+		ActiveRepositories: metrics.ActiveRepositories,
+		TotalDevelopers:    metrics.TotalDevelopers,
 	})
 }
+

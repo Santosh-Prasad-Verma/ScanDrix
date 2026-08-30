@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: scandrix-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scandrix}
+      POSTGRES_USER: ${POSTGRES_USER:-scandrix_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scandrix_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - scandrix_pgdata_dev:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scandrix_app} -d ${POSTGRES_DB:-scandrix}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-dev-net
+
+  rabbitmq:
+    build:
+      context: ./docker/rabbitmq
+      dockerfile: Dockerfile
+    container_name: scandrix-rabbitmq-dev
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - scandrix_mqdata_dev:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-dev-net
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: scandrix-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - scandrix_redisdata_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-dev-net
+
+  scandrix-api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: scandrix-api-dev
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - JWT_SECRET=${JWT_SECRET:-scandrix-dev-secret-key-32bytes-min}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-dev-net
+
+  scandrix-worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: scandrix-worker-dev
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-dev-net
+
+  scandrix-webhooks:
+    build:
+      context: .
+      dockerfile: docker/webhooks.Dockerfile
+    container_name: scandrix-webhooks-dev
+    restart: unless-stopped
+    environment:
+      - PORT=8081
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scandrix-dev-net
+
+
+volumes:
+  scandrix_pgdata_dev:
+  scandrix_mqdata_dev:
+  scandrix_redisdata_dev:
+
+networks:
+  scandrix-dev-net:
+    driver: bridge

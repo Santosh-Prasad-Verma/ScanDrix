@@ -1,0 +1,177 @@
+package license
+
+import (
+	"fmt"
+	"strings"
+)
+
+// PlanQuota defines the resource limits and token rates associated with a subscription plan.
+type PlanQuota struct {
+	MonthlyTokens        int64 `json:"monthly_tokens"`
+	BurstLimitPerMin     int64 `json:"burst_limit_per_min"`
+	MaxSeats             int   `json:"max_seats"`
+	MaxRepositories      int   `json:"max_repositories"`
+	MaxConcurrentReviews int   `json:"max_concurrent_reviews"`
+	BYOKAllowed          bool  `json:"byok_allowed"`
+	PriorityQueueing     bool  `json:"priority_queueing"`
+	AdvancedRulesAllowed bool  `json:"advanced_rules_allowed"`
+}
+
+// PlanQuota presets matching enterprise standards and Kodus parity.
+var (
+	QuotaCommunity = PlanQuota{
+		MonthlyTokens:        500_000,   // 500K tokens / month
+		BurstLimitPerMin:     50_000,    // 50K tokens / minute
+		MaxSeats:             5,
+		MaxRepositories:      5,
+		MaxConcurrentReviews: 1,
+		BYOKAllowed:          true,      // Allowed when workspace supplies their own key
+		PriorityQueueing:     false,
+		AdvancedRulesAllowed: false,
+	}
+
+	QuotaTeam = PlanQuota{
+		MonthlyTokens:        10_000_000, // 10M tokens / month
+		BurstLimitPerMin:     500_000,    // 500K tokens / minute
+		MaxSeats:             25,
+		MaxRepositories:      0,          // 0 = unlimited
+		MaxConcurrentReviews: 10,
+		BYOKAllowed:          true,
+		PriorityQueueing:     true,
+		AdvancedRulesAllowed: true,
+	}
+
+	QuotaEnterprise = PlanQuota{
+		MonthlyTokens:        100_000_000, // 100M tokens / month (custom SLA)
+		BurstLimitPerMin:     2_000_000,   // 2M tokens / minute
+		MaxSeats:             0,           // unlimited
+		MaxRepositories:      0,           // unlimited
+		MaxConcurrentReviews: 50,
+		BYOKAllowed:          true,
+		PriorityQueueing:     true,
+		AdvancedRulesAllowed: true,
+	}
+)
+
+// GetPlanQuota returns the resource quota assigned to a license tier.
+func GetPlanQuota(tier LicenseTier) PlanQuota {
+	switch NormalizeTier(tier) {
+	case TierTeam:
+		return QuotaTeam
+	case TierEnterprise:
+		return QuotaEnterprise
+	default:
+		return QuotaCommunity
+	}
+}
+
+// NormalizeTier standardizes tier string representations (e.g. "PRO" -> "TEAM").
+func NormalizeTier(tier LicenseTier) LicenseTier {
+	upper := strings.ToUpper(strings.TrimSpace(string(tier)))
+	switch upper {
+	case "PRO", "TEAM", "TEAMS":
+		return TierTeam
+	case "ENTERPRISE", "ENT":
+		return TierEnterprise
+	default:
+		return TierCommunity
+	}
+}
+
+// Managed models authorized for Free / Community tier (when no customer BYOK is present).
+var communityAllowedModels = map[string]bool{
+	"gemini-2.5-flash-lite":                  true,
+	"gemini-3.1-flash-lite":                  true,
+	"gemini-2.5-flash":                       true,
+	"minimax/minimax-m3:free":                true,
+	"stealth/ox-alpha":                       true,
+	"thinkingmachines/inkling:free":          true,
+	"nvidia/nemotron-3-ultra-550b-a55b:free": true,
+}
+
+// Ultra-heavyweight models reserved exclusively for Enterprise tier (or BYOK).
+var enterpriseOnlyModels = map[string]bool{
+	"claude-opus-5":  true,
+	"claude-fable-5": true,
+	"gpt-5.6-sol":    true,
+	"gpt-5.5":        true,
+	"gpt-5.4":        true,
+}
+
+// CanAccessModel evaluates whether an organization is authorized to execute inference
+// on a target model based on their plan tier and BYOK status.
+//
+// Policy rules:
+// 1. BYOK Exception: If the customer provides their own provider API key (hasBYOK=true),
+//    they fund the inference directly and can access ANY model supported by that provider.
+// 2. Free / Community: Allowed only approved low-cost / trial models.
+// 3. Pro / Team: Allowed all standard frontier workhorses (Claude Sonnet 5, GPT-5.6 Terra,
+//    Gemini 3.7 Flash, Qwen 3.8 Max, Kimi K3, DeepSeek, etc.).
+// 4. Enterprise: Full access to all models including ultra-flagships and private endpoints.
+func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, string) {
+	cleanModel := strings.ToLower(strings.TrimSpace(modelID))
+
+	// 1. BYOK always bypasses managed model restrictions
+	if hasBYOK {
+		return true, ""
+	}
+
+	normTier := NormalizeTier(tier)
+
+	// 2. Community tier
+	if normTier == TierCommunity {
+		if communityAllowedModels[cleanModel] {
+			return true, ""
+		}
+		return false, fmt.Sprintf(
+			"model '%s' is not available on the Free plan. Upgrade to Pro/Team to access frontier models, or configure a BYOK API key in workspace settings.",
+			modelID,
+		)
+	}
+
+	// 3. Team / Pro tier
+	if normTier == TierTeam {
+		// Block ultra-expensive models on standard managed Pro subscription
+		if enterpriseOnlyModels[cleanModel] {
+			return false, fmt.Sprintf(
+				"model '%s' requires an Enterprise subscription or custom BYOK credentials. Current plan: Pro/Team.",
+				modelID,
+			)
+		}
+		return true, ""
+	}
+
+	// 4. Enterprise tier: all models allowed
+	return true, ""
+}
+
+// GetAllocatedModelsList returns the list of managed model IDs available to a tier.
+func GetAllocatedModelsList(tier LicenseTier) []string {
+	normTier := NormalizeTier(tier)
+	switch normTier {
+	case TierEnterprise:
+		return []string{
+			"claude-opus-5", "claude-fable-5", "claude-sonnet-5",
+			"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+			"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+			"qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3",
+			"gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
+		}
+	case TierTeam:
+		return []string{
+			"claude-sonnet-5", "gpt-5.6-terra", "gpt-5.6-luna",
+			"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+			"qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3",
+			"gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
+		}
+	default:
+		return []string{
+			"gemini-2.5-flash-lite",
+			"gemini-3.1-flash-lite",
+			"gemini-2.5-flash",
+			"minimax/minimax-m3:free",
+			"stealth/ox-alpha",
+			"thinkingmachines/inkling:free",
+		}
+	}
+}

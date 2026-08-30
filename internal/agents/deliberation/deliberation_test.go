@@ -2,9 +2,11 @@ package deliberation_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/scandrix/backend/internal/agents/deliberation"
+	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -101,5 +103,87 @@ func TestAgentDeliberationAndConsensus(t *testing.T) {
 	}
 	if len(decisions3[0].SupportingPersonas) != 2 {
 		t.Fatalf("expected 2 supporting personas, got %d", len(decisions3[0].SupportingPersonas))
+	}
+}
+
+func TestSpecializedPersonasAndMultiTurnDeliberation(t *testing.T) {
+	ctx := context.Background()
+	deliberator := deliberation.NewAgentDeliberator(0.70)
+
+	// Sample diff containing:
+	// 1. Concurrency map race
+	// 2. Unclosed HTTP response body (Memory leak)
+	// 3. N+1 SQL query inside loop
+	sampleDiff := `diff --git a/worker/concurrency.go b/worker/concurrency.go
+--- a/worker/concurrency.go
++++ b/worker/concurrency.go
+@@ -1,10 +1,15 @@
+ package worker
++func runConcurrent() {
++	cache := make(map[int]string)
++	go func() {
++		cache[1] = "bad"
++	}()
++}
+diff --git a/worker/memory.go b/worker/memory.go
+--- a/worker/memory.go
++++ b/worker/memory.go
+@@ -1,10 +1,15 @@
+ package worker
++func fetchMetrics() {
++	resp, err := http.Get("http://api.internal")
++}
+diff --git a/worker/database.go b/worker/database.go
+--- a/worker/database.go
++++ b/worker/database.go
+@@ -1,10 +1,15 @@
+ package worker
++func loadUsers(db *sql.DB, ids []int) {
++	for _, id := range ids {
++		rows, err := db.Query("SELECT * FROM users WHERE id = ?", id)
++	}
++}
++`
+
+	patches, err := diff.ParseUnifiedDiff(strings.NewReader(sampleDiff))
+	if err != nil {
+		t.Fatalf("failed parsing diff: %v", err)
+	}
+
+	state, findings := deliberator.DeliberateMultiTurn(ctx, patches, nil)
+
+	if state == nil || len(state.Rounds) != 3 {
+		t.Fatalf("expected 3 deliberation rounds, got: %+v", state)
+	}
+
+	if len(findings) < 2 {
+		t.Fatalf("expected at least 2 specialized findings, got: %d", len(findings))
+	}
+
+	// Verify detection of specialized personas
+	hasConcurrency := false
+	hasMemoryLeak := false
+	hasSQL := false
+
+	for _, f := range findings {
+		if f.Category == string(deliberation.PersonaConcurrencyAuditor) {
+			hasConcurrency = true
+		}
+		if f.Category == string(deliberation.PersonaMemoryLeakSpecialist) {
+			hasMemoryLeak = true
+		}
+		if f.Category == string(deliberation.PersonaSQLOptimizer) {
+			hasSQL = true
+		}
+	}
+
+	if !hasConcurrency && !hasMemoryLeak && !hasSQL {
+		t.Fatalf("expected at least one specialized category detection in findings: %+v", findings)
+	}
+
+	// Verify default personas catalog size
+	allPersonas := deliberation.GetDefaultPersonas()
+	if len(allPersonas) != 7 {
+		t.Fatalf("expected 7 specialized personas, got: %d", len(allPersonas))
 	}
 }
