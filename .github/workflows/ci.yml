@@ -55,18 +55,20 @@ jobs:
           files: ./coverage.out
           flags: unittests
           name: codecov-scandrix-coverage
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           verbose: true
 
       - name: Upload Test Results to Codecov (Test Analytics)
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./junit.xml
           flags: unittests
           name: codecov-scandrix-test-results
-          fail_ci_if_error: false
+          report_type: test_results
+          fail_ci_if_error: true
+          verbose: true
 
   compile-binaries:
     name: "Compile All 9 Go Binaries"
