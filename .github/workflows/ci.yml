@@ -30,9 +30,32 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
-      - name: Run Tests with Race Detector
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Run Tests with Race Detector, Coverage & JUnit Report
         run: |
-          go test -v -race ./...
+          gotestsum --junitfile junit.xml --format pkgname -- -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload Coverage Reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          flags: unittests
+          name: codecov-scandrix-coverage
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Upload Test Results to Codecov (Test Analytics)
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./junit.xml
+          flags: unittests
+          name: codecov-scandrix-test-results
+          fail_ci_if_error: false
 
   compile-binaries:
     name: "Compile All 9 Go Binaries"

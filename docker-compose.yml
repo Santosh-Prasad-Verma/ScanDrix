@@ -23,26 +23,6 @@ services:
     networks:
       - scandrix-network
 
-  # ----------------------------------------------------------------------------
-  # MongoDB (Audit Trail, Unstructured Payloads, Finding State Ledger)
-  # ----------------------------------------------------------------------------
-  mongodb:
-    image: mongo:7.0
-    container_name: scandrix-mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_DATABASE: ${MONGO_DB:-scandrix_audit}
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - scandrix-network
 
   # ----------------------------------------------------------------------------
   # RabbitMQ (Quorum Queues, Dead Letter Exchanges, Review Worker Distribution)
@@ -97,23 +77,15 @@ services:
     container_name: scandrix-api
     restart: unless-stopped
     entrypoint: ["/app/bin/scandrix-api"]
+    env_file:
+      - .env
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
-      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
       - JWT_SECRET=${JWT_SECRET:-scandrix-dev-secret-key-32bytes-min}
-      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
-      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
-      - GITLAB_OAUTH_CLIENT_ID=${GITLAB_OAUTH_CLIENT_ID:-}
-      - GITLAB_OAUTH_CLIENT_SECRET=${GITLAB_OAUTH_CLIENT_SECRET:-}
-      - SMTP_HOST=${SMTP_HOST:-}
-      - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USERNAME=${SMTP_USERNAME:-}
-      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
-      - SMTP_FROM=${SMTP_FROM:-no-reply@scandrix.dev}
     ports:
       - "8080:8080"
     depends_on:
@@ -134,6 +106,8 @@ services:
     container_name: scandrix-webhooks
     restart: unless-stopped
     entrypoint: ["/app/bin/scandrix-webhooks"]
+    env_file:
+      - .env
     environment:
       - PORT=8081
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
@@ -155,15 +129,14 @@ services:
     container_name: scandrix-worker
     restart: unless-stopped
     entrypoint: ["/app/bin/scandrix-worker"]
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
-      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
     depends_on:
       postgres:
-        condition: service_healthy
-      mongodb:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -174,7 +147,6 @@ services:
 
 volumes:
   postgres_data:
-  mongo_data:
   rabbitmq_data:
   redis_data:
 
