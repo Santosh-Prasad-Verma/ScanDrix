@@ -185,6 +185,7 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 	var inDegreeMu sync.Mutex
 	dispatchedCount := 0
 
+	dispatchLoop:
 	for dispatchedCount < len(g.nodes) {
 		select {
 		case <-ctx.Done():
@@ -193,6 +194,7 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 				execErr = ctx.Err()
 			}
 			errMu.Unlock()
+			break dispatchLoop
 		case readyNodeID := <-readyCh:
 			dispatchedCount++
 			node := g.nodes[readyNodeID]

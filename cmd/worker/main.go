@@ -22,6 +22,7 @@ import (
 	"github.com/scandrix/backend/internal/rules"
 	"github.com/scandrix/backend/internal/storage"
 	"github.com/scandrix/backend/pkg/models"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
@@ -217,17 +218,19 @@ func runConsumer(ctx context.Context, broker *queue.Broker, pool *consumer.Worke
 				continue
 			}
 
-			res := rConsumer.ProcessTask(ctx, task)
-			switch res.Status {
-			case consumer.TaskStatusSuccess, consumer.TaskStatusDuplicate:
-				_ = msg.Ack(false)
-			case consumer.TaskStatusDeadLetter:
-				slog.Error("Task exceeded max retries, moved to DLQ", "task_id", task.TaskID, "error", res.ErrorMsg)
-				_ = msg.Ack(false)
-			case consumer.TaskStatusRetry:
-				slog.Warn("Task execution temporary error, delaying retry", "task_id", task.TaskID, "attempt", task.AttemptCount, "error", res.ErrorMsg)
-				_ = msg.Nack(false, true)
-			}
+			go func(d amqp.Delivery, t consumer.ReviewTaskPayload) {
+				res := rConsumer.ProcessTask(ctx, t)
+				switch res.Status {
+				case consumer.TaskStatusSuccess, consumer.TaskStatusDuplicate:
+					_ = d.Ack(false)
+				case consumer.TaskStatusDeadLetter:
+					slog.Error("Task exceeded max retries, moved to DLQ", "task_id", t.TaskID, "error", res.ErrorMsg)
+					_ = d.Ack(false)
+				case consumer.TaskStatusRetry:
+					slog.Warn("Task execution temporary error, delaying retry", "task_id", t.TaskID, "attempt", t.AttemptCount, "error", res.ErrorMsg)
+					_ = d.Nack(false, true)
+				}
+			}(msg, task)
 		}
 	}
 }
