@@ -12,7 +12,7 @@ build/
 *.so
 *.dylib
 *.test
-scandrix-*
+/scandrix-*
 
 # 2. Test Coverage & Go Profiling Artifacts
 *.out
