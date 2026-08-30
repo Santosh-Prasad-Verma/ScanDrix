@@ -69,6 +69,7 @@ func (a *Adapter) FetchPullRequest(ctx context.Context, repo string, pullNumber 
 		Title string `json:"title"`
 		User  struct {
 			Username string `json:"username"`
+			FullName string `json:"full_name"`
 		} `json:"user"`
 		Head struct {
 			SHA string `json:"sha"`
@@ -86,10 +87,15 @@ func (a *Adapter) FetchPullRequest(ctx context.Context, repo string, pullNumber 
 		return nil, err
 	}
 
+	author := data.User.Username
+	if author == "" {
+		author = data.User.FullName
+	}
+
 	return &platform.PullRequestDetails{
 		Number:       data.Index,
 		Title:        data.Title,
-		Author:       data.User.Username,
+		Author:       author,
 		HeadSHA:      data.Head.SHA,
 		BaseSHA:      data.Base.SHA,
 		SourceBranch: data.Head.Ref,
@@ -250,6 +256,10 @@ func (a *Adapter) ListBranches(ctx context.Context, repo string) ([]string, erro
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("forgejo list branches returned: %d", resp.StatusCode)
+	}
+
 	var data []struct {
 		Name string `json:"name"`
 	}
@@ -278,10 +288,82 @@ func (a *Adapter) GetFileContent(ctx context.Context, repo, ref, path string) ([
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("forgejo get file content returned: %d", resp.StatusCode)
+	}
+
 	return io.ReadAll(resp.Body)
+}
+
+func (a *Adapter) ApprovePullRequest(ctx context.Context, repo string, pullNumber int, message string) error {
+	payload := map[string]any{
+		"event": "APPROVE",
+		"body":  message,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/api/v1/repos/%s/pulls/%d/reviews", a.baseURL, repo, pullNumber)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	a.setHeaders(req)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("forgejo approve PR returned status: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *Adapter) MergePullRequest(ctx context.Context, repo string, pullNumber int, mergeMethod string) error {
+	doType := "merge"
+	if mergeMethod == "squash" {
+		doType = "squash"
+	} else if mergeMethod == "rebase" {
+		doType = "rebase"
+	}
+
+	payload := map[string]any{
+		"Do":                     doType,
+		"delete_branch_after_merge": true,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/api/v1/repos/%s/pulls/%d/merge", a.baseURL, repo, pullNumber)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	a.setHeaders(req)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("forgejo merge PR returned status: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *Adapter) VerifyWebhookSignature(secret string, payload []byte, signatureHeader string) bool {
+	return verifyForgejoWebhookSignature(secret, payload, signatureHeader)
+}
+
+func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform.WebhookEventData, error) {
+	return parseForgejoWebhook(eventType, payload)
 }
 
 func (a *Adapter) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "token "+a.token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 }

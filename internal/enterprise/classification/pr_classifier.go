@@ -53,8 +53,8 @@ func (c *PRClassifier) ClassifyPR(prID, workspaceID uuid.UUID, prNumber int, tit
 	trimmed := strings.TrimSpace(title)
 	lower := strings.ToLower(trimmed)
 
-	cat := CategoryUnknown
-	confidence := 0.5
+	var cat PRCategory
+	var confidence float64
 
 	switch {
 	case secRegex.MatchString(lower):

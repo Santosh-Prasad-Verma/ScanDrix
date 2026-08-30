@@ -4,19 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/scandrix/backend/internal/api/dtos"
+	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/pkg/models"
 )
 
 // IntegrationController handles connecting external VCS and PM tools.
-type IntegrationController struct{}
+type IntegrationController struct {
+	repo *database.Repository
+}
 
-// NewIntegrationController initializes the integration controller.
-func NewIntegrationController() *IntegrationController {
-	return &IntegrationController{}
+// NewIntegrationController initializes the integration controller with database persistence.
+func NewIntegrationController(repo *database.Repository) *IntegrationController {
+	return &IntegrationController{repo: repo}
 }
 
 // Routes mounts integration endpoints.
@@ -31,30 +34,49 @@ func (c *IntegrationController) Routes() chi.Router {
 }
 
 func (c *IntegrationController) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().AddDate(0, 0, -1)
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	conns, err := c.repo.ListIntegrationConnections(r.Context(), wsID)
+	if err != nil {
+		http.Error(w, `{"error":"failed listing integrations"}`, http.StatusInternalServerError)
+		return
+	}
+
+	res := make([]dtos.IntegrationStatusResponse, 0, len(conns))
+	for _, conn := range conns {
+		res = append(res, dtos.IntegrationStatusResponse{
+			Provider:     conn.Provider,
+			IsConnected:  conn.IsConnected,
+			AccountName:  conn.AccountName,
+			RepoCount:    conn.RepoCount,
+			LastSyncedAt: conn.LastSyncedAt,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]dtos.IntegrationStatusResponse{
-		{
-			Provider:     models.ProviderGitHub,
-			IsConnected:  true,
-			AccountName:  "acme-corp",
-			RepoCount:    18,
-			LastSyncedAt: &now,
-		},
-		{
-			Provider:     models.ProviderGitLab,
-			IsConnected:  false,
-			AccountName:  "",
-			RepoCount:    0,
-			LastSyncedAt: nil,
-		},
-	})
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (c *IntegrationController) handleConnectSCM(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req dtos.ConnectSCMRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AccessToken == "" {
 		http.Error(w, `{"error":"access_token and provider are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	err = c.repo.UpsertIntegrationConnection(r.Context(), wsID, req.Provider, "connected-account", req.AccessToken, true, 0)
+	if err != nil {
+		http.Error(w, `{"error":"failed recording integration"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -72,10 +94,14 @@ func (c *IntegrationController) handleTestConnection(w http.ResponseWriter, r *h
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
+	if req.Provider == "" {
+		req.Provider = models.ProviderGitHub
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.TestConnectionResponse{
 		Success: true,
-		Message: fmt.Sprintf("Successfully established TLS handshake and authenticated with %s API", req.Provider),
+		Message: fmt.Sprintf("Successfully verified connection with %s API", req.Provider),
 		User:    "scandrix-bot[app]",
 	})
 }

@@ -11,14 +11,25 @@ import (
 	"github.com/scandrix/backend/internal/api"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/auth/cliauth"
+	"github.com/scandrix/backend/internal/auth/mailer"
+	"github.com/scandrix/backend/internal/auth/oauth"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
 )
 
 func TestAPIRouterEndToEnd(t *testing.T) {
-	authService := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
 	streamHub := review.NewStreamHub()
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
+	inMemStore := cliauth.NewInMemorySessionStore()
+	deviceFlow := cliauth.NewDeviceFlowManager(inMemStore, "https://app.scandrix.dev")
+	oauthService := oauth.NewOAuthService(
+		oauth.ProviderConfig{ClientID: "mock-gh-client-id", ClientSecret: "mock-gh-secret"},
+		oauth.ProviderConfig{ClientID: "mock-gl-client-id", ClientSecret: "mock-gl-secret"},
+	)
+	mockMailer := mailer.NewNoopSender()
 
 	router := api.BuildRouter(api.RouterConfig{
 		Repo:         nil, // not needed for pure HTTP contract tests
@@ -27,6 +38,11 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 		StreamHub:    streamHub,
 		Evaluator:    evaluator,
 		SCIMService:  nil,
+		DeviceFlow:   deviceFlow,
+		OAuthService: oauthService,
+		Mailer:       mockMailer,
+		AppBaseURL:   "https://app.scandrix.dev",
+		JWTSecret:    jwtSecret,
 	})
 
 	// 1. Test Public Healthz
@@ -217,5 +233,42 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	router.ServeHTTP(wUnauthorized, reqUnauthorized)
 	if wUnauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized, got %d", wUnauthorized.Code)
+	}
+
+	// 17. Test Forgot Password Endpoint (Rate-Limited Public)
+	forgotBody, _ := json.Marshal(dtos.ForgotPasswordRequest{
+		Email: "lead@techcorp.com",
+	})
+	reqForgot := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password/forgot", bytes.NewReader(forgotBody))
+	wForgot := httptest.NewRecorder()
+	router.ServeHTTP(wForgot, reqForgot)
+	if wForgot.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/v1/auth/password/forgot, got %d: %s", wForgot.Code, wForgot.Body.String())
+	}
+
+	// 18. Test CLI Device Login Initiate (RFC 8628)
+	reqCLI := httptest.NewRequest(http.MethodPost, "/api/v1/auth/cli/device/initiate", nil)
+	wCLI := httptest.NewRecorder()
+	router.ServeHTTP(wCLI, reqCLI)
+	if wCLI.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/v1/auth/cli/device/initiate, got %d: %s", wCLI.Code, wCLI.Body.String())
+	}
+	var cliResp cliauth.DeviceLoginInitiateResult
+	_ = json.NewDecoder(wCLI.Body).Decode(&cliResp)
+	if cliResp.DeviceCode == "" || cliResp.UserCode == "" {
+		t.Fatalf("expected non-empty device_code and user_code, got %+v", cliResp)
+	}
+
+	// 19. Test OAuth Authorize URL with CSRF State
+	reqOAuth := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/github/authorize", nil)
+	wOAuth := httptest.NewRecorder()
+	router.ServeHTTP(wOAuth, reqOAuth)
+	if wOAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/v1/auth/oauth/github/authorize, got %d: %s", wOAuth.Code, wOAuth.Body.String())
+	}
+	var oauthResp map[string]string
+	_ = json.NewDecoder(wOAuth.Body).Decode(&oauthResp)
+	if oauthResp["authorization_url"] == "" || oauthResp["state"] == "" {
+		t.Fatalf("expected authorization_url and state in OAuth response, got %+v", oauthResp)
 	}
 }

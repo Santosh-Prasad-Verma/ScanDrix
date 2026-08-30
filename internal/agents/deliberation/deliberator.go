@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -43,6 +44,19 @@ func (d *AgentDeliberator) DeliberateExec(
 	}
 
 	return acceptedFindings, decisions
+}
+
+// DeliberateMultiTurn runs the full 3-turn deliberation protocol across all specialized personas.
+func (d *AgentDeliberator) DeliberateMultiTurn(
+	ctx context.Context,
+	patches []*diff.FilePatch,
+	initialCandidates []CandidateFinding,
+) (*MultiTurnDeliberationState, []models.CodeFinding) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	multiTurn := NewMultiTurnEngine(d.consensus.threshold)
+	return multiTurn.ExecuteMultiTurn(ctx, patches, initialCandidates)
 }
 
 // ProposeFinding helper to construct candidate findings.

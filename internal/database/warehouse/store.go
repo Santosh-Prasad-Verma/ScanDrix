@@ -2,12 +2,16 @@ package warehouse
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// EventStore manages the append-only log of domain events.
+// EventStore manages the append-only log of domain events in-memory.
 type EventStore struct {
 	mu     sync.RWMutex
 	events []DomainEvent
@@ -94,4 +98,80 @@ func (s *EventStore) QueryEvents(ctx context.Context, filter EventFilter) ([]Dom
 	}
 
 	return results, nil
+}
+
+// PostgresEventStore persists domain events into the PostgreSQL warehouse_domain_events table.
+type PostgresEventStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresEventStore creates a PostgreSQL-backed event store.
+func NewPostgresEventStore(pool *pgxpool.Pool) *PostgresEventStore {
+	return &PostgresEventStore{pool: pool}
+}
+
+// Append persists a domain event into the PostgreSQL database.
+func (s *PostgresEventStore) Append(ctx context.Context, evt DomainEvent) error {
+	if s.pool == nil {
+		return nil
+	}
+
+	query := `
+		INSERT INTO warehouse_domain_events (
+			id, workspace_id, aggregate_id, aggregate_type, event_type, version, payload, occurred_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+	now := time.Now().UTC()
+	if evt.EventID == uuid.Nil {
+		evt.EventID = uuid.New()
+	}
+	if evt.OccurredAt.IsZero() {
+		evt.OccurredAt = now
+	}
+
+	_, err := s.pool.Exec(ctx, query,
+		evt.EventID, evt.WorkspaceID, evt.AggregateID, evt.AggregateType,
+		string(evt.EventType), evt.Version, evt.Payload, evt.OccurredAt, now,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to persist domain event to warehouse: %w", err)
+	}
+	return nil
+}
+
+// AppendBatch stores multiple events using a single batch transaction.
+func (s *PostgresEventStore) AppendBatch(ctx context.Context, tenantID uuid.UUID, evts []DomainEvent) error {
+	if s.pool == nil || len(evts) == 0 {
+		return nil
+	}
+
+	query := `
+		INSERT INTO warehouse_domain_events (
+			id, workspace_id, aggregate_id, aggregate_type, event_type, version, payload, occurred_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+
+	batch := &pgx.Batch{}
+	now := time.Now().UTC()
+	for _, evt := range evts {
+		id := evt.EventID
+		if id == uuid.Nil {
+			id = uuid.New()
+		}
+		occ := evt.OccurredAt
+		if occ.IsZero() {
+			occ = now
+		}
+		batch.Queue(query, id, evt.WorkspaceID, evt.AggregateID, evt.AggregateType, string(evt.EventType), evt.Version, evt.Payload, occ, now)
+	}
+
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for range evts {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("failed inserting batch warehouse event: %w", err)
+		}
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/scandrix/backend/internal/api/dtos"
+	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/enterprise/rbac"
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -32,25 +33,15 @@ func (c *PermissionsController) Routes() chi.Router {
 }
 
 func (c *PermissionsController) handleGetMyPermissions(w http.ResponseWriter, r *http.Request) {
-	// For active session (defaults to RoleOwner in dev)
+	role := models.RoleMember
+	if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil && profile.Role != "" {
+		role = profile.Role
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"role": models.RoleOwner,
-		"permissions": []string{
-			string(rbac.PermWorkspaceRead),
-			string(rbac.PermWorkspaceWrite),
-			string(rbac.PermWorkspaceDelete),
-			string(rbac.PermReviewCreate),
-			string(rbac.PermReviewRead),
-			string(rbac.PermReviewApprove),
-			string(rbac.PermReviewDismiss),
-			string(rbac.PermRuleCreate),
-			string(rbac.PermRuleEdit),
-			string(rbac.PermRuleDelete),
-			string(rbac.PermIntegrationAdmin),
-			string(rbac.PermAuditRead),
-			string(rbac.PermBillingManage),
-		},
+		"role":        role,
+		"permissions": c.policyEngine.GetRolePermissions(role),
 	})
 }
 
@@ -79,7 +70,12 @@ func (c *PermissionsController) handleCheckPermission(w http.ResponseWriter, r *
 		return
 	}
 
-	err := c.policyEngine.CheckPermission(models.RoleOwner, rbac.Permission(req.Permission))
+	role := models.RoleMember
+	if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil && profile.Role != "" {
+		role = profile.Role
+	}
+
+	err := c.policyEngine.CheckPermission(role, rbac.Permission(req.Permission))
 	allowed := err == nil
 	reason := ""
 	if !allowed {

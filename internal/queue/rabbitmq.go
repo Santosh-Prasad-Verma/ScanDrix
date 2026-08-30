@@ -13,9 +13,10 @@ import (
 const (
 	ReviewTaskQueue = "scandrix.reviews.v1"
 	ReviewDLX       = "scandrix.dlx"
+	DelayedExchange = "scandrix.delayed"
 )
 
-// Broker manages an AMQP 0-9-1 connection to RabbitMQ with quorum queue support.
+// Broker manages an AMQP 0-9-1 connection to RabbitMQ with quorum queue and delayed exchange support.
 type Broker struct {
 	url       string
 	conn      *amqp.Connection
@@ -63,12 +64,42 @@ func (b *Broker) connect() error {
 		return fmt.Errorf("failed to declare dlx exchange: %w", err)
 	}
 
-	// Declare Quorum Queue with DLX
-	args := amqp.Table{
-		"x-queue-type":                 "quorum",
-		"x-dead-letter-exchange":       ReviewDLX,
-		"x-dead-letter-routing-key":    ReviewTaskQueue + ".dlq",
-		"x-delivery-limit":             int32(5), // max 5 retries before dead-lettering
+	// Probe and declare Delayed Message Exchange safely on an isolated channel
+	// to prevent channel closure on cloud brokers without x-delayed-message plugin
+	delayedCh, err := conn.Channel()
+	if err == nil {
+		delayedArgs := amqp.Table{
+			"x-delayed-type": "direct",
+		}
+		if err := delayedCh.ExchangeDeclare(
+			DelayedExchange,
+			"x-delayed-message",
+			true,  // durable
+			false, // auto-deleted
+			false, // internal
+			false, // no-wait
+			delayedArgs,
+		); err != nil {
+			delayedCh.Close()
+			// Fall back to standard direct exchange on primary channel
+			_ = ch.ExchangeDeclare(
+				DelayedExchange,
+				"direct",
+				true,
+				false,
+				false,
+				false,
+				nil,
+			)
+		} else {
+			delayedCh.Close()
+		}
+	}
+
+	// Declare Task Queue with Dead-Letter routing
+	queueArgs := amqp.Table{
+		"x-dead-letter-exchange":    ReviewDLX,
+		"x-dead-letter-routing-key": ReviewTaskQueue + ".dlq",
 	}
 
 	_, err = ch.QueueDeclare(
@@ -77,12 +108,12 @@ func (b *Broker) connect() error {
 		false, // delete when unused
 		false, // exclusive
 		false, // no-wait
-		args,
+		queueArgs,
 	)
 	if err != nil {
 		ch.Close()
 		conn.Close()
-		return fmt.Errorf("failed to declare quorum queue: %w", err)
+		return fmt.Errorf("failed to declare review task queue: %w", err)
 	}
 
 	b.conn = conn
@@ -107,6 +138,36 @@ func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) 
 		true,      // mandatory
 		false,     // immediate
 		amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Timestamp:    time.Now().UTC(),
+			Body:         payload,
+		},
+	)
+}
+
+// PublishDelayed publishes a message with delayed delivery using RabbitMQ delayed message exchange.
+func (b *Broker) PublishDelayed(ctx context.Context, routingKey string, payload []byte, delayMs int64) error {
+	b.mu.Lock()
+	ch := b.channel
+	b.mu.Unlock()
+
+	if ch == nil {
+		return fmt.Errorf("channel is closed")
+	}
+
+	headers := amqp.Table{
+		"x-delay": delayMs,
+	}
+
+	return ch.PublishWithContext(
+		ctx,
+		DelayedExchange,
+		routingKey,
+		false,
+		false,
+		amqp.Publishing{
+			Headers:      headers,
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "application/json",
 			Timestamp:    time.Now().UTC(),

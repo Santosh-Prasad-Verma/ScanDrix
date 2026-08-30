@@ -129,26 +129,33 @@ ALTER TABLE review_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE review_rules FORCE ROW LEVEL SECURITY;
 
 -- Tenant Isolation Policies via app.current_tenant_id session config
+DROP POLICY IF EXISTS tenant_isolation_profiles ON account_profiles;
 CREATE POLICY tenant_isolation_profiles ON account_profiles
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+DROP POLICY IF EXISTS tenant_isolation_repos ON tracked_repositories;
 CREATE POLICY tenant_isolation_repos ON tracked_repositories
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+DROP POLICY IF EXISTS tenant_isolation_reviews ON pull_request_reviews;
 CREATE POLICY tenant_isolation_reviews ON pull_request_reviews
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+DROP POLICY IF EXISTS tenant_isolation_findings ON code_findings;
 CREATE POLICY tenant_isolation_findings ON code_findings
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+DROP POLICY IF EXISTS tenant_isolation_outbox ON outbox_events;
 CREATE POLICY tenant_isolation_outbox ON outbox_events
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+DROP POLICY IF EXISTS tenant_isolation_rules ON review_rules;
 CREATE POLICY tenant_isolation_rules ON review_rules
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+

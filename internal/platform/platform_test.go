@@ -129,7 +129,12 @@ func TestSCMAdaptersEndToEnd(t *testing.T) {
 		t.Fatalf("failed to create forgejo adapter: %v", err)
 	}
 
-	// 7. Verify Missing Token Fails
+	// 7. Verify Webhook Signature Check
+	if ghAdapter.VerifyWebhookSignature("", []byte("test"), "") {
+		t.Errorf("expected empty secret to fail verification")
+	}
+
+	// 8. Verify Missing Token Fails
 	_, err = platform.NewAdapter(platform.AdapterConfig{
 		Provider: models.ProviderGitHub,
 		Token:    "",
@@ -138,3 +143,4 @@ func TestSCMAdaptersEndToEnd(t *testing.T) {
 		t.Fatalf("expected error on missing token, got nil")
 	}
 }
+

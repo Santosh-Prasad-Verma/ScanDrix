@@ -3,6 +3,9 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -295,8 +298,164 @@ func (a *Adapter) GetFileContent(ctx context.Context, repo, ref, path string) ([
 	return io.ReadAll(resp.Body)
 }
 
+func (a *Adapter) ApprovePullRequest(ctx context.Context, repo string, pullNumber int, message string) error {
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews", a.baseURL, repo, pullNumber)
+	payload := map[string]any{
+		"event": "APPROVE",
+		"body":  message,
+	}
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	a.setHeaders(req)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("github approve pull request returned: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *Adapter) MergePullRequest(ctx context.Context, repo string, pullNumber int, mergeMethod string) error {
+	if mergeMethod == "" {
+		mergeMethod = "merge"
+	}
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d/merge", a.baseURL, repo, pullNumber)
+	payload := map[string]any{
+		"merge_method": mergeMethod,
+	}
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	a.setHeaders(req)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("github merge pull request returned: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *Adapter) VerifyWebhookSignature(secret string, payload []byte, signatureHeader string) bool {
+	if secret == "" || signatureHeader == "" {
+		return false
+	}
+	sig := strings.TrimPrefix(signatureHeader, "sha256=")
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expectedMAC := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(sig), []byte(expectedMAC))
+}
+
+func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform.WebhookEventData, error) {
+	var event platform.WebhookEventData
+	event.RawPayload = payload
+
+	switch eventType {
+	case "pull_request":
+		event.Type = platform.WebhookEventPullRequest
+		var prEvent struct {
+			Action      string `json:"action"`
+			Repository  struct {
+				FullName string `json:"full_name"`
+				DefaultBranch string `json:"default_branch"`
+			} `json:"repository"`
+			Sender struct {
+				Login string `json:"login"`
+			} `json:"sender"`
+			PullRequest struct {
+				Number    int       `json:"number"`
+				Title     string    `json:"title"`
+				Head      struct{ SHA, Ref string } `json:"head"`
+				Base      struct{ SHA, Ref string } `json:"base"`
+				Draft     bool      `json:"draft"`
+				CreatedAt time.Time `json:"created_at"`
+				User      struct{ Login string } `json:"user"`
+			} `json:"pull_request"`
+		}
+		if err := json.Unmarshal(payload, &prEvent); err != nil {
+			return nil, err
+		}
+		event.Action = prEvent.Action
+		event.Repository = prEvent.Repository.FullName
+		event.DefaultBranch = prEvent.Repository.DefaultBranch
+		event.Sender = prEvent.Sender.Login
+		event.PullRequest = &platform.PullRequestDetails{
+			Number:       prEvent.PullRequest.Number,
+			Title:        prEvent.PullRequest.Title,
+			Author:       prEvent.PullRequest.User.Login,
+			HeadSHA:      prEvent.PullRequest.Head.SHA,
+			BaseSHA:      prEvent.PullRequest.Base.SHA,
+			SourceBranch: prEvent.PullRequest.Head.Ref,
+			TargetBranch: prEvent.PullRequest.Base.Ref,
+			CreatedAt:    prEvent.PullRequest.CreatedAt,
+			IsDraft:      prEvent.PullRequest.Draft,
+		}
+	case "push":
+		event.Type = platform.WebhookEventPush
+		var pushEvent struct {
+			After      string `json:"after"`
+			Repository struct {
+				FullName      string `json:"full_name"`
+				DefaultBranch string `json:"default_branch"`
+			} `json:"repository"`
+			Pusher struct{ Name string } `json:"pusher"`
+		}
+		if err := json.Unmarshal(payload, &pushEvent); err != nil {
+			return nil, err
+		}
+		event.CommitSHA = pushEvent.After
+		event.Repository = pushEvent.Repository.FullName
+		event.DefaultBranch = pushEvent.Repository.DefaultBranch
+		event.Sender = pushEvent.Pusher.Name
+	case "issue_comment":
+		event.Type = platform.WebhookEventIssueComment
+		var commentEvent struct {
+			Action     string `json:"action"`
+			Repository struct {
+				FullName string `json:"full_name"`
+			} `json:"repository"`
+			Comment struct {
+				ID   int64  `json:"id"`
+				Body string `json:"body"`
+				User struct{ Login string } `json:"user"`
+			} `json:"comment"`
+			Issue struct {
+				Number int `json:"number"`
+			} `json:"issue"`
+		}
+		if err := json.Unmarshal(payload, &commentEvent); err != nil {
+			return nil, err
+		}
+		event.Action = commentEvent.Action
+		event.Repository = commentEvent.Repository.FullName
+		event.CommentID = commentEvent.Comment.ID
+		event.CommentBody = commentEvent.Comment.Body
+		event.Sender = commentEvent.Comment.User.Login
+	case "ping":
+		event.Type = platform.WebhookEventPing
+	default:
+		event.Type = platform.WebhookEventType(eventType)
+	}
+
+	return &event, nil
+}
+
 func (a *Adapter) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("Content-Type", "application/json")
 }
+

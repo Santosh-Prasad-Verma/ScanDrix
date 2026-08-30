@@ -114,6 +114,83 @@ func (h *IngestionHandler) HandleGitHub(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `"}`))
 }
 
+// GitLabWebhookPayload models incoming GitLab Merge Request Hook payloads.
+type GitLabWebhookPayload struct {
+	ObjectKind string `json:"object_kind"`
+	Project    struct {
+		ID                int64  `json:"id"`
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+	ObjectAttributes struct {
+		IID          int    `json:"iid"`
+		Title        string `json:"title"`
+		Action       string `json:"action"` // open, update, reopen, close, merge
+		SourceBranch string `json:"source_branch"`
+		TargetBranch string `json:"target_branch"`
+		LastCommit   struct {
+			ID string `json:"id"`
+		} `json:"last_commit"`
+	} `json:"object_attributes"`
+	User struct {
+		Username string `json:"username"`
+	} `json:"user"`
+}
+
+// HandleGitLab processes incoming GitLab webhook payloads with token verification.
+func (h *IngestionHandler) HandleGitLab(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Verify X-Gitlab-Token header (Master Rule 5.5)
+	if h.gitlabSecret != "" {
+		tokenHeader := r.Header.Get("X-Gitlab-Token")
+		if !verifyGitLabToken(h.gitlabSecret, tokenHeader) {
+			http.Error(w, `{"error":"invalid webhook token"}`, http.StatusUnauthorized)
+			return
+		}
+	}
+
+	eventType := r.Header.Get("X-Gitlab-Event")
+	if eventType != "Merge Request Hook" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ignored_event"}`))
+		return
+	}
+
+	var payload GitLabWebhookPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, `{"error":"malformed payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	action := payload.ObjectAttributes.Action
+	if action != "open" && action != "update" && action != "reopen" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ignored_action"}`))
+		return
+	}
+
+	workspaceID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	outboxEvent := &models.OutboxRecord{
+		WorkspaceID: workspaceID,
+		EventType:   "gitlab.merge_request." + action,
+		Payload:     body,
+	}
+
+	if h.repo != nil {
+		if err := h.repo.InsertOutboxEvent(r.Context(), outboxEvent); err != nil {
+			http.Error(w, `{"error":"failed to record outbox event"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `"}`))
+}
+
 func verifyGitHubSignature(secret string, body []byte, signatureHeader string) bool {
 	if !strings.HasPrefix(signatureHeader, "sha256=") {
 		return false
@@ -125,4 +202,11 @@ func verifyGitHubSignature(secret string, body []byte, signatureHeader string) b
 	actualHash := hex.EncodeToString(mac.Sum(nil))
 
 	return subtle.ConstantTimeCompare([]byte(actualHash), []byte(expectedHash)) == 1
+}
+
+func verifyGitLabToken(secret, tokenHeader string) bool {
+	if secret == "" || tokenHeader == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(tokenHeader), []byte(secret)) == 1
 }

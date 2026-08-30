@@ -40,19 +40,68 @@ type CandidateFindingJSON struct {
 	SuggestedDiff string `json:"suggested_diff"`
 }
 
-// Gateway provides multi-model AI synthesis across Anthropic, OpenAI, and local endpoints.
+// Gateway provides multi-model AI synthesis across Anthropic, OpenAI, DeepSeek, Bedrock, Vertex, and local endpoints.
 type Gateway struct {
 	anthropicKey   string
 	openAIKey      string
 	geminiKey      string
-	localEndpoint  string
-	httpClient     *http.Client
-	circuitBreaker *CircuitBreaker
+	deepseekKey    string
+	bedrockToken   string
+	bedrockRegion  string
+	vertexToken    string
+	vertexProject  string
+	vertexRegion   string
+	openrouterKey    string
+	openrouterModels []string
+	ollamaEndpoint   string
+	vllmEndpoint     string
+	localEndpoint    string
+	httpClient       *http.Client
+	circuitBreaker   *CircuitBreaker
+}
+
+// GatewayOption configures optional credentials on Gateway.
+type GatewayOption func(*Gateway)
+
+func WithDeepSeek(key string) GatewayOption {
+	return func(g *Gateway) { g.deepseekKey = key }
+}
+
+func WithOpenRouter(key string) GatewayOption {
+	return func(g *Gateway) { g.openrouterKey = key }
+}
+
+func WithOpenRouterModels(models ...string) GatewayOption {
+	return func(g *Gateway) {
+		clean := make([]string, 0, len(models))
+		for _, m := range models {
+			if strings.TrimSpace(m) != "" {
+				clean = append(clean, strings.TrimSpace(m))
+			}
+		}
+		g.openrouterModels = clean
+	}
+}
+
+func WithBedrock(region, token string) GatewayOption {
+	return func(g *Gateway) { g.bedrockRegion = region; g.bedrockToken = token }
+}
+
+func WithVertex(project, region, token string) GatewayOption {
+	return func(g *Gateway) { g.vertexProject = project; g.vertexRegion = region; g.vertexToken = token }
+}
+
+func WithOllama(endpoint string) GatewayOption {
+	return func(g *Gateway) { g.ollamaEndpoint = endpoint }
+}
+
+func WithVLLM(endpoint string) GatewayOption {
+	return func(g *Gateway) { g.vllmEndpoint = endpoint }
 }
 
 // NewGateway initializes the multi-provider LLM gateway.
-func NewGateway(anthropicKey, openAIKey, geminiKey, localEndpoint string) *Gateway {
-	return &Gateway{
+func NewGateway(anthropicKey, openAIKey, geminiKey, localEndpoint string, opts ...GatewayOption) *Gateway {
+	g := &Gateway{
 		anthropicKey:   anthropicKey,
 		openAIKey:      openAIKey,
 		geminiKey:      geminiKey,
@@ -62,6 +111,10 @@ func NewGateway(anthropicKey, openAIKey, geminiKey, localEndpoint string) *Gatew
 		},
 		circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
 	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
 }
 
 // AnalyzeDiff routes the pull request diff to an available AI provider and parses structured recommendations.
@@ -71,10 +124,22 @@ func (g *Gateway) AnalyzeDiff(ctx context.Context, req ReviewRequest) (*ReviewRe
 
 	err := g.circuitBreaker.Execute(ctx, 2, func(callCtx context.Context) error {
 		var callErr error
-		if g.anthropicKey != "" {
+		if g.openrouterKey != "" {
+			resp, callErr = g.callOpenRouter(callCtx, prompt)
+		} else if g.anthropicKey != "" {
 			resp, callErr = g.callAnthropic(callCtx, prompt)
 		} else if g.openAIKey != "" {
 			resp, callErr = g.callOpenAI(callCtx, prompt)
+		} else if g.deepseekKey != "" {
+			resp, callErr = g.callDeepSeek(callCtx, prompt)
+		} else if g.vertexToken != "" {
+			resp, callErr = g.callVertex(callCtx, prompt)
+		} else if g.bedrockToken != "" {
+			resp, callErr = g.callBedrock(callCtx, prompt)
+		} else if g.ollamaEndpoint != "" {
+			resp, callErr = g.callOllama(callCtx, prompt)
+		} else if g.vllmEndpoint != "" {
+			resp, callErr = g.callOpenAICompatible(callCtx, g.vllmEndpoint+"/v1", prompt)
 		} else if g.localEndpoint != "" {
 			resp, callErr = g.callOpenAICompatible(callCtx, g.localEndpoint, prompt)
 		} else {
@@ -215,6 +280,278 @@ func (g *Gateway) callOpenAICompatible(ctx context.Context, baseURL, prompt stri
 	}
 
 	return parseStructuredJSON(openAIResp.Choices[0].Message.Content)
+}
+
+func (g *Gateway) callDeepSeek(ctx context.Context, prompt string) (*ReviewResponse, error) {
+	reqBody := map[string]any{
+		"model": "deepseek-chat",
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are a code review analysis engine that exclusively outputs structured JSON."},
+			{"role": "user", "content": prompt},
+		},
+		"response_format": map[string]string{"type": "json_object"},
+	}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/chat/completions", bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+g.deepseekKey)
+
+	resp, err := g.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("deepseek request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("deepseek error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var deepseekResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &deepseekResp); err != nil || len(deepseekResp.Choices) == 0 {
+		return nil, fmt.Errorf("failed parsing deepseek response: %w", err)
+	}
+	return parseStructuredJSON(deepseekResp.Choices[0].Message.Content)
+}
+
+func (g *Gateway) callBedrock(ctx context.Context, prompt string) (*ReviewResponse, error) {
+	region := g.bedrockRegion
+	if region == "" {
+		region = "us-east-1"
+	}
+	reqBody := map[string]any{
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]string{
+					{"text": prompt},
+				},
+			},
+		},
+		"inferenceConfig": map[string]any{
+			"maxTokens":   4096,
+			"temperature": 0.2,
+		},
+	}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	url := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse", region)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+g.bedrockToken)
+
+	resp, err := g.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bedrock error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var bedrockResp struct {
+		Output struct {
+			Message struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &bedrockResp); err != nil || len(bedrockResp.Output.Message.Content) == 0 {
+		return nil, fmt.Errorf("failed parsing bedrock response: %w", err)
+	}
+	return parseStructuredJSON(bedrockResp.Output.Message.Content[0].Text)
+}
+
+func (g *Gateway) callVertex(ctx context.Context, prompt string) (*ReviewResponse, error) {
+	region := g.vertexRegion
+	if region == "" {
+		region = "us-central1"
+	}
+	project := g.vertexProject
+	if project == "" {
+		project = "scandrix-prod"
+	}
+
+	reqBody := map[string]any{
+		"contents": []map[string]any{
+			{
+				"role": "user",
+				"parts": []map[string]string{
+					{"text": prompt},
+				},
+			},
+		},
+		"generationConfig": map[string]any{
+			"temperature":      0.2,
+			"responseMimeType": "application/json",
+		},
+	}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/gemini-2.5-pro:generateContent", region, project, region)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+g.vertexToken)
+
+	resp, err := g.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("vertex request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("vertex error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var vertexResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(body, &vertexResp); err != nil || len(vertexResp.Candidates) == 0 || len(vertexResp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("failed parsing vertex response: %w", err)
+	}
+	return parseStructuredJSON(vertexResp.Candidates[0].Content.Parts[0].Text)
+}
+
+func (g *Gateway) callOllama(ctx context.Context, prompt string) (*ReviewResponse, error) {
+	reqBody := map[string]any{
+		"model": "deepseek-r1:70b",
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are a code review analysis engine that exclusively outputs structured JSON."},
+			{"role": "user", "content": prompt},
+		},
+		"format": "json",
+		"stream": false,
+	}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	url := strings.TrimRight(g.ollamaEndpoint, "/") + "/api/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("ollama request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ollama error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var ollamaResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		return nil, fmt.Errorf("failed parsing ollama response: %w", err)
+	}
+	return parseStructuredJSON(ollamaResp.Message.Content)
+}
+
+func (g *Gateway) callOpenRouter(ctx context.Context, prompt string) (*ReviewResponse, error) {
+	modelsToTry := g.openrouterModels
+	if len(modelsToTry) == 0 {
+		modelsToTry = []string{
+			"stealth/ox-alpha",
+			"nvidia/nemotron-3-ultra-550b-a55b:free",
+			"minimax/minimax-m3:free",
+			"thinkingmachines/inkling:free",
+		}
+	}
+
+	var lastErr error
+	for _, modelName := range modelsToTry {
+		if strings.TrimSpace(modelName) == "" {
+			continue
+		}
+		reqBody := map[string]any{
+			"model": modelName,
+			"messages": []map[string]string{
+				{"role": "system", "content": "You are a code review analysis engine that exclusively outputs structured JSON."},
+				{"role": "user", "content": prompt},
+			},
+			"response_format": map[string]string{"type": "json_object"},
+			"stream":          false,
+		}
+		jsonBytes, _ := json.Marshal(reqBody)
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(jsonBytes))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+g.openrouterKey)
+		httpReq.Header.Set("HTTP-Referer", "https://scandrix.dev")
+		httpReq.Header.Set("X-Title", "ScanDrix")
+
+		resp, err := g.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("openrouter request for model %s failed: %w", modelName, err)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("openrouter model %s error (HTTP %d): %s", modelName, resp.StatusCode, string(body))
+			continue
+		}
+
+		var openRouterResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(body, &openRouterResp); err != nil || len(openRouterResp.Choices) == 0 {
+			lastErr = fmt.Errorf("failed parsing openrouter response for model %s: %w", modelName, err)
+			continue
+		}
+
+		parsed, err := parseStructuredJSON(openRouterResp.Choices[0].Message.Content)
+		if err != nil {
+			lastErr = fmt.Errorf("failed parsing JSON findings for model %s: %w", modelName, err)
+			continue
+		}
+		return parsed, nil
+	}
+
+	return nil, fmt.Errorf("all openrouter models in fallback chain failed: %w", lastErr)
 }
 
 func parseStructuredJSON(raw string) (*ReviewResponse, error) {

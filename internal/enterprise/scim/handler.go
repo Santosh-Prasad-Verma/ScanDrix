@@ -9,18 +9,25 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/database"
 )
 
 // SCIMService provides in-memory/database backed SCIM 2.0 provisioning.
 type SCIMService struct {
 	mu    sync.RWMutex
 	users map[string]SCIMUser
+	repo  *database.Repository
 }
 
-// NewSCIMService initializes the SCIM 2.0 provisioning engine.
-func NewSCIMService() *SCIMService {
+// NewSCIMService initializes the SCIM 2.0 provisioning engine with optional database persistence.
+func NewSCIMService(repo ...*database.Repository) *SCIMService {
+	var r *database.Repository
+	if len(repo) > 0 {
+		r = repo[0]
+	}
 	return &SCIMService{
 		users: make(map[string]SCIMUser),
+		repo:  r,
 	}
 }
 
@@ -107,6 +114,10 @@ func (s *SCIMService) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		userList = append(userList, u)
 	}
 
+	if len(userList) > count {
+		userList = userList[:count]
+	}
+
 	w.Header().Set("Content-Type", "application/scim+json")
 	_ = json.NewEncoder(w).Encode(SCIMListResponse{
 		Schemas:      []string{ListResponseURN},
@@ -139,6 +150,14 @@ func (s *SCIMService) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	input.Meta.Location = "/scim/v2/Users/" + newID
 
 	s.users[newID] = input
+
+	if s.repo != nil {
+		email := input.UserName
+		if len(input.Emails) > 0 && input.Emails[0].Value != "" {
+			email = input.Emails[0].Value
+		}
+		_, _ = s.repo.CreateUser(r.Context(), email, "scim-sso-managed", "member", nil)
+	}
 
 	w.Header().Set("Content-Type", "application/scim+json")
 	w.WriteHeader(http.StatusCreated)

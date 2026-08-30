@@ -1,0 +1,33 @@
+# Multi-stage production build for ScanDrix
+FROM golang:1.22-alpine AS builder
+
+ENV GOTOOLCHAIN=auto
+RUN apk add --no-cache git ca-certificates tzdata build-base
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG TARGET_CMD=server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/scandrix-service ./cmd/${TARGET_CMD}
+
+# Minimal runtime image
+FROM alpine:3.21 AS runner
+
+RUN apk add --no-cache ca-certificates tzdata git && \
+    addgroup -g 10001 -S scandrix && \
+    adduser -u 10001 -S scandrix -G scandrix -h /home/scandrix
+
+WORKDIR /app
+
+COPY --from=builder /build/bin/scandrix-service /app/bin/scandrix-service
+
+RUN chown -R scandrix:scandrix /app
+USER scandrix:scandrix
+
+EXPOSE 8080 8081
+
+ENTRYPOINT ["/app/bin/scandrix-service"]

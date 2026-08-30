@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ----------------------------------------------------------------------------
   # PostgreSQL with pgvector (Relational Store + 1536-dim HNSW Vector Embeddings)
@@ -105,6 +103,17 @@ services:
       - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
+      - JWT_SECRET=${JWT_SECRET:-scandrix-dev-secret-key-32bytes-min}
+      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
+      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
+      - GITLAB_OAUTH_CLIENT_ID=${GITLAB_OAUTH_CLIENT_ID:-}
+      - GITLAB_OAUTH_CLIENT_SECRET=${GITLAB_OAUTH_CLIENT_SECRET:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-no-reply@scandrix.dev}
     ports:
       - "8080:8080"
     depends_on:

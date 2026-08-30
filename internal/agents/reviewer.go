@@ -7,16 +7,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/agents/deliberation"
 	"github.com/scandrix/backend/internal/codeanalysis/languages"
+	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/sandbox/syntax"
 	"github.com/scandrix/backend/pkg/models"
 )
 
 // AgentThought records an individual reasoning step during automated review deliberation.
 type AgentThought struct {
 	StepIndex   int       `json:"step_index"`
-	Phase       string    `json:"phase"` // "PLAN", "ANALYSIS", "CRITIQUE", "SYNTHESIS"
+	Phase       string    `json:"phase"` // "PLAN", "ANALYSIS", "DELIBERATION", "SYNTHESIS"
 	Observation string    `json:"observation"`
 	Action      string    `json:"action"`
 	Timestamp   time.Time `json:"timestamp"`
@@ -24,25 +27,40 @@ type AgentThought struct {
 
 // ReviewPlan represents the decomposition of files to review based on risk and language.
 type ReviewPlan struct {
-	ReviewID        uuid.UUID  `json:"review_id"`
-	HighRiskFiles   []string   `json:"high_risk_files"`
-	StandardFiles   []string   `json:"standard_files"`
-	SuppressedFiles []string   `json:"suppressed_files"`
-	EstimatedTokens int        `json:"estimated_tokens"`
+	ReviewID        uuid.UUID `json:"review_id"`
+	HighRiskFiles   []string  `json:"high_risk_files"`
+	StandardFiles   []string  `json:"standard_files"`
+	SuppressedFiles []string  `json:"suppressed_files"`
+	EstimatedTokens int       `json:"estimated_tokens"`
 }
 
 // AutonomousReviewer coordinates multi-turn agentic code analysis.
 type AutonomousReviewer struct {
-	ruleEvaluator *rules.Evaluator
-	maxIterations int
+	ruleEvaluator   *rules.Evaluator
+	llmGateway      *llm.Gateway
+	deliberator     *deliberation.AgentDeliberator
+	syntaxValidator *syntax.SandboxSyntaxValidator
+	maxIterations   int
 }
 
 // NewAutonomousReviewer initializes the autonomous review agent.
 func NewAutonomousReviewer(evaluator *rules.Evaluator) *AutonomousReviewer {
 	return &AutonomousReviewer{
-		ruleEvaluator: evaluator,
-		maxIterations: 5,
+		ruleEvaluator:   evaluator,
+		deliberator:     deliberation.NewAgentDeliberator(0.70),
+		syntaxValidator: syntax.NewSandboxSyntaxValidator(),
+		maxIterations:   5,
 	}
+}
+
+// SetLLMGateway attaches the AI gateway for deep semantic model inference.
+func (a *AutonomousReviewer) SetLLMGateway(gw *llm.Gateway) {
+	a.llmGateway = gw
+}
+
+// SetDeliberator attaches custom consensus adjudication.
+func (a *AutonomousReviewer) SetDeliberator(d *deliberation.AgentDeliberator) {
+	a.deliberator = d
 }
 
 // PlanReview analyzes patch metadata and formulates an optimal review strategy.
@@ -75,15 +93,16 @@ func (a *AutonomousReviewer) PlanReview(patches []*diff.FilePatch) *ReviewPlan {
 	return plan
 }
 
-// ExecuteAgenticReview runs multi-turn deliberation: rule evaluation, AST context inspection, and self-critique.
+// ExecuteAgenticReview runs multi-turn deliberation: rule evaluation, AI gateway synthesis, and consensus adjudication.
 func (a *AutonomousReviewer) ExecuteAgenticReview(ctx context.Context, reviewID, wsID uuid.UUID, patches []*diff.FilePatch) ([]models.CodeFinding, []AgentThought, error) {
 	thoughts := make([]AgentThought, 0)
 
 	// Turn 1: Planning
+	plan := a.PlanReview(patches)
 	thoughts = append(thoughts, AgentThought{
 		StepIndex:   1,
 		Phase:       "PLAN",
-		Observation: fmt.Sprintf("Assessing %d modified file patches for security and defect surfaces.", len(patches)),
+		Observation: fmt.Sprintf("Assessing %d modified file patches (%d high risk). Estimated token load: %d.", len(patches), len(plan.HighRiskFiles), plan.EstimatedTokens),
 		Action:      "Decomposing diffs and mapping sensitive file paths.",
 		Timestamp:   time.Now().UTC(),
 	})
@@ -98,22 +117,93 @@ func (a *AutonomousReviewer) ExecuteAgenticReview(ctx context.Context, reviewID,
 		Timestamp:   time.Now().UTC(),
 	})
 
-	// Turn 3: Self-Critique & Confidence Scoring Pass
-	verifiedFindings := make([]models.CodeFinding, 0, len(rawFindings))
-	for _, f := range rawFindings {
-		// Filter out potential test fixture false positives if line is purely in test data
-		if strings.HasSuffix(f.FilePath, "_test.go") && f.Category != "SECURITY_SECRET" {
-			// Lower severity or skip if non-secret test helper
-			f.Severity = models.SeverityLow
-		}
+	// Turn 3: Multi-Agent LLM Deliberation & Peer Consensus
+	var candidates []deliberation.CandidateFinding
+	var critiques []deliberation.PeerCritique
 
-		verifiedFindings = append(verifiedFindings, f)
+	for _, f := range rawFindings {
+		candidates = append(candidates, deliberation.ProposeFinding(
+			deliberation.PersonaSecurityAuditor,
+			f.FilePath,
+			f.StartLine,
+			f.EndLine,
+			f.Title,
+			f.Severity,
+			0.95,
+			f.Description,
+			f.SuggestedDiff,
+		))
+	}
+
+	// Deep Semantic LLM Analysis if gateway is attached
+	if a.llmGateway != nil && len(patches) > 0 {
+		var diffBuilder strings.Builder
+		for _, p := range patches {
+			diffBuilder.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", p.OldPath, p.NewPath))
+			for _, h := range p.Hunks {
+				diffBuilder.WriteString(h.Header + "\n")
+				for _, l := range h.Lines {
+					diffBuilder.WriteString(l.Content + "\n")
+				}
+			}
+		}
+		diffStr := diffBuilder.String()
+		if len(diffStr) > 0 {
+			aiResp, err := a.llmGateway.AnalyzeDiff(ctx, llm.ReviewRequest{
+				DiffContent: diffStr,
+			})
+			if err == nil && aiResp != nil {
+				for _, f := range aiResp.Findings {
+					sev := models.SeverityMedium
+					switch strings.ToUpper(f.Severity) {
+					case "CRITICAL":
+						sev = models.SeverityCritical
+					case "HIGH":
+						sev = models.SeverityHigh
+					case "LOW":
+						sev = models.SeverityLow
+					case "INFO":
+						sev = models.SeverityInfo
+					}
+					candidates = append(candidates, deliberation.ProposeFinding(
+						deliberation.PersonaSecurityAuditor,
+						f.FilePath,
+						f.StartLine,
+						f.EndLine,
+						f.Title,
+						sev,
+						0.90,
+						f.Description,
+						f.SuggestedDiff,
+					))
+				}
+			}
+		}
+	}
+
+	// Turn 4: Syntax Verification & Adjudication
+	verifiedFindings := make([]models.CodeFinding, 0)
+	if a.deliberator != nil && len(candidates) > 0 {
+		accepted, _ := a.deliberator.DeliberateExec(ctx, candidates, critiques)
+		for _, f := range accepted {
+			// Validate proposed code patch syntax
+			if f.SuggestedDiff != "" && a.syntaxValidator != nil {
+				syntaxRes := a.syntaxValidator.ValidateSuggestion(f.FilePath, f.SuggestedDiff)
+				if !syntaxRes.IsValid {
+					// Discard broken suggested diff to prevent proposing bad code to user
+					f.SuggestedDiff = ""
+				}
+			}
+			verifiedFindings = append(verifiedFindings, f)
+		}
+	} else {
+		verifiedFindings = rawFindings
 	}
 
 	thoughts = append(thoughts, AgentThought{
 		StepIndex:   3,
-		Phase:       "CRITIQUE",
-		Observation: fmt.Sprintf("Critique completed: %d findings verified and confidence scores calibrated.", len(verifiedFindings)),
+		Phase:       "DELIBERATION",
+		Observation: fmt.Sprintf("Deliberation completed: %d findings verified through multi-agent consensus and syntax validation.", len(verifiedFindings)),
 		Action:      "Synthesizing final findings with suggested remediations.",
 		Timestamp:   time.Now().UTC(),
 	})

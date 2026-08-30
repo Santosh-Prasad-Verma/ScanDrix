@@ -1,0 +1,17 @@
+FROM golang:1.22-alpine
+
+RUN apk add --no-cache git ca-certificates tzdata build-base
+
+WORKDIR /app
+
+# Install CompileDaemon for live reload in dev
+RUN go install github.com/githubnemo/CompileDaemon@latest
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+EXPOSE 8080 8081
+
+CMD ["CompileDaemon", "--build=go build -o bin/scandrix-api ./cmd/api", "--command=./bin/scandrix-api"]

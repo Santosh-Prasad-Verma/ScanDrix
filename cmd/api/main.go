@@ -12,6 +12,11 @@ import (
 
 	"github.com/scandrix/backend/internal/api"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/auth/cliauth"
+	"github.com/scandrix/backend/internal/auth/mailer"
+	"github.com/scandrix/backend/internal/auth/oauth"
+	"github.com/scandrix/backend/internal/billing/razorpay"
+	"github.com/scandrix/backend/internal/cache"
 	"github.com/scandrix/backend/internal/config"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/enterprise/scim"
@@ -45,23 +50,90 @@ func main() {
 	defer dbClient.Close()
 	repo := database.NewRepository(dbClient)
 
+	// Redis Cache & Distributed Lock Client
+	if cfg.RedisURL != "" {
+		rc, err := cache.NewClient(ctx, cfg.RedisURL)
+		if err != nil {
+			slog.Warn("Redis connection deferred", "error", err)
+		} else {
+			defer rc.Close()
+			slog.Info("Redis connection pool initialized for distributed caching")
+		}
+	}
+
 	// Auth, Storage, AI, Rules, SCIM, and Streaming
-	authenticator := auth.NewAuthenticator("scandrix-super-secret-local-jwt")
+	authenticator := auth.NewAuthenticator(cfg.JWTSecret)
 	streamHub := review.NewStreamHub()
 	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
-	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint)
+
+	aiGatewayOpts := make([]llm.GatewayOption, 0)
+	if cfg.OpenRouterAPIKey != "" {
+		aiGatewayOpts = append(aiGatewayOpts,
+			llm.WithOpenRouter(cfg.OpenRouterAPIKey),
+			llm.WithOpenRouterModels(
+				cfg.AIModelDefault,
+				cfg.AIModelSecurity,
+				cfg.AIModelLogic,
+				cfg.AIModelTriage,
+				cfg.AIModelThreatModel,
+				cfg.AIModelArbiter,
+				cfg.AIModelSynthesizer,
+			),
+		)
+		slog.Info("OpenRouter primary & fallback multi-model chain attached to API",
+			"default", cfg.AIModelDefault,
+			"security", cfg.AIModelSecurity,
+			"logic", cfg.AIModelLogic,
+			"triage", cfg.AIModelTriage,
+		)
+	}
+
+	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint, aiGatewayOpts...)
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
 	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
-	scimService := scim.NewSCIMService()
+	scimService := scim.NewSCIMService(repo)
 
-	// Build Master Router with full Domain Controllers (Auth, Reviews, Rules, Workspaces, Usage, SCIM)
+	// Device Flow, OAuth & Email Mailer Services
+	cliStore := database.NewPostgresCLISessionStore(repo)
+	deviceFlow := cliauth.NewDeviceFlowManager(cliStore, cfg.AppBaseURL)
+	oauthService := oauth.NewOAuthService(
+		oauth.ProviderConfig{
+			ClientID:     cfg.GitHubOAuthClientID,
+			ClientSecret: cfg.GitHubOAuthClientSecret,
+			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/github/callback", cfg.AppBaseURL),
+		},
+		oauth.ProviderConfig{
+			ClientID:     cfg.GitLabOAuthClientID,
+			ClientSecret: cfg.GitLabOAuthClientSecret,
+			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/gitlab/callback", cfg.AppBaseURL),
+		},
+	)
+	emailSender := mailer.NewSender(mailer.SMTPConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		From:     cfg.SMTPFrom,
+	})
+
+	budgetLimiter := llm.NewTokenBudgetLimiter()
+	billingService := razorpay.NewBillingService(repo, budgetLimiter, emailSender, cfg.AppBaseURL, cfg.RazorpayKeyID, cfg.RazorpayKeySecret, cfg.RazorpayWebhookSecret)
+
+	// Build Master Router with full Domain Controllers (Auth, Reviews, Rules, Workspaces, Usage, SCIM, Billing)
 	r := api.BuildRouter(api.RouterConfig{
-		Repo:         repo,
-		AuthService:  authenticator,
-		Orchestrator: orchestrator,
-		StreamHub:    streamHub,
-		Evaluator:    evaluator,
-		SCIMService:  scimService,
+		Repo:           repo,
+		AuthService:    authenticator,
+		Orchestrator:   orchestrator,
+		StreamHub:      streamHub,
+		Evaluator:      evaluator,
+		SCIMService:    scimService,
+		DeviceFlow:     deviceFlow,
+		OAuthService:   oauthService,
+		Mailer:         emailSender,
+		BillingService: billingService,
+		BudgetLimiter:  budgetLimiter,
+		AppBaseURL:     cfg.AppBaseURL,
+		JWTSecret:      cfg.JWTSecret,
 	})
 
 	server := &http.Server{

@@ -23,7 +23,7 @@ func NewClient(ctx context.Context, databaseURL string) (*Client, error) {
 	}
 
 	config.MaxConns = 25
-	config.MinConns = 5
+	config.MinConns = 1
 	config.MaxConnLifetime = 1 * time.Hour
 	config.MaxConnIdleTime = 15 * time.Minute
 	config.HealthCheckPeriod = 1 * time.Minute
@@ -33,8 +33,8 @@ func NewClient(ctx context.Context, databaseURL string) (*Client, error) {
 		return nil, fmt.Errorf("failed to initialize connection pool: %w", err)
 	}
 
-	// Ping database with timeout
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Ping database with timeout (allow sufficient time for remote pooler TLS handshake)
+	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	if err := pool.Ping(pingCtx); err != nil {
@@ -59,7 +59,7 @@ func (c *Client) ExecWithTenant(ctx context.Context, tenantID uuid.UUID, fn func
 	if err != nil {
 		return fmt.Errorf("failed to begin tenant transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Set session tenant ID for RLS policies (Master Rule 4.4)
 	setTenantSQL := `SELECT set_config('app.current_tenant_id', $1, true)`

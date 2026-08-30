@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/llm"
 )
 
@@ -17,10 +19,11 @@ type ProviderClient interface {
 
 // FallbackRouter orchestrates multi-cloud LLM routing with resilience and circuit breaking.
 type FallbackRouter struct {
-	mu          sync.RWMutex
-	clients     map[LLMProviderType]ProviderClient
-	breakers    map[LLMProviderType]*llm.CircuitBreaker
-	byokManager *BYOKManager
+	mu            sync.RWMutex
+	clients       map[LLMProviderType]ProviderClient
+	breakers      map[LLMProviderType]*llm.CircuitBreaker
+	byokManager   *BYOKManager
+	budgetLimiter *llm.TokenBudgetLimiter
 }
 
 // NewFallbackRouter initializes the multi-provider orchestrator.
@@ -31,7 +34,22 @@ func NewFallbackRouter(byok *BYOKManager) *FallbackRouter {
 		byokManager: byok,
 	}
 
-	for _, p := range []LLMProviderType{ProviderAnthropic, ProviderOpenAI, ProviderGemini, ProviderNovita} {
+	// NOTE: keep this list in sync with every Provider* constant used in
+	// defaultCatalog (orchestrator/catalog.go). Missing an entry here just
+	// means that provider never gets circuit-breaker protection — it won't
+	// crash, but it defeats the purpose of the breaker.
+	allProviders := []LLMProviderType{
+		ProviderAnthropic, ProviderOpenAI, ProviderGemini, ProviderNovita,
+		ProviderDeepSeek, ProviderBedrock, ProviderVertex, ProviderOpenRouter,
+		ProviderOllama, ProviderVLLM,
+		ProviderMoonshot, ProviderAlibaba, ProviderMiniMax, ProviderTencent,
+		ProviderXAI, ProviderMistral,
+		ProviderZAI, // Z.ai — GLM model family (Zhipu AI)
+		ProviderMeta, ProviderNvidia, ProviderGroq, ProviderTogether,
+		ProviderFireworks, ProviderDeepInfra, ProviderCerebras,
+		ProviderSambaNova, ProviderCohere, ProviderPerplexity,
+	}
+	for _, p := range allProviders {
 		router.breakers[p] = llm.NewCircuitBreaker(3, 5*time.Second)
 	}
 
@@ -45,6 +63,21 @@ func (r *FallbackRouter) RegisterClient(provider LLMProviderType, client Provide
 	r.clients[provider] = client
 }
 
+// SetBudgetLimiter assigns the token and burst rate limiter.
+func (r *FallbackRouter) SetBudgetLimiter(limiter *llm.TokenBudgetLimiter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.budgetLimiter = limiter
+}
+
+// defaultPrimaryModel is the router's baseline model when no preference is
+// given by the caller. Update this centrally when the "best default" shifts.
+const defaultPrimaryModel = "claude-sonnet-5"
+
+// defaultFallbackChain is used only when the caller supplies neither a
+// PreferredModel nor a FallbackChain of their own.
+var defaultFallbackChain = []string{"gpt-5.6-terra", "gemini-3.1-pro"}
+
 // Execute orchestrates inference with automatic fallback across models.
 func (r *FallbackRouter) Execute(ctx context.Context, req InferenceRequest) (*InferenceResponse, error) {
 	startTime := time.Now()
@@ -53,16 +86,18 @@ func (r *FallbackRouter) Execute(ctx context.Context, req InferenceRequest) (*In
 	if req.PreferredModel != "" {
 		modelsToTry = append(modelsToTry, req.PreferredModel)
 	} else {
-		modelsToTry = append(modelsToTry, "claude-3-7-sonnet")
+		modelsToTry = append(modelsToTry, defaultPrimaryModel)
 	}
 	modelsToTry = append(modelsToTry, req.FallbackChain...)
 
 	// Default fallback chain if none specified
 	if len(modelsToTry) == 1 {
-		if modelsToTry[0] == "claude-3-7-sonnet" {
-			modelsToTry = append(modelsToTry, "gpt-4o", "gemini-2.5-pro")
+		if modelsToTry[0] == defaultPrimaryModel {
+			modelsToTry = append(modelsToTry, defaultFallbackChain...)
 		} else {
-			modelsToTry = append(modelsToTry, "claude-3-7-sonnet", "gemini-2.5-pro")
+			// Caller picked a custom PreferredModel but gave no chain —
+			// still fall back through our known-good baseline models.
+			modelsToTry = append(modelsToTry, defaultPrimaryModel, defaultFallbackChain[len(defaultFallbackChain)-1])
 		}
 	}
 
@@ -70,9 +105,34 @@ func (r *FallbackRouter) Execute(ctx context.Context, req InferenceRequest) (*In
 	fallbackUsed := false
 
 	for i, model := range modelsToTry {
+		// 1. Model Entitlement Verification (Kodus parity)
+		// Community/Free tier is restricted to low-cost/trial models unless the customer
+		// brings their own BYOK API key. Pro/Team tier has access to standard frontier models.
+		// Enterprise tier has access to all models including ultra-flagships.
+		hasBYOK := req.TenantAPIKey != ""
+		planTier := license.LicenseTier(req.PlanTier)
+		if allowed, reason := license.CanAccessModel(planTier, model, hasBYOK); !allowed {
+			lastErr = errors.New(reason)
+			continue
+		}
+
+		// 2. Token Budget & Rate Limiting Enforcement
+		r.mu.RLock()
+		limiter := r.budgetLimiter
+		r.mu.RUnlock()
+		if limiter != nil && req.WorkspaceID != uuid.Nil {
+			estimatedTokens := int64(req.MaxTokens)
+			if estimatedTokens <= 0 {
+				estimatedTokens = 1000
+			}
+			if err := limiter.ConsumeTokens(req.WorkspaceID, estimatedTokens); err != nil {
+				return nil, fmt.Errorf("token rate limit exceeded: %w", err)
+			}
+		}
+
 		profile, ok := GetModelProfile(model)
 		if !ok {
-			profile = defaultCatalog["gpt-4o"]
+			profile = defaultCatalog[defaultPrimaryModel]
 		}
 
 		r.mu.RLock()
@@ -82,6 +142,13 @@ func (r *FallbackRouter) Execute(ctx context.Context, req InferenceRequest) (*In
 
 		if !hasClient {
 			lastErr = fmt.Errorf("no provider registered for %s", profile.Provider)
+			continue
+		}
+
+		if breaker == nil {
+			// Provider wasn't wired into allProviders at startup — fail
+			// loudly instead of nil-pointer panicking on breaker.Allow().
+			lastErr = fmt.Errorf("no circuit breaker configured for provider %s", profile.Provider)
 			continue
 		}
 

@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -49,6 +50,32 @@ type InlineCommentSpec struct {
 	Body      string `json:"body"`
 }
 
+// WebhookEventType identifies normalized event kinds across all SCMs.
+type WebhookEventType string
+
+const (
+	WebhookEventPullRequest        WebhookEventType = "pull_request"
+	WebhookEventPush               WebhookEventType = "push"
+	WebhookEventIssueComment       WebhookEventType = "issue_comment"
+	WebhookEventReviewComment      WebhookEventType = "review_comment"
+	WebhookEventCommitStatus       WebhookEventType = "commit_status"
+	WebhookEventPing               WebhookEventType = "ping"
+)
+
+// WebhookEventData represents a normalized event across GitHub, GitLab, Bitbucket, Azure DevOps, and Forgejo.
+type WebhookEventData struct {
+	Type         WebhookEventType   `json:"type"`
+	Action       string             `json:"action"` // opened, synchronize, closed, edited, created
+	Repository   string             `json:"repository"`
+	DefaultBranch string            `json:"default_branch"`
+	PullRequest  *PullRequestDetails `json:"pull_request,omitempty"`
+	CommitSHA    string             `json:"commit_sha,omitempty"`
+	Sender       string             `json:"sender,omitempty"`
+	CommentBody  string             `json:"comment_body,omitempty"`
+	CommentID    int64              `json:"comment_id,omitempty"`
+	RawPayload   json.RawMessage    `json:"raw_payload,omitempty"`
+}
+
 // SCMAdapter defines the unified interface across all SCM platforms (GitHub, GitLab, Bitbucket, Azure, Forgejo).
 type SCMAdapter interface {
 	Provider() models.SCMProvider
@@ -59,6 +86,10 @@ type SCMAdapter interface {
 	SetCommitStatus(ctx context.Context, repo, commitSHA, contextName string, state CommitStatusState, targetURL, description string) error
 	ListBranches(ctx context.Context, repo string) ([]string, error)
 	GetFileContent(ctx context.Context, repo, ref, path string) ([]byte, error)
+	ApprovePullRequest(ctx context.Context, repo string, pullNumber int, message string) error
+	MergePullRequest(ctx context.Context, repo string, pullNumber int, mergeMethod string) error
+	VerifyWebhookSignature(secret string, payload []byte, signatureHeader string) bool
+	ParseWebhookEvent(eventType string, payload []byte) (*WebhookEventData, error)
 }
 
 // AdapterConfig holds credentials and endpoints to construct an SCM adapter.

@@ -45,3 +45,38 @@ type APIKeyResponse struct {
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
+
+// RefreshTokenRequest defines payload for rotating tokens.
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// LogoutRequest defines payload for invalidating refresh tokens.
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// ForgotPasswordRequest requests a time-limited reset link/token.
+type ForgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+// ResetPasswordRequest supplies the signed token and new credential.
+type ResetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+// CompleteDeviceLoginRequest confirms device user code in the web dashboard.
+type CompleteDeviceLoginRequest struct {
+	UserCode string `json:"user_code"`
+}
+
+// OAuthCallbackRequest receives authorization code from SCM provider redirect.
+type OAuthCallbackRequest struct {
+	Code  string `json:"code"`
+	State string `json:"state,omitempty"`
+}
+
+
+

@@ -9,15 +9,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/pkg/models"
 )
 
 // CodeManagementController manages tracked repositories, branches, and code structures.
-type CodeManagementController struct{}
+type CodeManagementController struct {
+	repo *database.Repository
+}
 
-// NewCodeManagementController initializes the repository management controller.
-func NewCodeManagementController() *CodeManagementController {
-	return &CodeManagementController{}
+// NewCodeManagementController initializes the repository management controller with database persistence.
+func NewCodeManagementController(repo *database.Repository) *CodeManagementController {
+	return &CodeManagementController{repo: repo}
 }
 
 // Routes mounts repository management routes.
@@ -39,29 +42,32 @@ func (c *CodeManagementController) handleListRepositories(w http.ResponseWriter,
 		return
 	}
 
+	var repos []models.TrackedRepository
+	if c.repo != nil {
+		var err error
+		repos, err = c.repo.ListTrackedRepositories(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed listing repositories"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	res := make([]dtos.RepositoryResponse, 0, len(repos))
+	for _, repo := range repos {
+		res = append(res, dtos.RepositoryResponse{
+			ID:            repo.ID,
+			WorkspaceID:   repo.WorkspaceID,
+			Provider:      repo.Provider,
+			ExternalID:    repo.ExternalID,
+			NamespacePath: repo.NamespacePath,
+			DefaultBranch: repo.DefaultBranch,
+			IsActive:      repo.IsActive,
+			CreatedAt:     repo.CreatedAt,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]dtos.RepositoryResponse{
-		{
-			ID:            uuid.MustParse("00000000-0000-0000-0003-000000000001"),
-			WorkspaceID:   wsID,
-			Provider:      models.ProviderGitHub,
-			ExternalID:    "999001",
-			NamespacePath: "acme/payment-service",
-			DefaultBranch: "main",
-			IsActive:      true,
-			CreatedAt:     time.Now().AddDate(0, -1, 0),
-		},
-		{
-			ID:            uuid.MustParse("00000000-0000-0000-0003-000000000002"),
-			WorkspaceID:   wsID,
-			Provider:      models.ProviderGitHub,
-			ExternalID:    "999002",
-			NamespacePath: "acme/auth-service",
-			DefaultBranch: "main",
-			IsActive:      true,
-			CreatedAt:     time.Now().AddDate(0, -2, 0),
-		},
-	})
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (c *CodeManagementController) handleTrackRepository(w http.ResponseWriter, r *http.Request) {
@@ -83,19 +89,42 @@ func (c *CodeManagementController) handleTrackRepository(w http.ResponseWriter, 
 	if req.Provider == "" {
 		req.Provider = models.ProviderGitHub
 	}
+	if req.ExternalID == "" {
+		req.ExternalID = req.NamespacePath
+	}
 
-	repoID := uuid.New()
+	var repo *models.TrackedRepository
+	if c.repo != nil {
+		var err error
+		repo, err = c.repo.TrackRepository(r.Context(), wsID, req.Provider, req.ExternalID, req.NamespacePath, req.DefaultBranch)
+		if err != nil {
+			http.Error(w, `{"error":"failed tracking repository"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		repo = &models.TrackedRepository{
+			ID:            uuid.New(),
+			WorkspaceID:   wsID,
+			Provider:      req.Provider,
+			ExternalID:    req.ExternalID,
+			NamespacePath: req.NamespacePath,
+			DefaultBranch: req.DefaultBranch,
+			IsActive:      true,
+			CreatedAt:     time.Now().UTC(),
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(dtos.RepositoryResponse{
-		ID:            repoID,
+		ID:            repo.ID,
 		WorkspaceID:   wsID,
-		Provider:      req.Provider,
-		ExternalID:    req.ExternalID,
-		NamespacePath: req.NamespacePath,
-		DefaultBranch: req.DefaultBranch,
-		IsActive:      true,
-		CreatedAt:     time.Now().UTC(),
+		Provider:      repo.Provider,
+		ExternalID:    repo.ExternalID,
+		NamespacePath: repo.NamespacePath,
+		DefaultBranch: repo.DefaultBranch,
+		IsActive:      repo.IsActive,
+		CreatedAt:     repo.CreatedAt,
 	})
 }
 
@@ -103,21 +132,16 @@ func (c *CodeManagementController) handleListBranches(w http.ResponseWriter, r *
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.BranchListResponse{
 		DefaultBranch: "main",
-		Branches:      []string{"main", "staging", "develop", "feat/oauth2-pkce", "fix/db-pool-leak"},
+		Branches:      []string{"main", "staging", "develop"},
 	})
 }
 
 func (c *CodeManagementController) handleGetFileTree(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.FileTreeResponse{
-		CommitSHA: "abcdef1234567890",
+		CommitSHA: "head",
 		Entries: []dtos.FileTreeEntry{
-			{Path: "cmd/api/main.go", Type: "blob", Size: 4096},
-			{Path: "internal/auth", Type: "tree"},
-			{Path: "internal/auth/auth.go", Type: "blob", Size: 3200},
-			{Path: "internal/rules/catalog.go", Type: "blob", Size: 5120},
-			{Path: "go.mod", Type: "blob", Size: 840},
-			{Path: "Dockerfile", Type: "blob", Size: 650},
+			{Path: "README.md", Type: "blob", Size: 1024},
 		},
 	})
 }

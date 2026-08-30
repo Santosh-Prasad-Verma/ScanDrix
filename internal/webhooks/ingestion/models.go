@@ -11,11 +11,12 @@ import (
 type WebhookAction string
 
 const (
-	ActionOpened      WebhookAction = "OPENED"
-	ActionSynchronize WebhookAction = "SYNCHRONIZE"
-	ActionReopened    WebhookAction = "REOPENED"
-	ActionClosed      WebhookAction = "CLOSED"
-	ActionIgnored     WebhookAction = "IGNORED"
+	ActionOpened         WebhookAction = "OPENED"
+	ActionSynchronize    WebhookAction = "SYNCHRONIZE"
+	ActionReopened       WebhookAction = "REOPENED"
+	ActionClosed         WebhookAction = "CLOSED"
+	ActionCommentCreated WebhookAction = "COMMENT_CREATED"
+	ActionIgnored        WebhookAction = "IGNORED"
 )
 
 // NormalizedWebhookEvent translates vendor-specific webhook payloads into a unified format.
@@ -30,6 +31,10 @@ type NormalizedWebhookEvent struct {
 	HeadSHA           string             `json:"head_sha"`
 	BaseSHA           string             `json:"base_sha"`
 	Sender            string             `json:"sender"`
+	CommentID         int64              `json:"comment_id,omitempty"`
+	CommentBody       string             `json:"comment_body,omitempty"`
+	CommentFilePath   string             `json:"comment_file_path,omitempty"`
+	DiffHunk          string             `json:"diff_hunk,omitempty"`
 	RawPayload        []byte             `json:"raw_payload"`
 	ReceivedAt        time.Time          `json:"received_at"`
 }

@@ -8,11 +8,11 @@ info:
     and cryptographic In-Toto / Ed25519 Assurance Manifest generation.
   contact:
     name: Scandrix Enterprise Architecture
-    url: https://scandrix.ai/support
+    url: https://scandrix.dev/support
   license:
     name: Proprietary
 servers:
-  - url: https://api.scandrix.ai/api/v1
+  - url: https://api.scandrix.dev/api/v1
     description: Production Global Gateway
   - url: http://localhost:8080/api/v1
     description: Local Development Server
@@ -459,7 +459,7 @@ components:
       properties:
         type:
           type: string
-          example: https://errors.scandrix.ai/AUTH_FORBIDDEN
+          example: https://errors.scandrix.dev/AUTH_FORBIDDEN
         title:
           type: string
           example: Forbidden
