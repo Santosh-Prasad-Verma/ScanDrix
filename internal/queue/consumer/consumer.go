@@ -48,12 +48,17 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 		claimed, err := c.inbox.ClaimMessage(ctx, taskIDStr, c.workerID)
 		if err != nil || !claimed {
 			return TaskExecutionResult{
-				TaskID:    task.TaskID,
-				Status:    TaskStatusDuplicate,
-				Duration:  time.Since(start),
-				ErrorMsg:  "task already claimed or processed by another consumer",
-				Timestamp: time.Now().UTC(),
+				TaskID:       task.TaskID,
+				Status:       TaskStatusDuplicate,
+				AttemptCount: task.AttemptCount,
+				Duration:     time.Since(start),
+				ErrorMsg:     "task already claimed or processed by another consumer",
+				Timestamp:    time.Now().UTC(),
 			}
+		}
+		inboxAttempts := c.inbox.GetAttemptCount(taskIDStr, c.workerID)
+		if inboxAttempts > task.AttemptCount {
+			task.AttemptCount = inboxAttempts
 		}
 	}
 
@@ -61,8 +66,14 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 	_, err := c.executor(ctx, task)
 	if err != nil {
 		task.AttemptCount++
+		if c.inbox != nil {
+			inboxAttempts := c.inbox.GetAttemptCount(taskIDStr, c.workerID)
+			if inboxAttempts > task.AttemptCount {
+				task.AttemptCount = inboxAttempts
+			}
+		}
 
-		// 3. Check if retries exhausted (max 5 retries)
+		// 3. Check if retries exhausted
 		if task.AttemptCount >= c.cfg.MaxRetries {
 			c.mu.Lock()
 			c.deadLetters = append(c.deadLetters, task)
@@ -73,25 +84,27 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 			}
 
 			return TaskExecutionResult{
-				TaskID:    task.TaskID,
-				Status:    TaskStatusDeadLetter,
-				Duration:  time.Since(start),
-				ErrorMsg:  fmt.Sprintf("max retries (%d) exceeded: %v", c.cfg.MaxRetries, err),
-				Timestamp: time.Now().UTC(),
+				TaskID:       task.TaskID,
+				Status:       TaskStatusDeadLetter,
+				AttemptCount: task.AttemptCount,
+				Duration:     time.Since(start),
+				ErrorMsg:     fmt.Sprintf("max retries (%d) exceeded: %v", c.cfg.MaxRetries, err),
+				Timestamp:    time.Now().UTC(),
 			}
 		}
 
-		// Release lease for next retry attempt with exponential backoff
+		// Release lease for next retry attempt
 		if c.inbox != nil {
-			_ = c.inbox.ReleaseMessage(ctx, taskIDStr, c.workerID)
+			_ = c.inbox.ReleaseMessage(ctx, taskIDStr, c.workerID, task.AttemptCount)
 		}
 
 		return TaskExecutionResult{
-			TaskID:    task.TaskID,
-			Status:    TaskStatusRetry,
-			Duration:  time.Since(start),
-			ErrorMsg:  err.Error(),
-			Timestamp: time.Now().UTC(),
+			TaskID:       task.TaskID,
+			Status:       TaskStatusRetry,
+			AttemptCount: task.AttemptCount,
+			Duration:     time.Since(start),
+			ErrorMsg:     err.Error(),
+			Timestamp:    time.Now().UTC(),
 		}
 	}
 
@@ -101,10 +114,11 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 	}
 
 	return TaskExecutionResult{
-		TaskID:    task.TaskID,
-		Status:    TaskStatusSuccess,
-		Duration:  time.Since(start),
-		Timestamp: time.Now().UTC(),
+		TaskID:       task.TaskID,
+		Status:       TaskStatusSuccess,
+		AttemptCount: task.AttemptCount,
+		Duration:     time.Since(start),
+		Timestamp:    time.Now().UTC(),
 	}
 }
 

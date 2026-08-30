@@ -33,15 +33,32 @@ func (d *InboxDeduplicator) ClaimMessage(ctx context.Context, messageID, consume
 		if rec.Status == InboxCompleted || rec.Status == InboxProcessing {
 			return false, nil // Duplicate detected
 		}
+		// Message was released for retry or failed; reclaim
+		rec.Status = InboxProcessing
+		rec.ProcessedAt = time.Now().UTC()
+		return true, nil
 	}
 
 	d.records[key] = &InboxRecord{
-		MessageID:   messageID,
-		ConsumerID:  consumerID,
-		Status:      InboxProcessing,
-		ProcessedAt: time.Now().UTC(),
+		MessageID:    messageID,
+		ConsumerID:   consumerID,
+		Status:       InboxProcessing,
+		AttemptCount: 0,
+		ProcessedAt:  time.Now().UTC(),
 	}
 	return true, nil
+}
+
+// GetAttemptCount returns the recorded attempt count for a message.
+func (d *InboxDeduplicator) GetAttemptCount(messageID, consumerID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%s", messageID, consumerID)
+	if rec, exists := d.records[key]; exists {
+		return rec.AttemptCount
+	}
+	return 0
 }
 
 // MarkCompleted transitions an inbox record to COMPLETED.
@@ -78,13 +95,20 @@ func (d *InboxDeduplicator) MarkFailed(ctx context.Context, messageID, consumerI
 	return nil
 }
 
-// ReleaseMessage removes or resets the lock so a message can be retried.
-func (d *InboxDeduplicator) ReleaseMessage(ctx context.Context, messageID, consumerID string) error {
+// ReleaseMessage marks a message for retry while preserving its attempt history.
+func (d *InboxDeduplicator) ReleaseMessage(ctx context.Context, messageID, consumerID string, attemptCount ...int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	key := fmt.Sprintf("%s:%s", messageID, consumerID)
-	delete(d.records, key)
+	if rec, exists := d.records[key]; exists {
+		rec.Status = InboxRetry
+		if len(attemptCount) > 0 {
+			rec.AttemptCount = attemptCount[0]
+		}
+	}
 	return nil
 }
+
+
 

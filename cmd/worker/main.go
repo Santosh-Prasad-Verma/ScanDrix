@@ -22,7 +22,6 @@ import (
 	"github.com/scandrix/backend/internal/rules"
 	"github.com/scandrix/backend/internal/storage"
 	"github.com/scandrix/backend/pkg/models"
-	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
@@ -218,19 +217,45 @@ func runConsumer(ctx context.Context, broker *queue.Broker, pool *consumer.Worke
 				continue
 			}
 
-			go func(d amqp.Delivery, t consumer.ReviewTaskPayload) {
-				res := rConsumer.ProcessTask(ctx, t)
-				switch res.Status {
-				case consumer.TaskStatusSuccess, consumer.TaskStatusDuplicate:
-					_ = d.Ack(false)
-				case consumer.TaskStatusDeadLetter:
-					slog.Error("Task exceeded max retries, moved to DLQ", "task_id", t.TaskID, "error", res.ErrorMsg)
-					_ = d.Ack(false)
-				case consumer.TaskStatusRetry:
-					slog.Warn("Task execution temporary error, delaying retry", "task_id", t.TaskID, "attempt", t.AttemptCount, "error", res.ErrorMsg)
-					_ = d.Nack(false, true)
-				}
-			}(msg, task)
+			delivery := msg
+			pool.SubmitJob(consumer.WorkerJob{
+				Task: task,
+				OnComplete: func(res consumer.TaskExecutionResult) {
+					switch res.Status {
+					case consumer.TaskStatusSuccess, consumer.TaskStatusDuplicate:
+						_ = delivery.Ack(false)
+					case consumer.TaskStatusDeadLetter:
+						slog.Error("Task exceeded max retries, moved to DLQ", "task_id", task.TaskID, "attempts", res.AttemptCount, "error", res.ErrorMsg)
+						if broker != nil {
+							task.AttemptCount = res.AttemptCount
+							dlqPayload, err := json.Marshal(task)
+							if err == nil {
+								_ = broker.Publish(context.Background(), queue.ReviewTaskQueue+".dlq", dlqPayload)
+							}
+						}
+						_ = delivery.Ack(false)
+					case consumer.TaskStatusRetry:
+						slog.Warn("Task execution temporary error, republishing with retry state", "task_id", task.TaskID, "attempt", res.AttemptCount, "error", res.ErrorMsg)
+						republished := false
+						if broker != nil {
+							task.AttemptCount = res.AttemptCount
+							updatedPayload, err := json.Marshal(task)
+							if err == nil {
+								delayMs := int64(res.AttemptCount) * 5000
+								if err := broker.PublishDelayed(context.Background(), queue.ReviewTaskQueue, updatedPayload, delayMs); err == nil {
+									republished = true
+								}
+							}
+						}
+						if republished {
+							_ = delivery.Ack(false)
+						} else {
+							_ = delivery.Nack(false, true)
+						}
+					}
+				},
+			})
 		}
 	}
 }
+

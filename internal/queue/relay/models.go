@@ -40,15 +40,17 @@ const (
 	InboxProcessing InboxStatus = "PROCESSING"
 	InboxCompleted  InboxStatus = "COMPLETED"
 	InboxFailed     InboxStatus = "FAILED"
+	InboxRetry      InboxStatus = "RETRY"
 )
 
 // InboxRecord enforces idempotency across asynchronous consumers.
 type InboxRecord struct {
-	MessageID   string      `json:"message_id"`
-	ConsumerID  string      `json:"consumer_id"`
-	Status      InboxStatus `json:"status"`
-	LastError   string      `json:"last_error,omitempty"`
-	ProcessedAt time.Time   `json:"processed_at"`
+	MessageID    string      `json:"message_id"`
+	ConsumerID   string      `json:"consumer_id"`
+	Status       InboxStatus `json:"status"`
+	AttemptCount int         `json:"attempt_count"`
+	LastError    string      `json:"last_error,omitempty"`
+	ProcessedAt  time.Time   `json:"processed_at"`
 }
 
 // OutboxLagStats reports queue health and outbox latency metrics.
