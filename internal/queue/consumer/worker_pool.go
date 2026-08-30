@@ -12,6 +12,8 @@ type WorkerPool struct {
 	jobChan     chan WorkerJob
 	results     chan TaskExecutionResult
 	wg          sync.WaitGroup
+	mu          sync.RWMutex
+	isClosing   bool
 }
 
 // NewWorkerPool initializes the concurrent worker pool.
@@ -35,22 +37,39 @@ func (p *WorkerPool) Start(ctx context.Context) {
 	}
 }
 
-// Submit queues a task for immediate worker pickup.
-func (p *WorkerPool) Submit(task ReviewTaskPayload) {
-	p.SubmitJob(WorkerJob{Task: task})
+// Submit queues a task for immediate worker pickup. Returns false if the pool is stopping.
+func (p *WorkerPool) Submit(task ReviewTaskPayload) bool {
+	return p.SubmitJob(WorkerJob{Task: task})
 }
 
-// SubmitJob queues a task with an optional completion callback.
-func (p *WorkerPool) SubmitJob(job WorkerJob) {
+// SubmitJob queues a task with an optional completion callback. Returns false if the pool is stopping.
+func (p *WorkerPool) SubmitJob(job WorkerJob) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.isClosing {
+		return false
+	}
+
 	p.jobChan <- job
+	return true
 }
 
 // Stop gracefully terminates workers after draining and completing all queued tasks.
 func (p *WorkerPool) Stop() {
+	p.mu.Lock()
+	if p.isClosing {
+		p.mu.Unlock()
+		return
+	}
+	p.isClosing = true
 	close(p.jobChan)
+	p.mu.Unlock()
+
 	p.wg.Wait()
 	close(p.results)
 }
+
 
 func (p *WorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()

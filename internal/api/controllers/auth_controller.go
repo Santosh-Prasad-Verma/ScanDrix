@@ -189,7 +189,9 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 	displayName := req.Email
 
 	// Update last_active_at activity timestamp
-	_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
+	if err := c.repo.TouchAccountActivity(r.Context(), wsID, user.Email); err != nil {
+		slog.Warn("Failed touching user last_active_at on login", "workspace_id", wsID, "email", user.Email, "error", err)
+	}
 
 	accessToken, refreshToken, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -255,11 +257,6 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	if err := c.repo.CreateWorkspace(r.Context(), ws); err != nil {
-		slog.Error("Failed creating workspace for user", "error", err, "email", req.Email)
-		http.Error(w, `{"error":"failed to initialize workspace for registration"}`, http.StatusInternalServerError)
-		return
-	}
 
 	pwHash, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -267,7 +264,12 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	user, err := c.repo.CreateUser(r.Context(), req.Email, pwHash, "owner", &wsID)
+	displayName := req.DisplayName
+	if displayName == "" {
+		displayName = req.Email
+	}
+
+	user, err := c.repo.CreateWorkspaceWithUser(r.Context(), ws, req.Email, pwHash, "owner", displayName)
 	if err != nil {
 		slog.Error("User registration failed", "email", req.Email, "error", err)
 		http.Error(w, `{"error":"user registration failed: an account with this email may already exist or parameters are invalid"}`, http.StatusConflict)
@@ -348,7 +350,9 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 	userRole := models.UserRole(user.Role)
 
 	// Update last_active_at
-	_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
+	if err := c.repo.TouchAccountActivity(r.Context(), wsID, user.Email); err != nil {
+		slog.Warn("Failed touching user last_active_at on refresh", "workspace_id", wsID, "email", user.Email, "error", err)
+	}
 
 	newAccess, newRefresh, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -713,7 +717,7 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 	if c.repo != nil {
 		user, err := c.repo.GetUserByEmail(r.Context(), oauthProfile.Email)
 		if err != nil {
-			// New user: create a personal workspace first
+			// New OAuth user: atomically create personal workspace and user account
 			newWsID := uuid.New()
 			wsName := oauthProfile.DisplayName + "'s Workspace"
 			if oauthProfile.DisplayName == "" {
@@ -728,13 +732,13 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
 			}
-			if err := c.repo.CreateWorkspace(r.Context(), ws); err != nil {
-				slog.Error("Failed creating workspace for OAuth user", "error", err, "email", oauthProfile.Email)
-			}
 
-			// Create account with a random placeholder password and linked workspace
 			placeholderHash, _ := auth.HashPassword(uuid.New().String())
-			user, err = c.repo.CreateUser(r.Context(), oauthProfile.Email, placeholderHash, "owner", &newWsID)
+			displayName := oauthProfile.DisplayName
+			if displayName == "" {
+				displayName = oauthProfile.Username
+			}
+			user, err = c.repo.CreateWorkspaceWithUser(r.Context(), ws, oauthProfile.Email, placeholderHash, "owner", displayName)
 			if err != nil {
 				slog.Error("Failed creating user account from OAuth", "error", err, "email", oauthProfile.Email)
 				http.Error(w, `{"error":"failed creating user account from OAuth"}`, http.StatusInternalServerError)
@@ -749,7 +753,9 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		userRole = models.UserRole(user.Role)
-		_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
+		if err := c.repo.TouchAccountActivity(r.Context(), wsID, user.Email); err != nil {
+			slog.Warn("Failed touching user last_active_at on OAuth", "workspace_id", wsID, "email", user.Email, "error", err)
+		}
 	} else {
 		userID = uuid.New()
 	}

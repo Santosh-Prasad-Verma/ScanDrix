@@ -218,7 +218,7 @@ func runConsumer(ctx context.Context, broker *queue.Broker, pool *consumer.Worke
 			}
 
 			delivery := msg
-			pool.SubmitJob(consumer.WorkerJob{
+			accepted := pool.SubmitJob(consumer.WorkerJob{
 				Task: task,
 				OnComplete: func(res consumer.TaskExecutionResult) {
 					switch res.Status {
@@ -255,6 +255,10 @@ func runConsumer(ctx context.Context, broker *queue.Broker, pool *consumer.Worke
 					}
 				},
 			})
+			if !accepted {
+				slog.Warn("Worker pool shutting down, requeuing delivery", "task_id", task.TaskID)
+				_ = delivery.Nack(false, true)
+			}
 		}
 	}
 }

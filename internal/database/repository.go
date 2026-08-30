@@ -1869,14 +1869,29 @@ func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDa
 	return tag.RowsAffected(), nil
 }
 
-// TouchAccountActivity updates last_active_at for an account profile.
-func (r *Repository) TouchAccountActivity(ctx context.Context, email string) error {
+// TouchAccountActivity updates last_active_at for an account profile within a tenant boundary.
+func (r *Repository) TouchAccountActivity(ctx context.Context, wsID uuid.UUID, email string) error {
 	if r == nil || r.client == nil || r.client.Pool == nil {
 		return nil
 	}
-	query := `UPDATE account_profiles SET last_active_at = NOW() WHERE email = $1;`
-	_, err := r.client.Pool.Exec(ctx, query, email)
-	return err
+	query := `UPDATE account_profiles SET last_active_at = NOW() WHERE workspace_id = $1 AND email = $2;`
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, query, wsID, email)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			// Profile may not exist yet in account_profiles, upsert it
+			upsertQuery := `
+				INSERT INTO account_profiles (id, workspace_id, email, display_name, role, last_active_at, created_at, updated_at)
+				VALUES (gen_random_uuid(), $1, $2, $2, 'MEMBER', NOW(), NOW(), NOW())
+				ON CONFLICT (workspace_id, email) DO UPDATE SET last_active_at = NOW(), updated_at = NOW();
+			`
+			_, err = tx.Exec(ctx, upsertQuery, wsID, email)
+			return err
+		}
+		return nil
+	})
 }
 
 // GetBillingTransaction retrieves a billing transaction record by workspace and order ID.
@@ -1931,13 +1946,17 @@ func (r *Repository) AggregateDORARollup(ctx context.Context) error {
 		return nil
 	}
 	query := `
-		INSERT INTO warehouse_domain_events (id, workspace_id, event_type, payload, occurred_at)
-		SELECT gen_random_uuid(), w.id, 'dora.metrics.rollup',
+		INSERT INTO warehouse_domain_events (
+			id, workspace_id, aggregate_id, aggregate_type, event_type, version, payload, metadata, occurred_at, created_at
+		)
+		SELECT gen_random_uuid(), w.id, w.id, 'workspace', 'dora.metrics.rollup', 1,
 		       json_build_object(
 		           'review_count', (SELECT COUNT(*) FROM pull_request_reviews r WHERE r.workspace_id = w.id),
 		           'findings_count', (SELECT COUNT(*) FROM code_findings f WHERE f.workspace_id = w.id),
 		           'calculated_at', NOW()
 		       ),
+		       '{}'::jsonb,
+		       NOW(),
 		       NOW()
 		FROM workspaces w
 		WHERE w.status = 'ACTIVE'
@@ -1946,4 +1965,72 @@ func (r *Repository) AggregateDORARollup(ctx context.Context) error {
 	_, err := r.client.Pool.Exec(ctx, query)
 	return err
 }
+
+// CreateWorkspaceWithUser atomically provisions a workspace, owner user account, and profile in a single transaction.
+func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Workspace, email, passwordHash, role, displayName string) (*UserRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, errors.New("database repository unavailable")
+	}
+
+	if ws.ID == uuid.Nil {
+		ws.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	ws.CreatedAt = now
+	ws.UpdatedAt = now
+	if ws.Status == "" {
+		ws.Status = models.TenantStatusActive
+	}
+	if role == "" {
+		role = "owner"
+	}
+	if displayName == "" {
+		displayName = email
+	}
+
+	var userRecord UserRecord
+	err := r.client.ExecWithTenant(ctx, ws.ID, func(tx pgx.Tx) error {
+		// 1. Insert Workspace
+		queryWS := `
+			INSERT INTO workspaces (id, slug, name, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6);
+		`
+		if _, err := tx.Exec(ctx, queryWS, ws.ID, ws.Slug, ws.Name, ws.Status, ws.CreatedAt, ws.UpdatedAt); err != nil {
+			return fmt.Errorf("failed creating workspace: %w", err)
+		}
+
+		// 2. Insert User linked to Workspace
+		newUserID := uuid.New()
+		queryUser := `
+			INSERT INTO users (uuid, email, password, role, status, organization_id, "createdAt", "updatedAt")
+			VALUES ($1, $2, $3, $4::users_role_enum, 'active', $5, now(), now())
+			RETURNING uuid, email, password, role, status, organization_id, "createdAt", "updatedAt";
+		`
+		err := tx.QueryRow(ctx, queryUser, newUserID, email, passwordHash, role, ws.ID).Scan(
+			&userRecord.UUID, &userRecord.Email, &userRecord.Password, &userRecord.Role,
+			&userRecord.Status, &userRecord.OrganizationID, &userRecord.CreatedAt, &userRecord.UpdatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating user account: %w", err)
+		}
+
+		// 3. Insert Initial Account Profile
+		queryProfile := `
+			INSERT INTO account_profiles (id, workspace_id, email, display_name, role, last_active_at, created_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, UPPER($4), now(), now(), now())
+			ON CONFLICT (workspace_id, email) DO UPDATE SET last_active_at = now(), updated_at = now();
+		`
+		if _, err := tx.Exec(ctx, queryProfile, ws.ID, email, displayName, role); err != nil {
+			return fmt.Errorf("failed creating account profile: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return &userRecord, nil
+}
+
 
