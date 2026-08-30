@@ -59,10 +59,8 @@ func (p *WorkerPool) worker(ctx context.Context) {
 		res := p.consumer.ProcessTask(ctx, job.Task)
 		if job.OnComplete != nil {
 			job.OnComplete(res)
-		}
-		select {
-		case p.results <- res:
-		default:
+		} else {
+			p.results <- res
 		}
 	}
 }
