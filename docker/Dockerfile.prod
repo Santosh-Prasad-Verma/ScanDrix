@@ -15,7 +15,7 @@ ARG TARGET_CMD=server
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/scandrix-service ./cmd/${TARGET_CMD}
 
 # Minimal runtime image
-FROM alpine:3.21 AS runner
+FROM alpine:3.24 AS runner
 
 RUN apk add --no-cache ca-certificates tzdata git && \
     addgroup -g 10001 -S scandrix && \
