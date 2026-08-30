@@ -1860,7 +1860,7 @@ func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDa
 		UPDATE account_profiles
 		SET role = 'VIEWER', updated_at = NOW()
 		WHERE UPPER(role) NOT IN ('OWNER', 'ADMIN', 'VIEWER')
-		  AND updated_at < NOW() - ($1 || ' days')::interval;
+		  AND COALESCE(last_active_at, updated_at) < NOW() - ($1 || ' days')::interval;
 	`
 	tag, err := r.client.Pool.Exec(ctx, query, fmt.Sprintf("%d", inactivityDays))
 	if err != nil {
@@ -1868,3 +1868,82 @@ func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDa
 	}
 	return tag.RowsAffected(), nil
 }
+
+// TouchAccountActivity updates last_active_at for an account profile.
+func (r *Repository) TouchAccountActivity(ctx context.Context, email string) error {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil
+	}
+	query := `UPDATE account_profiles SET last_active_at = NOW() WHERE email = $1;`
+	_, err := r.client.Pool.Exec(ctx, query, email)
+	return err
+}
+
+// GetBillingTransaction retrieves a billing transaction record by workspace and order ID.
+func (r *Repository) GetBillingTransaction(ctx context.Context, wsID uuid.UUID, orderID string) (*models.BillingTransaction, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, nil
+	}
+	query := `
+		SELECT id, workspace_id, provider, order_id, COALESCE(payment_id, ''), COALESCE(signature, ''),
+		       amount, currency, plan_tier, status, COALESCE(receipt, ''), created_at, updated_at
+		FROM billing_transactions
+		WHERE workspace_id = $1 AND order_id = $2
+		LIMIT 1;
+	`
+	var tx models.BillingTransaction
+	err := r.client.ExecWithTenant(ctx, wsID, func(pgTx pgx.Tx) error {
+		return pgTx.QueryRow(ctx, query, wsID, orderID).Scan(
+			&tx.ID, &tx.WorkspaceID, &tx.Provider, &tx.OrderID, &tx.PaymentID, &tx.Signature,
+			&tx.Amount, &tx.Currency, &tx.PlanTier, &tx.Status, &tx.Receipt, &tx.CreatedAt, &tx.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
+// ClaimBillingUpgrade atomically claims an order for upgrade processing, preventing duplicate webhook/checkout races.
+func (r *Repository) ClaimBillingUpgrade(ctx context.Context, wsID uuid.UUID, orderID string) (bool, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return true, nil
+	}
+	query := `
+		UPDATE billing_transactions
+		SET status = 'processing_upgrade', updated_at = NOW()
+		WHERE workspace_id = $1 AND order_id = $2 AND status != 'captured' AND status != 'processing_upgrade';
+	`
+	var rowsAffected int64
+	err := r.client.ExecWithTenant(ctx, wsID, func(pgTx pgx.Tx) error {
+		tag, err := pgTx.Exec(ctx, query, wsID, orderID)
+		if err == nil {
+			rowsAffected = tag.RowsAffected()
+		}
+		return err
+	})
+	return rowsAffected > 0, err
+}
+
+// AggregateDORARollup calculates rolling aggregate metrics across all active workspace repositories.
+func (r *Repository) AggregateDORARollup(ctx context.Context) error {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil
+	}
+	query := `
+		INSERT INTO warehouse_domain_events (id, workspace_id, event_type, payload, occurred_at)
+		SELECT gen_random_uuid(), w.id, 'dora.metrics.rollup',
+		       json_build_object(
+		           'review_count', (SELECT COUNT(*) FROM pull_request_reviews r WHERE r.workspace_id = w.id),
+		           'findings_count', (SELECT COUNT(*) FROM code_findings f WHERE f.workspace_id = w.id),
+		           'calculated_at', NOW()
+		       ),
+		       NOW()
+		FROM workspaces w
+		WHERE w.status = 'ACTIVE'
+		ON CONFLICT DO NOTHING;
+	`
+	_, err := r.client.Pool.Exec(ctx, query)
+	return err
+}
+

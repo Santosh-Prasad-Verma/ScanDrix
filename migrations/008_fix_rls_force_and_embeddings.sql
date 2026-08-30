@@ -101,3 +101,11 @@ ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 ALTER TABLE token_usage_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE workspace_spend_limits FORCE ROW LEVEL SECURITY;
 ALTER TABLE organization_licenses FORCE ROW LEVEL SECURITY;
+
+-- =========================================================================
+-- 6. Add last_active_at column to account_profiles for seat reclamation
+-- =========================================================================
+
+ALTER TABLE account_profiles
+    ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+

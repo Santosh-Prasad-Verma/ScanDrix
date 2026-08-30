@@ -56,7 +56,18 @@ func (s *Scheduler) Start(parentCtx context.Context) {
 func (s *Scheduler) runJobLoop(job CronJob) {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(job.Interval())
+	if job == nil {
+		slog.Warn("Skipping nil cron job registration")
+		return
+	}
+
+	interval := job.Interval()
+	if interval <= 0 {
+		slog.Warn("Skipping cron job with non-positive interval", "job", job.Name(), "interval", interval)
+		return
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Run immediately on startup

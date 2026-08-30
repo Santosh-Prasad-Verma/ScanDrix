@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -178,13 +179,17 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := user.UUID
-	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	if user.OrganizationID != nil {
-		wsID = *user.OrganizationID
+	if user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
+		http.Error(w, `{"error":"user is not assigned to an active workspace"}`, http.StatusForbidden)
+		return
 	}
+	userID := user.UUID
+	wsID := *user.OrganizationID
 	userRole := models.UserRole(user.Role)
 	displayName := req.Email
+
+	// Update last_active_at activity timestamp
+	_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
 
 	accessToken, refreshToken, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -236,15 +241,36 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 	wsID := uuid.New()
 	userRole := models.RoleOwner
 
+	wsName := req.WorkspaceName
+	if wsName == "" {
+		wsName = "Primary Workspace"
+	}
+	slug := strings.ToLower(strings.ReplaceAll(wsName, " ", "-")) + "-" + wsID.String()[:8]
+
+	ws := &models.Workspace{
+		ID:        wsID,
+		Slug:      slug,
+		Name:      wsName,
+		Status:    models.TenantStatusActive,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := c.repo.CreateWorkspace(r.Context(), ws); err != nil {
+		slog.Error("Failed creating workspace for user", "error", err, "email", req.Email)
+		http.Error(w, `{"error":"failed to initialize workspace for registration"}`, http.StatusInternalServerError)
+		return
+	}
+
 	pwHash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		http.Error(w, `{"error":"failed processing credentials"}`, http.StatusInternalServerError)
 		return
 	}
 
-	user, err := c.repo.CreateUser(r.Context(), req.Email, pwHash, "owner", nil)
+	user, err := c.repo.CreateUser(r.Context(), req.Email, pwHash, "owner", &wsID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"user registration failed: %s"}`, err.Error()), http.StatusConflict)
+		slog.Error("User registration failed", "email", req.Email, "error", err)
+		http.Error(w, `{"error":"user registration failed: an account with this email may already exist or parameters are invalid"}`, http.StatusConflict)
 		return
 	}
 	userID := user.UUID
@@ -313,12 +339,16 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	userID := user.UUID
-	wsID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	if user.OrganizationID != nil {
-		wsID = *user.OrganizationID
+	if user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
+		http.Error(w, `{"error":"user is not assigned to an active workspace"}`, http.StatusForbidden)
+		return
 	}
+	userID := user.UUID
+	wsID := *user.OrganizationID
 	userRole := models.UserRole(user.Role)
+
+	// Update last_active_at
+	_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
 
 	newAccess, newRefresh, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
 	if err != nil {
@@ -683,19 +713,43 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 	if c.repo != nil {
 		user, err := c.repo.GetUserByEmail(r.Context(), oauthProfile.Email)
 		if err != nil {
-			// New user: create account with a random placeholder password
+			// New user: create a personal workspace first
+			newWsID := uuid.New()
+			wsName := oauthProfile.DisplayName + "'s Workspace"
+			if oauthProfile.DisplayName == "" {
+				wsName = "Personal Workspace"
+			}
+			slug := strings.ToLower(strings.ReplaceAll(oauthProfile.Username, " ", "-")) + "-" + newWsID.String()[:8]
+			ws := &models.Workspace{
+				ID:        newWsID,
+				Slug:      slug,
+				Name:      wsName,
+				Status:    models.TenantStatusActive,
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+			}
+			if err := c.repo.CreateWorkspace(r.Context(), ws); err != nil {
+				slog.Error("Failed creating workspace for OAuth user", "error", err, "email", oauthProfile.Email)
+			}
+
+			// Create account with a random placeholder password and linked workspace
 			placeholderHash, _ := auth.HashPassword(uuid.New().String())
-			user, err = c.repo.CreateUser(r.Context(), oauthProfile.Email, placeholderHash, "owner", nil)
+			user, err = c.repo.CreateUser(r.Context(), oauthProfile.Email, placeholderHash, "owner", &newWsID)
 			if err != nil {
+				slog.Error("Failed creating user account from OAuth", "error", err, "email", oauthProfile.Email)
 				http.Error(w, `{"error":"failed creating user account from OAuth"}`, http.StatusInternalServerError)
 				return
 			}
 		}
 		userID = user.UUID
-		if user.OrganizationID != nil {
+		if user.OrganizationID != nil && *user.OrganizationID != uuid.Nil {
 			wsID = *user.OrganizationID
+		} else {
+			http.Error(w, `{"error":"user is not assigned to an active workspace"}`, http.StatusForbidden)
+			return
 		}
 		userRole = models.UserRole(user.Role)
+		_ = c.repo.TouchAccountActivity(r.Context(), user.Email)
 	} else {
 		userID = uuid.New()
 	}

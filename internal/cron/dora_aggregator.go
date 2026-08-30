@@ -38,6 +38,12 @@ func (d *DORAAggregatorCron) Run(ctx context.Context) error {
 		return nil
 	}
 
-	slog.Debug("DORA metrics rollup calculation executed")
+	if err := d.repo.AggregateDORARollup(ctx); err != nil {
+		slog.Error("DORA metrics rollup calculation failed", "error", err)
+		return err
+	}
+
+	slog.Debug("DORA metrics rollup calculation executed successfully")
 	return nil
 }
+

@@ -206,7 +206,16 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 		"audit_log_cef", "unlimited_repos", "dora_metrics", "byok_encryption",
 	}
 
+	var chargedTx *models.BillingTransaction
 	if s.repo != nil {
+		// Idempotency check: if transaction is already captured, do not re-run side effects
+		chargedTx, _ = s.repo.GetBillingTransaction(ctx, wsID, orderID)
+		if chargedTx != nil && chargedTx.Status == "captured" {
+			if activeLic, _ := s.repo.GetActiveLicense(ctx, wsID); activeLic != nil {
+				return activeLic, nil
+			}
+		}
+
 		// Read dynamic entitlements and seats from DB Single Source of Truth
 		dbPlan, _ := s.repo.GetPlanConfiguration(ctx, string(planTier))
 		if dbPlan != nil {
@@ -274,7 +283,13 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 			billingPortalURL := dashboardURL + "/billing"
 
 			amountFormatted := "₹2,499.00 INR"
-			if planTier == license.TierEnterprise {
+			if chargedTx != nil && chargedTx.Amount > 0 {
+				if chargedTx.Currency == "USD" {
+					amountFormatted = fmt.Sprintf("$%.2f USD", float64(chargedTx.Amount)/100.0)
+				} else {
+					amountFormatted = fmt.Sprintf("₹%.2f %s", float64(chargedTx.Amount)/100.0, chargedTx.Currency)
+				}
+			} else if planTier == license.TierEnterprise {
 				amountFormatted = "₹19,999.00 INR"
 			}
 
