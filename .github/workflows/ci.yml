@@ -41,7 +41,7 @@ jobs:
         run: |
           echo "mode: atomic" > coverage.out
           for d in $(go list ./internal/... ./pkg/...); do
-            go test -coverprofile=profile.out -covermode=atomic "$d" >/dev/null 2>&1 || true
+            go test -coverprofile=profile.out -covermode=atomic "$d"
             if [ -f profile.out ]; then
               tail -n +2 profile.out >> coverage.out
               rm -f profile.out
