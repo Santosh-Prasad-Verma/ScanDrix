@@ -96,8 +96,9 @@ func (b *Broker) connect() error {
 		}
 	}
 
-	// Declare Task Queue with Dead-Letter routing
+	// Declare Task Queue with Dead-Letter routing and quorum replication
 	queueArgs := amqp.Table{
+		"x-queue-type":              "quorum",
 		"x-dead-letter-exchange":    ReviewDLX,
 		"x-dead-letter-routing-key": ReviewTaskQueue + ".dlq",
 	}
@@ -111,9 +112,31 @@ func (b *Broker) connect() error {
 		queueArgs,
 	)
 	if err != nil {
-		ch.Close()
-		conn.Close()
-		return fmt.Errorf("failed to declare review task queue: %w", err)
+		// If queue already exists on the broker as classic (406 inequivalent arg),
+		// reopen the channel and declare with classic fallback to support existing brokers
+		_ = ch.Close()
+		ch, err = conn.Channel()
+		if err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("failed to reopen channel after quorum probe: %w", err)
+		}
+		fallbackArgs := amqp.Table{
+			"x-dead-letter-exchange":    ReviewDLX,
+			"x-dead-letter-routing-key": ReviewTaskQueue + ".dlq",
+		}
+		_, err = ch.QueueDeclare(
+			ReviewTaskQueue,
+			true,  // durable
+			false, // delete when unused
+			false, // exclusive
+			false, // no-wait
+			fallbackArgs,
+		)
+		if err != nil {
+			_ = ch.Close()
+			_ = conn.Close()
+			return fmt.Errorf("failed to declare review task queue: %w", err)
+		}
 	}
 
 	b.conn = conn
@@ -121,17 +144,24 @@ func (b *Broker) connect() error {
 	return nil
 }
 
-// Publish sends a task payload to the specified routing queue.
+// Publish sends a task payload to the specified routing queue safely with thread serialization.
 func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) error {
 	b.mu.Lock()
-	ch := b.channel
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	if ch == nil {
-		return fmt.Errorf("channel is closed")
+	if b.channel == nil || b.channel.IsClosed() {
+		if b.conn != nil && !b.conn.IsClosed() {
+			var err error
+			b.channel, err = b.conn.Channel()
+			if err != nil {
+				return fmt.Errorf("failed to reopen channel: %w", err)
+			}
+		} else {
+			return fmt.Errorf("broker channel and connection are closed")
+		}
 	}
 
-	return ch.PublishWithContext(
+	return b.channel.PublishWithContext(
 		ctx,
 		"",        // default exchange
 		queueName, // routing key
@@ -149,18 +179,25 @@ func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) 
 // PublishDelayed publishes a message with delayed delivery using RabbitMQ delayed message exchange.
 func (b *Broker) PublishDelayed(ctx context.Context, routingKey string, payload []byte, delayMs int64) error {
 	b.mu.Lock()
-	ch := b.channel
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	if ch == nil {
-		return fmt.Errorf("channel is closed")
+	if b.channel == nil || b.channel.IsClosed() {
+		if b.conn != nil && !b.conn.IsClosed() {
+			var err error
+			b.channel, err = b.conn.Channel()
+			if err != nil {
+				return fmt.Errorf("failed to reopen channel: %w", err)
+			}
+		} else {
+			return fmt.Errorf("broker channel and connection are closed")
+		}
 	}
 
 	headers := amqp.Table{
 		"x-delay": delayMs,
 	}
 
-	return ch.PublishWithContext(
+	return b.channel.PublishWithContext(
 		ctx,
 		DelayedExchange,
 		routingKey,
@@ -176,21 +213,27 @@ func (b *Broker) PublishDelayed(ctx context.Context, routingKey string, payload 
 	)
 }
 
-// Consume subscribes to the review task quorum queue with prefetch.
+// Consume subscribes to the review task quorum queue with a dedicated AMQP channel to avoid channel contention.
 func (b *Broker) Consume(queueName string, prefetchCount int) (<-chan amqp.Delivery, error) {
 	b.mu.Lock()
-	ch := b.channel
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	if ch == nil {
-		return nil, fmt.Errorf("channel is closed")
+	if b.conn == nil || b.conn.IsClosed() {
+		return nil, fmt.Errorf("broker connection is closed")
 	}
 
-	if err := ch.Qos(prefetchCount, 0, false); err != nil {
+	// Open a dedicated channel for this consumer so it does not collide with concurrent publishes
+	consumerCh, err := b.conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("failed opening dedicated consumer channel: %w", err)
+	}
+
+	if err := consumerCh.Qos(prefetchCount, 0, false); err != nil {
+		_ = consumerCh.Close()
 		return nil, fmt.Errorf("failed setting qos prefetch: %w", err)
 	}
 
-	return ch.Consume(
+	return consumerCh.Consume(
 		queueName,
 		"scandrix-worker",
 		false, // auto-ack disabled for at-least-once reliability

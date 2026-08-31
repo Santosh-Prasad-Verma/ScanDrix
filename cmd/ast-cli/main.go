@@ -1,11 +1,18 @@
+// Copyright (c) ScanDrix Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,7 +42,30 @@ func main() {
 	flag.BoolVar(&force, "force", false, "Force rebuild of existing AST graphs")
 	flag.Parse()
 
-	// If local diff path is supplied, analyze directly
+	// 1. If local file is supplied, inspect AST directly
+	if filePath != "" {
+		src, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+			os.Exit(1)
+		}
+
+		fset := token.NewFileSet()
+		node, err := parser.ParseFile(fset, filePath, src, parser.ParseComments)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "AST parse error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("🌳 AST Structure Inspection: %s (Package: %s)\n", filePath, node.Name.Name)
+		fmt.Printf("   Imports: %d | Declarations: %d | Comments: %d\n", len(node.Imports), len(node.Decls), len(node.Comments))
+		for _, imp := range node.Imports {
+			fmt.Printf("   • import %s\n", imp.Path.Value)
+		}
+		return
+	}
+
+	// 2. If local diff path is supplied, analyze diff hunks directly
 	if diffPath != "" {
 		bytes, err := os.ReadFile(diffPath)
 		if err != nil {
@@ -59,14 +89,16 @@ func main() {
 		return
 	}
 
-	// Database backfill mode
+	// 3. Database backfill daemon mode
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
 	dbClient, err := database.NewClient(ctx, cfg.DatabaseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Database connection failed: %v\n", err)
@@ -76,7 +108,7 @@ func main() {
 
 	repo := database.NewRepository(dbClient)
 
-	fmt.Println("🌳 Scandrix AST Graph Backfill Daemon")
+	fmt.Println("🌳 ScanDrix AST Graph Backfill Daemon")
 	fmt.Printf("   Dry-Run: %v | Force: %v | Limit: %d\n", dryRun, force, limit)
 
 	var targetWS uuid.UUID

@@ -124,4 +124,26 @@ func TestWebhookIngestionAndSignatureVerification(t *testing.T) {
 	if wClosed.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK for ignored action, got %d", wClosed.Code)
 	}
+
+	// 5. GitHub Event with Delivery ID for Deduplication & Replay Protection
+	deliveryUUID := "72d3162e-cc78-11e3-81ab-4c9367dc0958"
+	reqDelivery := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(ghPayload))
+	reqDelivery.Header.Set("X-GitHub-Event", "pull_request")
+	reqDelivery.Header.Set("X-Hub-Signature-256", validSig)
+	reqDelivery.Header.Set("X-GitHub-Delivery", deliveryUUID)
+	wDelivery := httptest.NewRecorder()
+
+	handler.ServeHTTP(wDelivery, reqDelivery)
+	if wDelivery.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for delivery with header, got %d", wDelivery.Code)
+	}
+
+	var resDelivery ingestion.IngestionResult
+	if err := json.Unmarshal(wDelivery.Body.Bytes(), &resDelivery); err != nil {
+		t.Fatalf("failed decoding response: %v", err)
+	}
+	if resDelivery.EventID.String() != deliveryUUID {
+		t.Fatalf("expected EventID %s from X-GitHub-Delivery, got %s", deliveryUUID, resDelivery.EventID)
+	}
 }
+

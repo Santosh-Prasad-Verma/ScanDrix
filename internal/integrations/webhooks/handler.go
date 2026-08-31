@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/queue/consumer"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -49,14 +51,10 @@ type GitHubWebhookPayload struct {
 	} `json:"pull_request"`
 	Repository struct {
 		FullName string `json:"full_name"`
-		ID       int64  `json:"id"`
 	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
 }
 
-// HandleGitHub processes incoming GitHub App / Webhook payloads.
+// HandleGitHub processes incoming GitHub webhook payloads with fail-closed HMAC-SHA256 signature verification.
 func (h *IngestionHandler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -64,13 +62,15 @@ func (h *IngestionHandler) HandleGitHub(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify HMAC-SHA256 signature (Master Rule 5.5)
-	if h.githubSecret != "" {
-		sigHeader := r.Header.Get("X-Hub-Signature-256")
-		if !verifyGitHubSignature(h.githubSecret, body, sigHeader) {
-			http.Error(w, `{"error":"invalid webhook signature"}`, http.StatusUnauthorized)
-			return
-		}
+	// Verify HMAC-SHA256 signature (Master Rule 5.5) - Fail Closed
+	if h.githubSecret == "" {
+		http.Error(w, `{"error":"unauthorized: github webhook secret is not configured"}`, http.StatusUnauthorized)
+		return
+	}
+	sigHeader := r.Header.Get("X-Hub-Signature-256")
+	if !verifyGitHubSignature(h.githubSecret, body, sigHeader) {
+		http.Error(w, `{"error":"invalid webhook signature"}`, http.StatusUnauthorized)
+		return
 	}
 
 	eventType := r.Header.Get("X-GitHub-Event")
@@ -94,24 +94,59 @@ func (h *IngestionHandler) HandleGitHub(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Persist to transactional outbox for reliable asynchronous delivery
-	// Default workspace fallback for demo/installation
-	workspaceID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	// Resolve workspace from tracked_repositories instead of hardcoded fallback
+	var workspaceID uuid.UUID
+	if h.repo != nil {
+		var err error
+		workspaceID, err = h.repo.GetWorkspaceIDByRepoNamespace(r.Context(), "github", payload.Repository.FullName)
+		if err != nil {
+			http.Error(w, `{"error":"repository not tracked: no workspace mapping found"}`, http.StatusNotFound)
+			return
+		}
+	} else {
+		http.Error(w, `{"error":"internal: repository store unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	taskID := uuid.New()
+	eventID := uuid.New()
 
-	outboxEvent := &models.OutboxRecord{
-		WorkspaceID: workspaceID,
-		EventType:   "github.pull_request." + payload.Action,
-		Payload:     body,
+	reviewTask := consumer.ReviewTaskPayload{
+		TaskID:            taskID,
+		EventID:           eventID,
+		WorkspaceID:       workspaceID,
+		Provider:          models.ProviderGitHub,
+		RepoNamespace:     payload.Repository.FullName,
+		PullRequestNumber: payload.Number,
+		HeadSHA:           payload.PullRequest.Head.SHA,
+		BaseSHA:           payload.PullRequest.Base.SHA,
+		Sender:            payload.PullRequest.User.Login,
+		AttemptCount:      0,
+		EnqueuedAt:        time.Now().UTC(),
 	}
 
-	if err := h.repo.InsertOutboxEvent(r.Context(), outboxEvent); err != nil {
-		http.Error(w, `{"error":"failed to record outbox event"}`, http.StatusInternalServerError)
+	taskBytes, err := json.Marshal(reviewTask)
+	if err != nil {
+		http.Error(w, `{"error":"failed to serialize task payload"}`, http.StatusInternalServerError)
 		return
+	}
+
+	outboxEvent := &models.OutboxRecord{
+		ID:          eventID,
+		WorkspaceID: workspaceID,
+		EventType:   "github.pull_request." + payload.Action,
+		Payload:     taskBytes,
+	}
+
+	if h.repo != nil {
+		if err := h.repo.InsertOutboxEvent(r.Context(), outboxEvent); err != nil {
+			http.Error(w, `{"error":"failed to record outbox event"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return 202 Accepted in <15ms
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `"}`))
+	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `","task_id":"` + taskID.String() + `"}`))
 }
 
 // GitLabWebhookPayload models incoming GitLab Merge Request Hook payloads.
@@ -144,13 +179,15 @@ func (h *IngestionHandler) HandleGitLab(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify X-Gitlab-Token header (Master Rule 5.5)
-	if h.gitlabSecret != "" {
-		tokenHeader := r.Header.Get("X-Gitlab-Token")
-		if !verifyGitLabToken(h.gitlabSecret, tokenHeader) {
-			http.Error(w, `{"error":"invalid webhook token"}`, http.StatusUnauthorized)
-			return
-		}
+	// Verify X-Gitlab-Token header (Master Rule 5.5) - Fail Closed
+	if h.gitlabSecret == "" {
+		http.Error(w, `{"error":"unauthorized: gitlab webhook secret is not configured"}`, http.StatusUnauthorized)
+		return
+	}
+	tokenHeader := r.Header.Get("X-Gitlab-Token")
+	if !verifyGitLabToken(h.gitlabSecret, tokenHeader) {
+		http.Error(w, `{"error":"invalid webhook token"}`, http.StatusUnauthorized)
+		return
 	}
 
 	eventType := r.Header.Get("X-Gitlab-Event")
@@ -173,11 +210,47 @@ func (h *IngestionHandler) HandleGitLab(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	workspaceID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	// Resolve workspace from tracked_repositories instead of hardcoded fallback
+	var workspaceID uuid.UUID
+	if h.repo != nil {
+		var err error
+		workspaceID, err = h.repo.GetWorkspaceIDByRepoNamespace(r.Context(), "gitlab", payload.Project.PathWithNamespace)
+		if err != nil {
+			http.Error(w, `{"error":"repository not tracked: no workspace mapping found"}`, http.StatusNotFound)
+			return
+		}
+	} else {
+		http.Error(w, `{"error":"internal: repository store unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	taskID := uuid.New()
+	eventID := uuid.New()
+
+	reviewTask := consumer.ReviewTaskPayload{
+		TaskID:            taskID,
+		EventID:           eventID,
+		WorkspaceID:       workspaceID,
+		Provider:          models.ProviderGitLab,
+		RepoNamespace:     payload.Project.PathWithNamespace,
+		PullRequestNumber: payload.ObjectAttributes.IID,
+		HeadSHA:           payload.ObjectAttributes.LastCommit.ID,
+		BaseSHA:           payload.ObjectAttributes.TargetBranch,
+		Sender:            payload.User.Username,
+		AttemptCount:      0,
+		EnqueuedAt:        time.Now().UTC(),
+	}
+
+	taskBytes, err := json.Marshal(reviewTask)
+	if err != nil {
+		http.Error(w, `{"error":"failed to serialize task payload"}`, http.StatusInternalServerError)
+		return
+	}
+
 	outboxEvent := &models.OutboxRecord{
+		ID:          eventID,
 		WorkspaceID: workspaceID,
 		EventType:   "gitlab.merge_request." + action,
-		Payload:     body,
+		Payload:     taskBytes,
 	}
 
 	if h.repo != nil {
@@ -188,7 +261,7 @@ func (h *IngestionHandler) HandleGitLab(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `"}`))
+	_, _ = w.Write([]byte(`{"status":"enqueued","event_id":"` + outboxEvent.ID.String() + `","task_id":"` + taskID.String() + `"}`))
 }
 
 func verifyGitHubSignature(secret string, body []byte, signatureHeader string) bool {

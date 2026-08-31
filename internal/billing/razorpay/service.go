@@ -180,17 +180,28 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 		return nil, errors.New("missing order_id or payment_id")
 	}
 
-	// Signature verification: if key secret is present, enforce strict HMAC-SHA256
-	if s.keySecret != "" {
-		if !VerifyPaymentSignature(req.OrderID, req.PaymentID, req.Signature, s.keySecret) {
-			if s.repo != nil {
-				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, "signature_verification_failed")
-			}
-			return nil, errors.New("cryptographic signature mismatch: payment verification failed")
+	// Signature verification: fail-closed if key secret is missing
+	if s.keySecret == "" {
+		return nil, errors.New("unauthorized: razorpay key secret is not configured")
+	}
+
+	if !VerifyPaymentSignature(req.OrderID, req.PaymentID, req.Signature, s.keySecret) {
+		if s.repo != nil {
+			_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, "signature_verification_failed")
+		}
+		return nil, errors.New("cryptographic signature mismatch: payment verification failed")
+	}
+
+	// Derived plan tier from database order record if available to prevent client tampering
+	planTier := req.PlanTier
+	if s.repo != nil {
+		chargedTx, err := s.repo.GetBillingTransaction(ctx, wsID, req.OrderID)
+		if err == nil && chargedTx != nil && chargedTx.PlanTier != "" {
+			planTier = chargedTx.PlanTier
 		}
 	}
 
-	return s.applyWorkspaceUpgrade(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, req.PlanTier, req.RecipientEmail, req.RecipientName)
+	return s.applyWorkspaceUpgrade(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, planTier, req.RecipientEmail, req.RecipientName)
 }
 
 // applyWorkspaceUpgrade executes database plan elevation, quota updates, and email notifications.
@@ -361,10 +372,11 @@ type WebhookEvent struct {
 
 // ProcessWebhook validates the webhook signature and processes asynchronous payment state changes.
 func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, signature string) error {
-	if s.webhookSecret != "" {
-		if !VerifyWebhookSignature(payload, signature, s.webhookSecret) {
-			return errors.New("unauthorized webhook: invalid razorpay signature")
-		}
+	if s.webhookSecret == "" {
+		return errors.New("unauthorized webhook: razorpay webhook secret is not configured")
+	}
+	if !VerifyWebhookSignature(payload, signature, s.webhookSecret) {
+		return errors.New("unauthorized webhook: invalid razorpay signature")
 	}
 
 	var event WebhookEvent

@@ -127,4 +127,43 @@ func TestRepositoryNilClientGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graceful nil on nil client for InvalidateAllUserRefreshTokens, got: %v", err)
 	}
+
+	// 6. Security Memory & pgvector nil guards
+	wsID := uuid.New()
+	err = repo.SaveSecurityMemory(ctx, wsID, &database.SecurityMemoryRecord{
+		ID:                 uuid.New(),
+		FindingFingerprint: "sha256-finding-1",
+		Category:           "SECURITY",
+	})
+	if err != nil {
+		t.Fatalf("expected graceful nil on nil client for SaveSecurityMemory, got: %v", err)
+	}
+
+	err = repo.UpsertSecurityMemoryWithEmbedding(ctx, wsID, &database.SecurityMemoryRecord{
+		ID:                 uuid.New(),
+		FindingFingerprint: "sha256-finding-2",
+		Category:           "BUG",
+	}, []float32{0.1, 0.2, 0.3})
+	if err != nil {
+		t.Fatalf("expected graceful nil on nil client for UpsertSecurityMemoryWithEmbedding, got: %v", err)
+	}
+
+	memResults, err := repo.SearchSimilarSecurityFindings(ctx, wsID, []float32{0.1, 0.2, 0.3}, "SECURITY", 5, 0.3)
+	if err != nil {
+		t.Fatalf("expected nil error on nil client for SearchSimilarSecurityFindings, got: %v", err)
+	}
+	if len(memResults) != 0 {
+		t.Fatalf("expected 0 results on nil client, got: %d", len(memResults))
+	}
+
+	mem, err := repo.GetSecurityMemoryByFingerprint(ctx, wsID, "sha256-finding-1")
+	if err != nil || mem != nil {
+		t.Fatalf("expected nil result on nil client for GetSecurityMemoryByFingerprint, got: %v, err: %v", mem, err)
+	}
+
+	// 7. Outbox DLQ retry nil guards
+	requeued, err := repo.RetryDeadLetterOutboxEvents(ctx, 100)
+	if err != nil || requeued != 0 {
+		t.Fatalf("expected 0 requeued on nil client, got: %d, err: %v", requeued, err)
+	}
 }

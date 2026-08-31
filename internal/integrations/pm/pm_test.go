@@ -65,7 +65,22 @@ func TestPMIntegrationsAndDispatcher(t *testing.T) {
 	}))
 	defer linearServer.Close()
 
-	// 3. Test Jira Adapter
+	// 3. Mock Azure Boards Server
+	boardsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":  555,
+			"url": "https://dev.azure.com/acme/project/_apis/wit/workitems/555",
+			"fields": map[string]any{
+				"System.Title": "Fix XSS Vulnerability",
+				"System.State": "New",
+			},
+		})
+	}))
+	defer boardsServer.Close()
+
+	// 4. Test Jira Adapter
 	jiraAdapter := pm.NewJiraAdapter(jiraServer.URL, "dev@acme.com", "token_123")
 	if jiraAdapter.Platform() != pm.PlatformJira {
 		t.Fatalf("expected platform jira")
@@ -87,7 +102,7 @@ func TestPMIntegrationsAndDispatcher(t *testing.T) {
 		t.Fatalf("jira get issue failed: %+v, err: %v", fetchedIssue, err)
 	}
 
-	// 4. Test PM Dispatcher Export Finding
+	// 5. Test PM Dispatcher Export Finding
 	dispatcher := pm.NewPMDispatcher()
 	dispatcher.RegisterAdapter(wsID, jiraAdapter)
 
@@ -109,5 +124,41 @@ func TestPMIntegrationsAndDispatcher(t *testing.T) {
 	}
 	if exported.Key != "SEC-102" || exported.Platform != pm.PlatformJira {
 		t.Fatalf("unexpected exported issue: %+v", exported)
+	}
+
+	// 6. Test Adapter Factory NewAdapterFromConfig
+	jAdapter, err := pm.NewAdapterFromConfig(pm.PMConfig{
+		Platform: pm.PlatformJira,
+		BaseURL:  jiraServer.URL,
+		APIToken: "tok",
+		Email:    "e@acme.com",
+	})
+	if err != nil || jAdapter.Platform() != pm.PlatformJira {
+		t.Fatalf("failed creating jira adapter from config: %v", err)
+	}
+
+	lAdapter, err := pm.NewAdapterFromConfig(pm.PMConfig{
+		Platform: pm.PlatformLinear,
+		APIToken: "lin_tok",
+	})
+	if err != nil || lAdapter.Platform() != pm.PlatformLinear {
+		t.Fatalf("failed creating linear adapter from config: %v", err)
+	}
+
+	bAdapter, err := pm.NewAdapterFromConfig(pm.PMConfig{
+		Platform:     pm.PlatformAzureBoards,
+		BaseURL:      boardsServer.URL,
+		Organization: "acme",
+		APIToken:     "pat",
+	})
+	if err != nil || bAdapter.Platform() != pm.PlatformAzureBoards {
+		t.Fatalf("failed creating azure boards adapter from config: %v", err)
+	}
+
+	// 7. Test AutoTicketManager with Nil Repo
+	autoTicketMgr := pm.NewAutoTicketManager(nil, dispatcher)
+	created, err := autoTicketMgr.ProcessFindingsForAutoTicket(ctx, wsID, uuid.New(), []models.CodeFinding{finding}, "")
+	if err != nil || len(created) != 0 {
+		t.Fatalf("expected nil or empty created list for nil repo, got %v, err: %v", created, err)
 	}
 }

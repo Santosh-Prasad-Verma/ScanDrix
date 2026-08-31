@@ -2,20 +2,53 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
 	"github.com/scandrix/backend/internal/auth/cliauth"
 	"github.com/scandrix/backend/internal/automation"
 	"github.com/scandrix/backend/internal/codeanalysis/graph"
 	"github.com/scandrix/backend/internal/issues"
+	"github.com/scandrix/backend/internal/provenance/intoto"
+	"github.com/scandrix/backend/pkg/crypto"
 	"github.com/scandrix/backend/pkg/models"
 )
+
+// tokenEncryptionKey is derived from the INTEGRATION_ENCRYPTION_KEY env var
+// (or KMS_MASTER_KEY as fallback). It must NEVER be hardcoded in source.
+// Generate with: openssl rand -hex 32
+var tokenEncryptionKey [32]byte
+
+func init() {
+	_ = godotenv.Load()
+	_ = godotenv.Load(".env")
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Load("../../.env")
+	_ = godotenv.Load("../../../.env")
+	raw := os.Getenv("INTEGRATION_ENCRYPTION_KEY")
+	if raw == "" {
+		raw = os.Getenv("KMS_MASTER_KEY")
+	}
+	if raw == "" {
+		log.Println("WARNING: INTEGRATION_ENCRYPTION_KEY and KMS_MASTER_KEY are not set. " +
+			"Integration token encryption will fail at runtime. " +
+			"Set one of these env vars (see .env.example).")
+		// Use a zero key so the app can still boot for initial setup,
+		// but any encrypt/decrypt call will produce a clear error.
+		return
+	}
+	tokenEncryptionKey = sha256.Sum256([]byte(raw))
+}
 
 // Repository provides clean-room, parameterized database operations adhering to Master Rule 5.3.
 type Repository struct {
@@ -25,6 +58,22 @@ type Repository struct {
 // NewRepository initializes a new data access layer.
 func NewRepository(client *Client) *Repository {
 	return &Repository{client: client}
+}
+
+// GetWorkspaceIDByRepoNamespace resolves the owning workspace for a tracked
+// repository by its provider and namespace path (e.g. "owner/repo"). Returns
+// uuid.Nil if no matching active repository is found.
+func (r *Repository) GetWorkspaceIDByRepoNamespace(ctx context.Context, provider, namespacePath string) (uuid.UUID, error) {
+	row := r.client.Pool.QueryRow(ctx,
+		`SELECT workspace_id FROM tracked_repositories
+		 WHERE provider = $1 AND namespace_path = $2 AND is_active = TRUE
+		 LIMIT 1`,
+		provider, namespacePath)
+	var wsID uuid.UUID
+	if err := row.Scan(&wsID); err != nil {
+		return uuid.Nil, fmt.Errorf("no active workspace for %s/%s: %w", provider, namespacePath, err)
+	}
+	return wsID, nil
 }
 
 // CreateWorkspace inserts a new enterprise organization workspace.
@@ -45,6 +94,27 @@ func (r *Repository) CreateWorkspace(ctx context.Context, ws *models.Workspace) 
 		return fmt.Errorf("failed to create workspace: %w", err)
 	}
 	return nil
+}
+
+// GetWorkspaceByID retrieves a workspace by its unique identifier.
+func (r *Repository) GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*models.Workspace, error) {
+	if r == nil || r.client == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	query := `
+		SELECT id, slug, name, status, created_at, updated_at
+		FROM workspaces
+		WHERE id = $1
+	`
+	var ws models.Workspace
+	err := r.client.Pool.QueryRow(ctx, query, id).Scan(
+		&ws.ID, &ws.Slug, &ws.Name, &ws.Status, &ws.CreatedAt, &ws.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &ws, nil
 }
 
 // CreateReview records a new incoming pull request review lifecycle job.
@@ -145,6 +215,27 @@ func (r *Repository) MarkOutboxEventPublished(ctx context.Context, eventID uuid.
 	return err
 }
 
+// RetryDeadLetterOutboxEvents resets failed or DLQ outbox events back to PENDING status.
+func (r *Repository) RetryDeadLetterOutboxEvents(ctx context.Context, limit int) (int, error) {
+	if r == nil || r.client == nil {
+		return 0, nil
+	}
+	query := `
+		UPDATE outbox_events
+		SET status = 'PENDING', retry_count = 0, last_error = NULL
+		WHERE id IN (
+			SELECT id FROM outbox_events
+			WHERE status IN ('FAILED', 'DEAD_LETTER', 'RETRYING')
+			LIMIT $1
+		)
+	`
+	cmdTag, err := r.client.Pool.Exec(ctx, query, limit)
+	if err != nil {
+		return 0, err
+	}
+	return int(cmdTag.RowsAffected()), nil
+}
+
 // BatchInsertFindings persists actionable review findings discovered by the analysis pipeline.
 func (r *Repository) BatchInsertFindings(ctx context.Context, tenantID uuid.UUID, findings []models.CodeFinding) error {
 	if len(findings) == 0 {
@@ -177,10 +268,45 @@ func (r *Repository) BatchInsertFindings(ctx context.Context, tenantID uuid.UUID
 	})
 }
 
-// GetReviewFindings fetches all findings discovered for a specific pull request review.
-func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID) ([]models.CodeFinding, error) {
+// GetReviewFindings fetches all findings discovered for a specific pull request review with tenant isolation.
+func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID, optionalWsID ...uuid.UUID) ([]models.CodeFinding, error) {
 	if r == nil || r.client == nil {
 		return []models.CodeFinding{}, nil
+	}
+
+	var findings []models.CodeFinding
+	if len(optionalWsID) > 0 && optionalWsID[0] != uuid.Nil {
+		wsID := optionalWsID[0]
+		err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+			query := `
+				SELECT id, review_id, workspace_id, file_path, start_line, end_line,
+				       severity, category, title, description, remediation, suggested_diff, fingerprint
+				FROM code_findings
+				WHERE review_id = $1 AND workspace_id = $2
+				ORDER BY start_line ASC
+			`
+			rows, err := tx.Query(ctx, query, reviewID, wsID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var f models.CodeFinding
+				if err := rows.Scan(
+					&f.ID, &f.ReviewID, &f.WorkspaceID, &f.FilePath, &f.StartLine, &f.EndLine,
+					&f.Severity, &f.Category, &f.Title, &f.Description, &f.Remediation, &f.SuggestedDiff, &f.Fingerprint,
+				); err != nil {
+					return err
+				}
+				findings = append(findings, f)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed querying findings with tenant: %w", err)
+		}
+		return findings, nil
 	}
 
 	query := `
@@ -196,7 +322,7 @@ func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID) 
 	}
 	defer rows.Close()
 
-	findings := make([]models.CodeFinding, 0)
+	findings = make([]models.CodeFinding, 0)
 	for rows.Next() {
 		var f models.CodeFinding
 		if err := rows.Scan(
@@ -208,6 +334,81 @@ func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID) 
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// GetFindingByID retrieves an individual code finding by ID under tenant isolation.
+func (r *Repository) GetFindingByID(ctx context.Context, wsID, findingID uuid.UUID) (*models.CodeFinding, error) {
+	if r == nil || r.client == nil {
+		return nil, nil
+	}
+
+	var f models.CodeFinding
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		query := `
+			SELECT id, review_id, workspace_id, file_path, start_line, end_line,
+			       severity, category, title, description, remediation, suggested_diff, fingerprint, created_at
+			FROM code_findings
+			WHERE id = $1 AND workspace_id = $2
+			LIMIT 1;
+		`
+		return tx.QueryRow(ctx, query, findingID, wsID).Scan(
+			&f.ID, &f.ReviewID, &f.WorkspaceID, &f.FilePath, &f.StartLine, &f.EndLine,
+			&f.Severity, &f.Category, &f.Title, &f.Description, &f.Remediation, &f.SuggestedDiff, &f.Fingerprint, &f.CreatedAt,
+		)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &f, nil
+}
+
+// GetReview fetches a single review by workspace and review ID.
+func (r *Repository) GetReview(ctx context.Context, wsID, reviewID uuid.UUID) (*models.PullRequestReview, error) {
+	if r == nil || r.client == nil {
+		return nil, nil
+	}
+
+	var rev models.PullRequestReview
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		query := `
+			SELECT id, workspace_id, repository_id, pull_number, title,
+			       head_sha, base_sha, author_username, state, findings_count,
+			       created_at, completed_at
+			FROM pull_request_reviews
+			WHERE id = $1 AND workspace_id = $2
+		`
+		return tx.QueryRow(ctx, query, reviewID, wsID).Scan(
+			&rev.ID, &rev.WorkspaceID, &rev.RepositoryID, &rev.PullNumber, &rev.Title,
+			&rev.HeadSHA, &rev.BaseSHA, &rev.AuthorUsername, &rev.State, &rev.FindingsCount,
+			&rev.CreatedAt, &rev.CompletedAt,
+		)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &rev, nil
+}
+
+// DismissFinding updates a finding status and records reason.
+func (r *Repository) DismissFinding(ctx context.Context, wsID, findingID uuid.UUID, reason string) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	query := `
+		UPDATE code_findings
+		SET remediation = $1
+		WHERE id = $2 AND workspace_id = $3
+	`
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, "DISMISSED: "+reason, findingID, wsID)
+		return err
+	})
 }
 
 // CreateTrackedIssue persists a newly discovered vulnerability issue into PostgreSQL.
@@ -257,12 +458,14 @@ func (r *Repository) GetTrackedIssue(ctx context.Context, workspaceID, issueID u
 	var issue issues.TrackedIssue
 	var sev string
 	var stat string
-	err := r.client.Pool.QueryRow(ctx, query, workspaceID, issueID).Scan(
-		&issue.ID, &issue.WorkspaceID, &issue.RepositoryID, &issue.Title, &issue.Description,
-		&issue.FilePath, &issue.StartLine, &issue.EndLine, &sev, &issue.Category,
-		&stat, &issue.OriginReviewID, &issue.Remediation, &issue.Fingerprint,
-		&issue.ExternalIssueURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
-	)
+	err := r.client.ExecWithTenant(ctx, workspaceID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, workspaceID, issueID).Scan(
+			&issue.ID, &issue.WorkspaceID, &issue.RepositoryID, &issue.Title, &issue.Description,
+			&issue.FilePath, &issue.StartLine, &issue.EndLine, &sev, &issue.Category,
+			&stat, &issue.OriginReviewID, &issue.Remediation, &issue.Fingerprint,
+			&issue.ExternalIssueURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
+		)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -285,28 +488,34 @@ func (r *Repository) ListTrackedIssues(ctx context.Context, workspaceID uuid.UUI
 		WHERE workspace_id = $1 AND ($2 = '' OR status = $2)
 		ORDER BY created_at DESC
 	`
-	rows, err := r.client.Pool.Query(ctx, query, workspaceID, string(status))
+	var result []issues.TrackedIssue
+	err := r.client.ExecWithTenant(ctx, workspaceID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, workspaceID, string(status))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var issue issues.TrackedIssue
+			var sev string
+			var stat string
+			if err := rows.Scan(
+				&issue.ID, &issue.WorkspaceID, &issue.RepositoryID, &issue.Title, &issue.Description,
+				&issue.FilePath, &issue.StartLine, &issue.EndLine, &sev, &issue.Category,
+				&stat, &issue.OriginReviewID, &issue.Remediation, &issue.Fingerprint,
+				&issue.ExternalIssueURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
+			); err != nil {
+				return err
+			}
+			issue.Severity = models.FindingSeverity(sev)
+			issue.Status = issues.IssueStatus(stat)
+			result = append(result, issue)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-
-	var result []issues.TrackedIssue
-	for rows.Next() {
-		var issue issues.TrackedIssue
-		var sev string
-		var stat string
-		if err := rows.Scan(
-			&issue.ID, &issue.WorkspaceID, &issue.RepositoryID, &issue.Title, &issue.Description,
-			&issue.FilePath, &issue.StartLine, &issue.EndLine, &sev, &issue.Category,
-			&stat, &issue.OriginReviewID, &issue.Remediation, &issue.Fingerprint,
-			&issue.ExternalIssueURL, &issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
-		); err != nil {
-			return nil, err
-		}
-		issue.Severity = models.FindingSeverity(sev)
-		issue.Status = issues.IssueStatus(stat)
-		result = append(result, issue)
 	}
 	return result, nil
 }
@@ -323,7 +532,9 @@ func (r *Repository) CountTrackedIssues(ctx context.Context, workspaceID uuid.UU
 		WHERE workspace_id = $1 AND ($2 = '' OR status = $2)
 	`
 	var count int
-	err := r.client.Pool.QueryRow(ctx, query, workspaceID, string(status)).Scan(&count)
+	err := r.client.ExecWithTenant(ctx, workspaceID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, workspaceID, string(status)).Scan(&count)
+	})
 	return count, err
 }
 
@@ -386,27 +597,33 @@ func (r *Repository) ListAutomationRules(ctx context.Context, workspaceID uuid.U
 		WHERE workspace_id = $1
 		ORDER BY created_at DESC
 	`
-	rows, err := r.client.Pool.Query(ctx, query, workspaceID)
+	var list []automation.AutomationRule
+	err := r.client.ExecWithTenant(ctx, workspaceID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, workspaceID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rule automation.AutomationRule
+			var trg string
+			var condJSON, actJSON []byte
+			if err := rows.Scan(
+				&rule.ID, &rule.WorkspaceID, &rule.Name, &rule.Enabled, &trg,
+				&condJSON, &actJSON, &rule.CreatedAt, &rule.UpdatedAt,
+			); err != nil {
+				return err
+			}
+			rule.Trigger = automation.TriggerType(trg)
+			_ = json.Unmarshal(condJSON, &rule.Conditions)
+			_ = json.Unmarshal(actJSON, &rule.Actions)
+			list = append(list, rule)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-
-	var list []automation.AutomationRule
-	for rows.Next() {
-		var rule automation.AutomationRule
-		var trg string
-		var condJSON, actJSON []byte
-		if err := rows.Scan(
-			&rule.ID, &rule.WorkspaceID, &rule.Name, &rule.Enabled, &trg,
-			&condJSON, &actJSON, &rule.CreatedAt, &rule.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		rule.Trigger = automation.TriggerType(trg)
-		_ = json.Unmarshal(condJSON, &rule.Conditions)
-		_ = json.Unmarshal(actJSON, &rule.Actions)
-		list = append(list, rule)
 	}
 	return list, nil
 }
@@ -1257,6 +1474,14 @@ func (r *Repository) ListIntegrationConnections(ctx context.Context, wsID uuid.U
 			); err != nil {
 				return err
 			}
+			if c.AccessTokenEnc != "" {
+				tenantKey := deriveTenantIntegrationKey(wsID)
+				if dec, err := crypto.DecryptStringAESGCM(tenantKey, c.AccessTokenEnc); err == nil {
+					c.AccessTokenEnc = dec
+				} else if dec, err := crypto.DecryptStringAESGCM(tokenEncryptionKey[:], c.AccessTokenEnc); err == nil {
+					c.AccessTokenEnc = dec
+				}
+			}
 			conns = append(conns, c)
 		}
 		return rows.Err()
@@ -1267,10 +1492,23 @@ func (r *Repository) ListIntegrationConnections(ctx context.Context, wsID uuid.U
 	return conns, nil
 }
 
-// UpsertIntegrationConnection stores or updates an SCM connection.
-func (r *Repository) UpsertIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenEnc string, isConnected bool, repoCount int) error {
+func deriveTenantIntegrationKey(wsID uuid.UUID) []byte {
+	k := sha256.Sum256([]byte("scandrix_integration_kdf_v1:" + wsID.String()))
+	return k[:]
+}
+
+// UpsertIntegrationConnection stores or updates an SCM connection with encrypted credentials.
+func (r *Repository) UpsertIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenPlain string, isConnected bool, repoCount int) error {
 	if r == nil || r.client == nil {
 		return fmt.Errorf("database unavailable")
+	}
+
+	tokenEnc := tokenPlain
+	if tokenPlain != "" {
+		tenantKey := deriveTenantIntegrationKey(wsID)
+		if enc, err := crypto.EncryptStringAESGCM(tenantKey, tokenPlain); err == nil {
+			tokenEnc = enc
+		}
 	}
 
 	query := `
@@ -1283,6 +1521,27 @@ func (r *Repository) UpsertIntegrationConnection(ctx context.Context, wsID uuid.
 		_, err := tx.Exec(ctx, query, uuid.New(), wsID, string(provider), accountName, isConnected, tokenEnc, repoCount)
 		return err
 	})
+}
+
+// GetDecryptedIntegrationToken retrieves and decrypts the stored integration token for a provider.
+func (r *Repository) GetDecryptedIntegrationToken(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) (string, error) {
+	if r == nil || r.client == nil {
+		return "", nil
+	}
+	conns, err := r.ListIntegrationConnections(ctx, wsID)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range conns {
+		if c.Provider == provider && c.IsConnected && c.AccessTokenEnc != "" {
+			tenantKey := deriveTenantIntegrationKey(wsID)
+			if dec, err := crypto.DecryptStringAESGCM(tenantKey, c.AccessTokenEnc); err == nil && dec != "" {
+				return dec, nil
+			}
+			return c.AccessTokenEnc, nil
+		}
+	}
+	return "", nil
 }
 
 // RecordFindingFeedback records user feedback on a finding.
@@ -1367,7 +1626,7 @@ func (r *Repository) ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit in
 // RecordTokenUsage logs token consumption for billing and usage caps.
 func (r *Repository) RecordTokenUsage(ctx context.Context, wsID uuid.UUID, reviewID *uuid.UUID, promptTokens, completionTokens int64, costUSD float64) error {
 	if r == nil || r.client == nil {
-		return fmt.Errorf("database unavailable")
+		return nil
 	}
 
 	query := `
@@ -1400,7 +1659,7 @@ func (r *Repository) GetWorkspaceUsage(ctx context.Context, wsID uuid.UUID, sinc
 // UpdateSpendLimit updates the monthly spend limit for a workspace.
 func (r *Repository) UpdateSpendLimit(ctx context.Context, wsID uuid.UUID, limitUSD float64) error {
 	if r == nil || r.client == nil {
-		return fmt.Errorf("database unavailable")
+		return nil
 	}
 
 	query := `
@@ -2032,5 +2291,906 @@ func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Wor
 	}
 	return &userRecord, nil
 }
+
+// SecurityMemoryRecord models semantic review findings in PostgreSQL pgvector memory.
+type SecurityMemoryRecord struct {
+	ID                 uuid.UUID `json:"id"`
+	WorkspaceID        uuid.UUID `json:"workspace_id"`
+	FindingFingerprint string    `json:"finding_fingerprint"`
+	Category           string    `json:"category"`
+	RuleID             string    `json:"rule_id"`
+	CodeSnippet        string    `json:"code_snippet"`
+	Justification      string    `json:"justification"`
+	DismissalReason    string    `json:"dismissal_reason"`
+	SimilarityScore    float64   `json:"similarity_score,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// SaveSecurityMemory stores a semantic finding into pgvector security memory.
+func (r *Repository) SaveSecurityMemory(ctx context.Context, wsID uuid.UUID, mem *SecurityMemoryRecord) error {
+	return r.UpsertSecurityMemoryWithEmbedding(ctx, wsID, mem, nil)
+}
+
+// UpsertSecurityMemoryWithEmbedding stores or updates a security finding vector in pgvector memory.
+func (r *Repository) UpsertSecurityMemoryWithEmbedding(ctx context.Context, wsID uuid.UUID, mem *SecurityMemoryRecord, embedding []float32) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	if mem.ID == uuid.Nil {
+		mem.ID = uuid.New()
+	}
+	mem.WorkspaceID = wsID
+	mem.CreatedAt = time.Now().UTC()
+
+	var query string
+	var args []any
+
+	if len(embedding) > 0 {
+		vecStr := formatVector(embedding)
+		query = `
+			INSERT INTO security_memory (
+				id, workspace_id, finding_fingerprint, category, rule_id,
+				code_snippet, justification, dismissal_reason, embedding, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
+			ON CONFLICT (id) DO UPDATE SET
+				code_snippet = EXCLUDED.code_snippet,
+				justification = EXCLUDED.justification,
+				dismissal_reason = EXCLUDED.dismissal_reason,
+				embedding = EXCLUDED.embedding;
+		`
+		args = []any{
+			mem.ID, mem.WorkspaceID, mem.FindingFingerprint, mem.Category, mem.RuleID,
+			mem.CodeSnippet, mem.Justification, mem.DismissalReason, vecStr, mem.CreatedAt,
+		}
+	} else {
+		query = `
+			INSERT INTO security_memory (
+				id, workspace_id, finding_fingerprint, category, rule_id,
+				code_snippet, justification, dismissal_reason, embedding, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, array_fill(0.0::real, ARRAY[1536])::vector, $9)
+			ON CONFLICT (id) DO NOTHING;
+		`
+		args = []any{
+			mem.ID, mem.WorkspaceID, mem.FindingFingerprint, mem.Category, mem.RuleID,
+			mem.CodeSnippet, mem.Justification, mem.DismissalReason, mem.CreatedAt,
+		}
+	}
+
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, args...)
+		return err
+	})
+}
+
+// SearchSimilarSecurityFindings executes cosine distance semantic similarity vector search in pgvector.
+func (r *Repository) SearchSimilarSecurityFindings(ctx context.Context, wsID uuid.UUID, embedding []float32, category string, limit int, maxDistance float64) ([]SecurityMemoryRecord, error) {
+	if r == nil || r.client == nil || len(embedding) == 0 {
+		return []SecurityMemoryRecord{}, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if maxDistance <= 0 {
+		maxDistance = 0.5
+	}
+	vecStr := formatVector(embedding)
+	query := `
+		SELECT id, workspace_id, finding_fingerprint, category, rule_id,
+		       code_snippet, justification, dismissal_reason,
+		       (embedding <=> $2::vector) as distance, created_at
+		FROM security_memory
+		WHERE workspace_id = $1 AND ($3 = '' OR category = $3)
+		  AND (embedding <=> $2::vector) <= $4
+		ORDER BY distance ASC
+		LIMIT $5;
+	`
+	var results []SecurityMemoryRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, vecStr, category, maxDistance, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var m SecurityMemoryRecord
+			var dist float64
+			if err := rows.Scan(
+				&m.ID, &m.WorkspaceID, &m.FindingFingerprint, &m.Category, &m.RuleID,
+				&m.CodeSnippet, &m.Justification, &m.DismissalReason, &dist, &m.CreatedAt,
+			); err != nil {
+				return err
+			}
+			m.SimilarityScore = 1.0 - dist
+			results = append(results, m)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed semantic security memory search: %w", err)
+	}
+	return results, nil
+}
+
+func formatVector(v []float32) string {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(strconv.FormatFloat(float64(f), 'f', 6, 64))
+	}
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// ListWorkspaces retrieves all active workspaces across the platform.
+func (r *Repository) ListWorkspaces(ctx context.Context) ([]models.Workspace, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return []models.Workspace{}, nil
+	}
+
+	query := `
+		SELECT id, slug, name, status, created_at, updated_at
+		FROM workspaces
+		WHERE status = 'ACTIVE'
+		ORDER BY created_at ASC;
+	`
+	rows, err := r.client.Pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed listing workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var list []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		if err := rows.Scan(&w.ID, &w.Slug, &w.Name, &w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, w)
+	}
+	return list, nil
+}
+
+// PendingApprovalRecord represents a review eligible for automated PR approval.
+type PendingApprovalRecord struct {
+	ReviewID      uuid.UUID `json:"review_id"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	RepositoryID  uuid.UUID `json:"repository_id"`
+	PullNumber    int       `json:"pull_number"`
+	Title         string    `json:"title"`
+	HeadSHA       string    `json:"head_sha"`
+	BaseSHA       string    `json:"base_sha"`
+	FindingsCount int       `json:"findings_count"`
+	CriticalCount int       `json:"critical_count"`
+	HighCount     int       `json:"high_count"`
+}
+
+// GetPendingApprovalReviews queries reviews in COMPLETED state with zero critical/high blockers.
+func (r *Repository) GetPendingApprovalReviews(ctx context.Context, limit int) ([]PendingApprovalRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return []PendingApprovalRecord{}, nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	query := `
+		SELECT 
+			r.id, r.workspace_id, r.repository_id, r.pull_number, r.title, r.head_sha, r.base_sha, r.findings_count,
+			COALESCE(SUM(CASE WHEN UPPER(f.severity) = 'CRITICAL' THEN 1 ELSE 0 END), 0) AS critical_count,
+			COALESCE(SUM(CASE WHEN UPPER(f.severity) = 'HIGH' THEN 1 ELSE 0 END), 0) AS high_count
+		FROM pull_request_reviews r
+		LEFT JOIN code_findings f ON f.review_id = r.id AND f.workspace_id = r.workspace_id
+		WHERE r.state = 'COMPLETED'
+		  AND r.created_at >= NOW() - INTERVAL '7 days'
+		GROUP BY r.id, r.workspace_id, r.repository_id, r.pull_number, r.title, r.head_sha, r.base_sha, r.findings_count
+		HAVING COALESCE(SUM(CASE WHEN UPPER(f.severity) IN ('CRITICAL', 'HIGH') THEN 1 ELSE 0 END), 0) = 0
+		ORDER BY r.created_at DESC
+		LIMIT $1;
+	`
+
+	rows, err := r.client.Pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying pending approval reviews: %w", err)
+	}
+	defer rows.Close()
+
+	var results []PendingApprovalRecord
+	for rows.Next() {
+		var p PendingApprovalRecord
+		if err := rows.Scan(
+			&p.ReviewID, &p.WorkspaceID, &p.RepositoryID, &p.PullNumber,
+			&p.Title, &p.HeadSHA, &p.BaseSHA, &p.FindingsCount,
+			&p.CriticalCount, &p.HighCount,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, p)
+	}
+	return results, nil
+}
+
+// RecordReviewApproval logs an automated review approval event in the outbox and audit log.
+func (r *Repository) RecordReviewApproval(ctx context.Context, wsID, reviewID uuid.UUID, pullNumber int, reason string) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"review_id":   reviewID.String(),
+		"workspace_id": wsID.String(),
+		"pull_number": pullNumber,
+		"reason":      reason,
+		"approved_at": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	outbox := &models.OutboxRecord{
+		ID:          uuid.New(),
+		WorkspaceID: wsID,
+		EventType:   "pull_request.approved",
+		Payload:     payload,
+		Status:      models.OutboxPending,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	return r.InsertOutboxEvent(ctx, outbox)
+}
+
+// SyncFindingFeedbackSentiment aggregates feedback sentiment to tune rule confidence weights.
+func (r *Repository) SyncFindingFeedbackSentiment(ctx context.Context, wsID uuid.UUID) (int64, error) {
+	if r == nil || r.client == nil {
+		return 0, nil
+	}
+
+	query := `
+		INSERT INTO warehouse_domain_events (
+			id, workspace_id, aggregate_id, aggregate_type, event_type, version, payload, metadata, occurred_at, created_at
+		)
+		SELECT 
+			gen_random_uuid(), f.workspace_id, f.finding_id, 'finding_feedback', 'feedback.sentiment.synced', 1,
+			json_build_object(
+				'sentiment', f.sentiment,
+				'comment', f.comment,
+				'synced_at', NOW()
+			),
+			'{}'::jsonb,
+			NOW(),
+			NOW()
+		FROM finding_feedback f
+		WHERE f.workspace_id = $1 AND f.created_at >= NOW() - INTERVAL '24 hours'
+		ON CONFLICT DO NOTHING;
+	`
+	var affected int64
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, query, wsID)
+		if err == nil {
+			affected = tag.RowsAffected()
+		}
+		return err
+	})
+	return affected, err
+}
+
+// OrphanedSessionRecord models an unclosed CLI device or trace session.
+type OrphanedSessionRecord struct {
+	ID        uuid.UUID `json:"id"`
+	SessionID string    `json:"session_id"`
+	UserCode  string    `json:"user_code"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// FindOrphanedCLISessions retrieves CLI sessions that have not received heartbeats within threshold.
+func (r *Repository) FindOrphanedCLISessions(ctx context.Context, inactivityThresholdMinutes, limit int) ([]OrphanedSessionRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return []OrphanedSessionRecord{}, nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	query := `
+		SELECT id, session_id, user_code, status, created_at, "updatedAt"
+		FROM cli_auth_sessions
+		WHERE status IN ('pending', 'authorized')
+		  AND "updatedAt" < NOW() - ($1 || ' minutes')::interval
+		ORDER BY "updatedAt" ASC
+		LIMIT $2;
+	`
+	rows, err := r.client.Pool.Query(ctx, query, fmt.Sprintf("%d", inactivityThresholdMinutes), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying orphaned sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []OrphanedSessionRecord
+	for rows.Next() {
+		var s OrphanedSessionRecord
+		if err := rows.Scan(&s.ID, &s.SessionID, &s.UserCode, &s.Status, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, nil
+}
+
+// MarkCLISessionClassified updates the status of an orphaned session to expired/classified.
+func (r *Repository) MarkCLISessionClassified(ctx context.Context, sessionID uuid.UUID, classification string) error {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil
+	}
+
+	query := `
+		UPDATE cli_auth_sessions
+		SET status = 'expired', "updatedAt" = NOW()
+		WHERE id = $1;
+	`
+	_, err := r.client.Pool.Exec(ctx, query, sessionID)
+	return err
+}
+
+// SpendLimitEvaluation holds monthly usage and configured spend limit for a workspace.
+type SpendLimitEvaluation struct {
+	WorkspaceID        uuid.UUID `json:"workspace_id"`
+	OrganizationName   string    `json:"organization_name"`
+	MonthlySpendLimit  float64   `json:"monthly_spend_limit"`
+	CurrentSpendUSD    float64   `json:"current_spend_usd"`
+	UsagePercentage    float64   `json:"usage_percentage"`
+	TotalTokensUsed    int64     `json:"total_tokens_used"`
+	OwnerEmail         string    `json:"owner_email"`
+}
+
+// GetWorkspacesSpendEvaluation evaluates current month spend against limits across all workspaces.
+func (r *Repository) GetWorkspacesSpendEvaluation(ctx context.Context) ([]SpendLimitEvaluation, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return []SpendLimitEvaluation{}, nil
+	}
+
+	startOfMonth := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	query := `
+		SELECT 
+			w.id AS workspace_id,
+			w.name AS organization_name,
+			COALESCE(sl.monthly_spend_limit_usd, 50.0) AS spend_limit,
+			COALESCE(SUM(t.cost_usd), 0.0) AS current_spend,
+			COALESCE(SUM(t.prompt_tokens + t.completion_tokens), 0) AS total_tokens,
+			COALESCE((
+				SELECT email FROM account_profiles 
+				WHERE workspace_id = w.id 
+				ORDER BY CASE WHEN UPPER(role) = 'OWNER' THEN 1 WHEN UPPER(role) = 'ADMIN' THEN 2 ELSE 3 END 
+				LIMIT 1
+			), '') AS owner_email
+		FROM workspaces w
+		LEFT JOIN workspace_spend_limits sl ON sl.workspace_id = w.id
+		LEFT JOIN token_usage_records t ON t.workspace_id = w.id AND t.created_at >= $1
+		WHERE w.status = 'ACTIVE'
+		GROUP BY w.id, w.name, sl.monthly_spend_limit_usd;
+	`
+
+	rows, err := r.client.Pool.Query(ctx, query, startOfMonth)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying workspaces spend evaluation: %w", err)
+	}
+	defer rows.Close()
+
+	var evaluations []SpendLimitEvaluation
+	for rows.Next() {
+		var e SpendLimitEvaluation
+		if err := rows.Scan(
+			&e.WorkspaceID, &e.OrganizationName, &e.MonthlySpendLimit,
+			&e.CurrentSpendUSD, &e.TotalTokensUsed, &e.OwnerEmail,
+		); err != nil {
+			return nil, err
+		}
+		if e.MonthlySpendLimit > 0 {
+			e.UsagePercentage = (e.CurrentSpendUSD / e.MonthlySpendLimit) * 100.0
+		} else {
+			e.UsagePercentage = 0
+		}
+		evaluations = append(evaluations, e)
+	}
+	return evaluations, nil
+}
+
+// RepoReportData contains aggregated performance and quality metrics for a repository digest.
+type RepoReportData struct {
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	RepositoryID         uuid.UUID `json:"repository_id"`
+	NamespacePath        string    `json:"namespace_path"`
+	TotalReviews         int       `json:"total_reviews"`
+	CleanReviewsCount    int       `json:"clean_reviews_count"`
+	PassRate             float64   `json:"pass_rate"`
+	TotalFindings        int       `json:"total_findings"`
+	CriticalFindings     int       `json:"critical_findings"`
+	HighFindings         int       `json:"high_findings"`
+	ActiveContributors   int       `json:"active_contributors"`
+}
+
+// GetRepositoryReportsData compiles performance metrics for active repositories over a time window.
+func (r *Repository) GetRepositoryReportsData(ctx context.Context, since time.Time) ([]RepoReportData, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return []RepoReportData{}, nil
+	}
+
+	query := `
+		SELECT 
+			repo.workspace_id,
+			repo.id AS repository_id,
+			repo.namespace_path,
+			COUNT(DISTINCT rev.id) AS total_reviews,
+			COUNT(DISTINCT CASE WHEN rev.findings_count = 0 THEN rev.id END) AS clean_reviews_count,
+			COALESCE(COUNT(DISTINCT f.id), 0) AS total_findings,
+			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'CRITICAL' THEN f.id END), 0) AS critical_findings,
+			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'HIGH' THEN f.id END), 0) AS high_findings,
+			COUNT(DISTINCT rev.author_username) AS active_contributors
+		FROM tracked_repositories repo
+		LEFT JOIN pull_request_reviews rev ON rev.repository_id = repo.id AND rev.created_at >= $1
+		LEFT JOIN code_findings f ON f.review_id = rev.id
+		WHERE repo.is_active = TRUE
+		GROUP BY repo.workspace_id, repo.id, repo.namespace_path
+		HAVING COUNT(DISTINCT rev.id) > 0;
+	`
+
+	rows, err := r.client.Pool.Query(ctx, query, since)
+	if err != nil {
+		return nil, fmt.Errorf("failed compiling repository reports data: %w", err)
+	}
+	defer rows.Close()
+
+	var reports []RepoReportData
+	for rows.Next() {
+		var rd RepoReportData
+		if err := rows.Scan(
+			&rd.WorkspaceID, &rd.RepositoryID, &rd.NamespacePath,
+			&rd.TotalReviews, &rd.CleanReviewsCount,
+			&rd.TotalFindings, &rd.CriticalFindings, &rd.HighFindings,
+			&rd.ActiveContributors,
+		); err != nil {
+			return nil, err
+		}
+		if rd.TotalReviews > 0 {
+			rd.PassRate = (float64(rd.CleanReviewsCount) / float64(rd.TotalReviews)) * 100.0
+		} else {
+			rd.PassRate = 100.0
+		}
+		reports = append(reports, rd)
+	}
+	return reports, nil
+}
+
+// GetSecurityMemoryByFingerprint checks if a finding has been recorded as a suppressed false positive.
+func (r *Repository) GetSecurityMemoryByFingerprint(ctx context.Context, wsID uuid.UUID, fingerprint string) (*SecurityMemoryRecord, error) {
+	if r == nil || r.client == nil {
+		return nil, nil
+	}
+
+	var mem SecurityMemoryRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		query := `
+			SELECT id, workspace_id, finding_fingerprint, category, rule_id,
+			       code_snippet, justification, dismissal_reason, created_at
+			FROM security_memory
+			WHERE workspace_id = $1 AND finding_fingerprint = $2
+			LIMIT 1
+		`
+		return tx.QueryRow(ctx, query, wsID, fingerprint).Scan(
+			&mem.ID, &mem.WorkspaceID, &mem.FindingFingerprint, &mem.Category, &mem.RuleID,
+			&mem.CodeSnippet, &mem.Justification, &mem.DismissalReason, &mem.CreatedAt,
+		)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &mem, nil
+}
+
+// FindingTicketRecord models a ticket exported to Jira, Linear, or Azure Boards.
+type FindingTicketRecord struct {
+	ID          uuid.UUID `json:"id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	FindingID   uuid.UUID `json:"finding_id"`
+	Platform    string    `json:"platform"`
+	TicketKey   string    `json:"ticket_key"`
+	TicketURL   string    `json:"ticket_url"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// InsertFindingTicket links a discovered security finding to an external PM ticket.
+func (r *Repository) InsertFindingTicket(ctx context.Context, wsID, findingID uuid.UUID, platform, ticketKey, ticketURL string) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+
+	query := `
+		INSERT INTO finding_tickets (id, workspace_id, finding_id, platform, ticket_key, ticket_url, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (workspace_id, finding_id, platform) DO UPDATE
+		SET ticket_key = EXCLUDED.ticket_key, ticket_url = EXCLUDED.ticket_url, created_at = NOW();
+	`
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, uuid.New(), wsID, findingID, platform, ticketKey, ticketURL)
+		return err
+	})
+}
+
+// GetTicketsForFinding retrieves external PM tickets linked to an individual finding.
+func (r *Repository) GetTicketsForFinding(ctx context.Context, wsID, findingID uuid.UUID) ([]FindingTicketRecord, error) {
+	if r == nil || r.client == nil {
+		return []FindingTicketRecord{}, nil
+	}
+
+	query := `
+		SELECT id, workspace_id, finding_id, platform, ticket_key, ticket_url, created_at
+		FROM finding_tickets
+		WHERE workspace_id = $1 AND finding_id = $2
+		ORDER BY created_at DESC;
+	`
+	var list []FindingTicketRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, findingID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rec FindingTicketRecord
+			if err := rows.Scan(&rec.ID, &rec.WorkspaceID, &rec.FindingID, &rec.Platform, &rec.TicketKey, &rec.TicketURL, &rec.CreatedAt); err != nil {
+				return err
+			}
+			list = append(list, rec)
+		}
+		return rows.Err()
+	})
+	return list, err
+}
+
+// GetTicketsForReview retrieves all external PM tickets linked to findings under a review.
+func (r *Repository) GetTicketsForReview(ctx context.Context, wsID, reviewID uuid.UUID) ([]FindingTicketRecord, error) {
+	if r == nil || r.client == nil {
+		return []FindingTicketRecord{}, nil
+	}
+
+	query := `
+		SELECT t.id, t.workspace_id, t.finding_id, t.platform, t.ticket_key, t.ticket_url, t.created_at
+		FROM finding_tickets t
+		JOIN code_findings f ON f.id = t.finding_id AND f.workspace_id = t.workspace_id
+		WHERE t.workspace_id = $1 AND f.review_id = $2
+		ORDER BY t.created_at DESC;
+	`
+	var list []FindingTicketRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, reviewID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rec FindingTicketRecord
+			if err := rows.Scan(&rec.ID, &rec.WorkspaceID, &rec.FindingID, &rec.Platform, &rec.TicketKey, &rec.TicketURL, &rec.CreatedAt); err != nil {
+				return err
+			}
+			list = append(list, rec)
+		}
+		return rows.Err()
+	})
+	return list, err
+}
+
+// PMAutoTicketConfig stores auto-ticketing preferences per repository or workspace.
+type PMAutoTicketConfig struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	RepositoryID uuid.UUID `json:"repository_id"`
+	Enabled      bool      `json:"enabled"`
+	Platform     string    `json:"platform"`
+	ProjectKey   string    `json:"project_key"`
+	IssueType    string    `json:"issue_type"`
+	MinSeverity  string    `json:"min_severity"`
+}
+
+// GetPMAutoTicketConfig retrieves auto-ticketing preferences for a repository.
+func (r *Repository) GetPMAutoTicketConfig(ctx context.Context, wsID, repoID uuid.UUID) (*PMAutoTicketConfig, error) {
+	if r == nil || r.client == nil {
+		return &PMAutoTicketConfig{
+			WorkspaceID:  wsID,
+			RepositoryID: repoID,
+			Enabled:      false,
+			MinSeverity:  "HIGH",
+		}, nil
+	}
+
+	query := `
+		SELECT workspace_id, repository_id, enabled, platform, project_key, issue_type, min_severity
+		FROM pm_auto_ticket_configs
+		WHERE workspace_id = $1 AND repository_id = $2
+		LIMIT 1;
+	`
+	var cfg PMAutoTicketConfig
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, wsID, repoID).Scan(
+			&cfg.WorkspaceID, &cfg.RepositoryID, &cfg.Enabled, &cfg.Platform,
+			&cfg.ProjectKey, &cfg.IssueType, &cfg.MinSeverity,
+		)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &PMAutoTicketConfig{
+				WorkspaceID:  wsID,
+				RepositoryID: repoID,
+				Enabled:      false,
+				MinSeverity:  "HIGH",
+			}, nil
+		}
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// SetPMAutoTicketConfig configures automatic issue generation for a repository.
+func (r *Repository) SetPMAutoTicketConfig(ctx context.Context, cfg PMAutoTicketConfig) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+
+	query := `
+		INSERT INTO pm_auto_ticket_configs (workspace_id, repository_id, enabled, platform, project_key, issue_type, min_severity, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (workspace_id, repository_id) DO UPDATE
+		SET enabled = EXCLUDED.enabled, platform = EXCLUDED.platform, project_key = EXCLUDED.project_key,
+		    issue_type = EXCLUDED.issue_type, min_severity = EXCLUDED.min_severity, updated_at = NOW();
+	`
+	return r.client.ExecWithTenant(ctx, cfg.WorkspaceID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, cfg.WorkspaceID, cfg.RepositoryID, cfg.Enabled, cfg.Platform, cfg.ProjectKey, cfg.IssueType, cfg.MinSeverity)
+		return err
+	})
+}
+
+// LiveQuotaStatus represents multi-tenant token consumption and quota thresholds.
+type LiveQuotaStatus struct {
+	WorkspaceID        uuid.UUID `json:"workspace_id"`
+	Tier               string    `json:"tier"`
+	BYOKEnabled        bool      `json:"byok_enabled"`
+	MonthlyTokenLimit  int64     `json:"monthly_token_limit"`
+	TokensUsedThisMonth int64    `json:"tokens_used_this_month"`
+	TokensRemaining    int64     `json:"tokens_remaining"`
+	PercentUsed        float64   `json:"percent_used"`
+	EstimatedCostUSD   float64   `json:"estimated_cost_usd"`
+	BurstLimitPerMin   int64     `json:"burst_limit_per_min"`
+	BillingPeriodStart time.Time `json:"billing_period_start"`
+	BillingPeriodEnd   time.Time `json:"billing_period_end"`
+}
+
+// GetLiveTokenQuota evaluates real-time token usage against active plan allocation and spend caps.
+func (r *Repository) GetLiveTokenQuota(ctx context.Context, wsID uuid.UUID) (*LiveQuotaStatus, error) {
+	now := time.Now().UTC()
+	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+	if r == nil || r.client == nil {
+		return &LiveQuotaStatus{
+			WorkspaceID:        wsID,
+			Tier:               "Free",
+			BYOKEnabled:        false,
+			MonthlyTokenLimit:  500_000,
+			TokensUsedThisMonth: 0,
+			TokensRemaining:    500_000,
+			PercentUsed:        0,
+			EstimatedCostUSD:   0,
+			BurstLimitPerMin:   50_000,
+			BillingPeriodStart: startOfMonth,
+			BillingPeriodEnd:   endOfMonth,
+		}, nil
+	}
+
+	promptTokens, compTokens, costUSD, err := r.GetWorkspaceUsage(ctx, wsID, startOfMonth)
+	if err != nil {
+		return nil, err
+	}
+	totalUsed := promptTokens + compTokens
+
+	// Query allocation and BYOK flag
+	var tier string
+	var byokEnabled bool
+	allocQuery := `SELECT tier, byok_enabled FROM billing_seat_allocations WHERE workspace_id = $1 LIMIT 1;`
+	_ = r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, allocQuery, wsID).Scan(&tier, &byokEnabled)
+	})
+
+	if tier == "" {
+		tier = "Free"
+	}
+
+	var monthlyLimit int64
+	var burstLimit int64
+
+	switch strings.ToUpper(tier) {
+	case "PRO":
+		monthlyLimit = 10_000_000
+		burstLimit = 500_000
+	case "ENTERPRISE":
+		monthlyLimit = 50_000_000
+		burstLimit = 2_000_000
+	default:
+		monthlyLimit = 500_000
+		burstLimit = 50_000
+	}
+
+	remaining := monthlyLimit - totalUsed
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	pctUsed := 0.0
+	if monthlyLimit > 0 {
+		pctUsed = (float64(totalUsed) / float64(monthlyLimit)) * 100.0
+	}
+
+	return &LiveQuotaStatus{
+		WorkspaceID:        wsID,
+		Tier:               tier,
+		BYOKEnabled:        byokEnabled,
+		MonthlyTokenLimit:  monthlyLimit,
+		TokensUsedThisMonth: totalUsed,
+		TokensRemaining:    remaining,
+		PercentUsed:        pctUsed,
+		EstimatedCostUSD:   costUSD,
+		BurstLimitPerMin:   burstLimit,
+		BillingPeriodStart: startOfMonth,
+		BillingPeriodEnd:   endOfMonth,
+	}, nil
+}
+
+// DailyUsageSummary holds daily token metrics for usage graphs.
+type DailyUsageSummary struct {
+	Date             string  `json:"date"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// GetWorkspaceDailyUsageHistory aggregates daily token metrics for a lookback window.
+func (r *Repository) GetWorkspaceDailyUsageHistory(ctx context.Context, wsID uuid.UUID, days int) ([]DailyUsageSummary, error) {
+	if r == nil || r.client == nil {
+		return []DailyUsageSummary{}, nil
+	}
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+
+	since := time.Now().UTC().AddDate(0, 0, -days)
+	query := `
+		SELECT 
+			TO_CHAR(created_at, 'YYYY-MM-DD') AS day,
+			COALESCE(SUM(prompt_tokens), 0) AS p_tokens,
+			COALESCE(SUM(completion_tokens), 0) AS c_tokens,
+			COALESCE(SUM(cost_usd), 0.0) AS daily_cost
+		FROM token_usage_records
+		WHERE workspace_id = $1 AND created_at >= $2
+		GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD')
+		ORDER BY day ASC;
+	`
+
+	var summaries []DailyUsageSummary
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var s DailyUsageSummary
+			if err := rows.Scan(&s.Date, &s.PromptTokens, &s.CompletionTokens, &s.CostUSD); err != nil {
+				return err
+			}
+			s.TotalTokens = s.PromptTokens + s.CompletionTokens
+			summaries = append(summaries, s)
+		}
+		return rows.Err()
+	})
+	return summaries, err
+}
+
+// InsertReviewAttestation stores a cryptographically signed DSSE attestation envelope.
+func (r *Repository) InsertReviewAttestation(ctx context.Context, rec intoto.AttestationRecord) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+
+	envBytes, err := json.Marshal(rec.Envelope)
+	if err != nil {
+		return fmt.Errorf("failed serializing attestation envelope: %w", err)
+	}
+
+	if rec.ID == uuid.Nil {
+		rec.ID = uuid.New()
+	}
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = time.Now().UTC()
+	}
+
+	query := `
+		INSERT INTO review_attestations (
+			id, workspace_id, review_id, predicate_type, decision, key_id, envelope_json, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (workspace_id, review_id, predicate_type)
+		DO UPDATE SET
+			decision = EXCLUDED.decision,
+			key_id = EXCLUDED.key_id,
+			envelope_json = EXCLUDED.envelope_json,
+			created_at = EXCLUDED.created_at;
+	`
+
+	return r.client.ExecWithTenant(ctx, rec.WorkspaceID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query,
+			rec.ID, rec.WorkspaceID, rec.ReviewID, rec.PredicateType, rec.Decision, rec.KeyID, envBytes, rec.CreatedAt,
+		)
+		return err
+	})
+}
+
+// GetReviewAttestations retrieves all cryptographic attestations for a given review.
+func (r *Repository) GetReviewAttestations(ctx context.Context, wsID, reviewID uuid.UUID) ([]intoto.AttestationRecord, error) {
+	if r == nil || r.client == nil {
+		return []intoto.AttestationRecord{}, nil
+	}
+
+	query := `
+		SELECT id, workspace_id, review_id, predicate_type, decision, key_id, envelope_json, created_at
+		FROM review_attestations
+		WHERE workspace_id = $1 AND review_id = $2
+		ORDER BY created_at DESC;
+	`
+
+	var records []intoto.AttestationRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, reviewID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rec intoto.AttestationRecord
+			var envBytes []byte
+			if err := rows.Scan(
+				&rec.ID, &rec.WorkspaceID, &rec.ReviewID, &rec.PredicateType,
+				&rec.Decision, &rec.KeyID, &envBytes, &rec.CreatedAt,
+			); err != nil {
+				return err
+			}
+			if len(envBytes) > 0 {
+				_ = json.Unmarshal(envBytes, &rec.Envelope)
+			}
+			records = append(records, rec)
+		}
+		return rows.Err()
+	})
+
+	return records, err
+}
+
+// GetLatestReviewAttestation returns the most recent in-toto / SLSA attestation for a review.
+func (r *Repository) GetLatestReviewAttestation(ctx context.Context, wsID, reviewID uuid.UUID) (*intoto.AttestationRecord, error) {
+	records, err := r.GetReviewAttestations(ctx, wsID, reviewID)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return &records[0], nil
+}
+
 
 

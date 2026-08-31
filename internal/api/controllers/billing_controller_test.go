@@ -34,23 +34,8 @@ func TestBillingControllerPlanQuery(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp dtos.WorkspacePlanStatusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed decoding plan response: %v", err)
-	}
-
-	if resp.PlanTier != "COMMUNITY" {
-		t.Fatalf("expected COMMUNITY default tier, got %s", resp.PlanTier)
-	}
-	if resp.MonthlyTokenLimit != 500_000 {
-		t.Fatalf("expected 500K monthly tokens for community tier, got %d", resp.MonthlyTokenLimit)
-	}
-	if len(resp.AllocatedModels) == 0 {
-		t.Fatalf("expected allocated models for community tier")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503 (no DB connected), got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

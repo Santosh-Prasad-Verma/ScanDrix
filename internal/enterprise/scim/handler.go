@@ -14,9 +14,10 @@ import (
 
 // SCIMService provides in-memory/database backed SCIM 2.0 provisioning.
 type SCIMService struct {
-	mu    sync.RWMutex
-	users map[string]SCIMUser
-	repo  *database.Repository
+	mu          sync.RWMutex
+	users       map[string]SCIMUser
+	repo        *database.Repository
+	bearerToken string
 }
 
 // NewSCIMService initializes the SCIM 2.0 provisioning engine with optional database persistence.
@@ -31,6 +32,33 @@ func NewSCIMService(repo ...*database.Repository) *SCIMService {
 	}
 }
 
+// SetBearerToken configures the required Bearer token for SCIM operations.
+func (s *SCIMService) SetBearerToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bearerToken = token
+}
+
+func (s *SCIMService) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		token := s.bearerToken
+		s.mu.RUnlock()
+
+		if token == "" {
+			s.writeError(w, http.StatusUnauthorized, "unauthorized", "SCIM 2.0 provisioning token is not configured on the server")
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")) != token {
+			s.writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing Bearer authorization token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Routes mounts the standard SCIM 2.0 sub-router.
 func (s *SCIMService) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -38,12 +66,15 @@ func (s *SCIMService) Routes() chi.Router {
 	r.Get("/ServiceProviderConfig", s.handleServiceProviderConfig)
 	r.Get("/Schemas", s.handleSchemas)
 
-	r.Route("/Users", func(u chi.Router) {
-		u.Get("/", s.handleListUsers)
-		u.Post("/", s.handleCreateUser)
-		u.Get("/{id}", s.handleGetUser)
-		u.Patch("/{id}", s.handlePatchUser)
-		u.Delete("/{id}", s.handleDeleteUser)
+	r.Group(func(gu chi.Router) {
+		gu.Use(s.authMiddleware)
+		gu.Route("/Users", func(u chi.Router) {
+			u.Get("/", s.handleListUsers)
+			u.Post("/", s.handleCreateUser)
+			u.Get("/{id}", s.handleGetUser)
+			u.Patch("/{id}", s.handlePatchUser)
+			u.Delete("/{id}", s.handleDeleteUser)
+		})
 	})
 
 	return r

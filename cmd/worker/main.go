@@ -14,7 +14,14 @@ import (
 	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/integrations/github"
+	"github.com/scandrix/backend/internal/integrations/pm"
 	"github.com/scandrix/backend/internal/llm"
+	"github.com/scandrix/backend/internal/platform"
+	_ "github.com/scandrix/backend/internal/platform/azuredevops"
+	_ "github.com/scandrix/backend/internal/platform/bitbucket"
+	_ "github.com/scandrix/backend/internal/platform/forgejo"
+	_ "github.com/scandrix/backend/internal/platform/github"
+	_ "github.com/scandrix/backend/internal/platform/gitlab"
 	"github.com/scandrix/backend/internal/queue"
 	"github.com/scandrix/backend/internal/queue/consumer"
 	"github.com/scandrix/backend/internal/queue/relay"
@@ -61,11 +68,26 @@ func main() {
 
 	// Initialize AI Gateway
 	aiGatewayOpts := make([]llm.GatewayOption, 0)
+	if cfg.OpenAIBaseURL != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithOpenAIBaseURL(cfg.OpenAIBaseURL))
+	}
+	aiGatewayOpts = append(aiGatewayOpts, llm.WithOpenAIModels(
+		cfg.AIModelDefault,
+		cfg.AIModelFallback,
+		cfg.AIModelSecurity,
+		cfg.AIModelLogic,
+		cfg.AIModelTriage,
+		cfg.AIModelThreatModel,
+		cfg.AIModelArbiter,
+		cfg.AIModelSynthesizer,
+	))
+
 	if cfg.OpenRouterAPIKey != "" {
 		aiGatewayOpts = append(aiGatewayOpts,
 			llm.WithOpenRouter(cfg.OpenRouterAPIKey),
 			llm.WithOpenRouterModels(
 				cfg.AIModelDefault,
+				cfg.AIModelFallback,
 				cfg.AIModelSecurity,
 				cfg.AIModelLogic,
 				cfg.AIModelTriage,
@@ -74,8 +96,9 @@ func main() {
 				cfg.AIModelSynthesizer,
 			),
 		)
-		slog.Info("OpenRouter primary & fallback multi-model chain attached to Worker",
+		slog.Info("AI primary & fallback multi-model chain attached to Worker",
 			"default", cfg.AIModelDefault,
+			"fallback", cfg.AIModelFallback,
 			"security", cfg.AIModelSecurity,
 			"logic", cfg.AIModelLogic,
 			"triage", cfg.AIModelTriage,
@@ -88,6 +111,8 @@ func main() {
 
 	// Initialize Orchestrator
 	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
+	autoTicketMgr := pm.NewAutoTicketManager(repo, nil)
+	orchestrator.SetAutoTicketManager(autoTicketMgr)
 	var githubClient *github.Client
 	if cfg.GitHubToken != "" {
 		githubClient = github.NewClient(cfg.GitHubToken)
@@ -120,6 +145,27 @@ func main() {
 			}
 		}
 
+		// Fallback to Multi-Provider SCM Adapters (GitLab, Bitbucket, Azure DevOps, Forgejo)
+		if rawDiff == "" && repo != nil && task.WorkspaceID != [16]byte{} {
+			if conns, err := repo.ListIntegrationConnections(execCtx, task.WorkspaceID); err == nil {
+				for _, conn := range conns {
+					if conn.IsConnected && conn.AccessTokenEnc != "" {
+						adapter, err := platform.NewAdapter(platform.AdapterConfig{
+							Provider: conn.Provider,
+							Token:    conn.AccessTokenEnc,
+						})
+						if err == nil {
+							if d, err := adapter.FetchDiff(execCtx, task.RepoNamespace, task.PullRequestNumber); err == nil && d != "" {
+								rawDiff = d
+								slog.Info("Successfully fetched PR diff via multi-SCM adapter", "provider", conn.Provider, "repo", task.RepoNamespace, "pr", task.PullRequestNumber)
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+
 		reviewTask := review.ExecutionTask{
 			ReviewID:      task.TaskID,
 			WorkspaceID:   task.WorkspaceID,
@@ -143,12 +189,18 @@ func main() {
 	// Outbox Relay goroutine: polls PostgreSQL outbox_events and publishes to RabbitMQ
 	go runOutboxRelay(ctx, repo, broker)
 
-	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup)
+	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup, PR Approvals, Rule Learning, Feedback Sync, Orphaned Sessions, Spend Limit, Repo Report)
 	cronScheduler := cron.NewScheduler()
 	cronScheduler.Register(cron.NewStaleReviewWatchdog(repo, 15*time.Minute, 30))
 	cronScheduler.Register(cron.NewLicenseSeatPruner(repo, 24*time.Hour, 30))
 	cronScheduler.Register(cron.NewSSOSessionCleanup(repo, 1*time.Hour))
 	cronScheduler.Register(cron.NewDORAAggregatorCron(repo, 6*time.Hour))
+	cronScheduler.Register(cron.NewCheckPRApprovalCron(repo, 5*time.Minute, 25))
+	cronScheduler.Register(cron.NewRuleLearningCron(repo, 30*time.Minute))
+	cronScheduler.Register(cron.NewReviewFeedbackCron(repo, 10*time.Minute))
+	cronScheduler.Register(cron.NewClassifyOrphanedSessionsCron(repo, 15*time.Minute, 30, 25))
+	cronScheduler.Register(cron.NewSpendLimitAlertCron(repo, 1*time.Hour))
+	cronScheduler.Register(cron.NewRepoReportCron(repo, 24*time.Hour, 15))
 	cronScheduler.Start(ctx)
 
 	// RabbitMQ Consumer worker

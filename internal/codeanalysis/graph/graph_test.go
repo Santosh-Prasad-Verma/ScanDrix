@@ -78,3 +78,61 @@ func ExecuteCheckout() {
 		t.Errorf("expected 0 callers of ExecuteCheckout, got %d", len(callersOfCheckout))
 	}
 }
+
+func TestGraphIndexerMultiLanguage(t *testing.T) {
+	ctx := context.Background()
+	indexer := graph.NewGraphIndexer()
+	repoID := uuid.New()
+
+	// 1. Java File
+	javaCode := `package com.example;
+public class PaymentService {
+    public void processPayment() {
+        validateToken();
+    }
+    private boolean validateToken() {
+        return true;
+    }
+}`
+	javaNodes, err := indexer.IndexSourceFile(ctx, repoID, "PaymentService.java", javaCode)
+	if err != nil {
+		t.Fatalf("failed indexing Java: %v", err)
+	}
+	if len(javaNodes) < 2 {
+		t.Errorf("expected at least 2 nodes for Java, got %d", len(javaNodes))
+	}
+
+	// 2. Rust File
+	rustCode := `struct SecurityEngine;
+impl SecurityEngine {
+    pub fn audit_code() {
+        parse_ast();
+    }
+    fn parse_ast() {}
+}`
+	rustNodes, err := indexer.IndexSourceFile(ctx, repoID, "engine.rs", rustCode)
+	if err != nil {
+		t.Fatalf("failed indexing Rust: %v", err)
+	}
+	if len(rustNodes) < 2 {
+		t.Errorf("expected at least 2 nodes for Rust, got %d", len(rustNodes))
+	}
+
+	// 3. C++ File
+	cppCode := `#include <iostream>
+namespace security {
+class TokenValidator {
+    void verifySignature() {
+        computeHash();
+    }
+    void computeHash() {}
+};
+}`
+	cppNodes, err := indexer.IndexSourceFile(ctx, repoID, "validator.cpp", cppCode)
+	if err != nil {
+		t.Fatalf("failed indexing C++: %v", err)
+	}
+	if len(cppNodes) < 2 {
+		t.Errorf("expected at least 2 nodes for C++, got %d", len(cppNodes))
+	}
+}

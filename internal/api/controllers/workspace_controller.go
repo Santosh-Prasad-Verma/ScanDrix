@@ -2,14 +2,16 @@ package controllers
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
-	"time"
+	"os"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/provenance/intoto"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -30,6 +32,7 @@ func (c *WorkspaceController) Routes() chi.Router {
 	r.Post("/", c.handleCreateWorkspace)
 	r.Get("/current", c.handleGetCurrentWorkspace)
 	r.Get("/cockpit", c.handleGetCockpitMetrics)
+	r.Get("/attestation-key", c.handleGetAttestationPublicKey)
 
 	return r
 }
@@ -48,7 +51,8 @@ func (c *WorkspaceController) handleCreateWorkspace(w http.ResponseWriter, r *ht
 	}
 
 	if err := c.repo.CreateWorkspace(r.Context(), &ws); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed creating workspace", "name", req.Name, "error", err)
+		http.Error(w, `{"error":"failed creating workspace"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -70,14 +74,22 @@ func (c *WorkspaceController) handleGetCurrentWorkspace(w http.ResponseWriter, r
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dtos.WorkspaceResponse{
-		ID:        wsID,
-		Name:      "Production Workspace",
-		Slug:      "production",
-		Status:    models.TenantStatusActive,
-		CreatedAt: time.Now().UTC(),
-	})
+	if c.repo != nil {
+		ws, err := c.repo.GetWorkspaceByID(r.Context(), wsID)
+		if err == nil && ws != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(dtos.WorkspaceResponse{
+				ID:        ws.ID,
+				Name:      ws.Name,
+				Slug:      ws.Slug,
+				Status:    ws.Status,
+				CreatedAt: ws.CreatedAt,
+			})
+			return
+		}
+	}
+
+	http.Error(w, `{"error":"workspace not found"}`, http.StatusNotFound)
 }
 
 func (c *WorkspaceController) handleGetCockpitMetrics(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +118,34 @@ func (c *WorkspaceController) handleGetCockpitMetrics(w http.ResponseWriter, r *
 		PassRatePercentage: metrics.PassRatePercentage,
 		ActiveRepositories: metrics.ActiveRepositories,
 		TotalDevelopers:    metrics.TotalDevelopers,
+	})
+}
+
+func (c *WorkspaceController) handleGetAttestationPublicKey(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	masterSecret := os.Getenv("SCANDRIX_ENCRYPTION_KEY")
+	if masterSecret == "" {
+		masterSecret = os.Getenv("KMS_MASTER_KEY")
+	}
+	_, pubKey, keyID := intoto.DeriveTenantKeypair(wsID, masterSecret)
+
+	pemStr, err := intoto.ExportPublicKeyPEM(pubKey)
+	if err != nil {
+		http.Error(w, `{"error":"failed formatting public key"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"workspace_id": wsID,
+		"key_id":       keyID,
+		"algorithm":    "Ed25519",
+		"public_key":   pemStr,
 	})
 }
 

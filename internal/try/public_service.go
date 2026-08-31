@@ -29,6 +29,8 @@ type PublicReviewService struct {
 	evaluator   *rules.Evaluator
 	jobs        map[uuid.UUID]*ReviewJob
 	httpClient  *http.Client
+	sem         chan struct{}
+	stopChan    chan struct{}
 	maxLines    int
 	maxFiles    int
 	maxJobs     int
@@ -42,12 +44,23 @@ func NewPublicReviewService(limiter *RateLimiter, featured *FeaturedRegistry, ev
 		evaluator:  evaluator,
 		jobs:       make(map[uuid.UUID]*ReviewJob),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
+		sem:        make(chan struct{}, 16),
+		stopChan:   make(chan struct{}),
 		maxLines:   10000,
 		maxFiles:   80,
 		maxJobs:    10000,
 	}
 	go svc.reapExpiredJobs()
 	return svc
+}
+
+// Stop halts background maintenance routines.
+func (s *PublicReviewService) Stop() {
+	select {
+	case <-s.stopChan:
+	default:
+		close(s.stopChan)
+	}
 }
 
 // ParseGitHubURL extracts owner, repo, and pull number from a GitHub PR URL.
@@ -161,8 +174,9 @@ func (s *PublicReviewService) EnqueueReview(ctx context.Context, req EnqueueRequ
 	s.jobs[jobID] = job
 	s.mu.Unlock()
 
-	// Launch async review worker for public job
-	go s.processJob(jobID, patches, rawDiff)
+	// Launch async review worker for public job with bounded context and worker slot
+	jobCtx, jobCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	go s.processJob(jobCtx, jobCancel, jobID, patches, rawDiff)
 
 	return &EnqueueResponse{
 		JobID:     jobID,
@@ -173,7 +187,24 @@ func (s *PublicReviewService) EnqueueReview(ctx context.Context, req EnqueueRequ
 	}, nil
 }
 
-func (s *PublicReviewService) processJob(jobID uuid.UUID, patches []*diff.FilePatch, rawDiff string) {
+func (s *PublicReviewService) processJob(ctx context.Context, cancel context.CancelFunc, jobID uuid.UUID, patches []*diff.FilePatch, rawDiff string) {
+	defer cancel()
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	case <-ctx.Done():
+		s.mu.Lock()
+		if j, ok := s.jobs[jobID]; ok {
+			nowFail := time.Now().UTC()
+			j.Status = JobStatusFailed
+			j.CompletedAt = &nowFail
+			j.Error = "timeout waiting for review worker slot"
+		}
+		s.mu.Unlock()
+		return
+	}
+
 	// Recover from evaluator panics so the job never stays in PROCESSING forever.
 	defer func() {
 		if r := recover(); r != nil {
@@ -238,15 +269,20 @@ func (s *PublicReviewService) reapExpiredJobs() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		cutoff := time.Now().UTC().Add(-1 * time.Hour)
-		s.mu.Lock()
-		for id, job := range s.jobs {
-			if (job.Status == JobStatusCompleted || job.Status == JobStatusFailed) && job.CompletedAt != nil && job.CompletedAt.Before(cutoff) {
-				delete(s.jobs, id)
+	for {
+		select {
+		case <-s.stopChan:
+			return
+		case <-ticker.C:
+			cutoff := time.Now().UTC().Add(-1 * time.Hour)
+			s.mu.Lock()
+			for id, job := range s.jobs {
+				if (job.Status == JobStatusCompleted || job.Status == JobStatusFailed) && job.CompletedAt != nil && job.CompletedAt.Before(cutoff) {
+					delete(s.jobs, id)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
 

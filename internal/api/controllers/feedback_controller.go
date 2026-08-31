@@ -2,7 +2,9 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -54,6 +56,22 @@ func (c *FeedbackController) handleSubmitFeedback(w http.ResponseWriter, r *http
 		if err := c.repo.RecordFindingFeedback(r.Context(), wsID, findingID, req.Sentiment, req.Comments); err != nil {
 			http.Error(w, `{"error":"failed recording feedback"}`, http.StatusInternalServerError)
 			return
+		}
+
+		// Master Rule 2.1 & Area 5 Parity: Index dismissed / false positive findings into pgvector semantic memory
+		upperSentiment := strings.ToUpper(req.Sentiment)
+		if upperSentiment == "FALSE_POSITIVE" || upperSentiment == "DISMISSED" || upperSentiment == "THUMBS_DOWN" {
+			mem := &database.SecurityMemoryRecord{
+				ID:                 uuid.New(),
+				WorkspaceID:        wsID,
+				FindingFingerprint: fmt.Sprintf("fp_%s", findingID.String()),
+				Category:           "false_positive",
+				RuleID:             req.Sentiment,
+				CodeSnippet:        req.Comments,
+				Justification:      req.Comments,
+				DismissalReason:    req.Sentiment,
+			}
+			_ = c.repo.SaveSecurityMemory(r.Context(), wsID, mem)
 		}
 	}
 

@@ -1,3 +1,6 @@
+// Copyright (c) ScanDrix Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
 package main
 
 import (
@@ -5,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/scandrix/backend/internal/config"
@@ -15,6 +20,7 @@ func main() {
 	var (
 		fromStr     string
 		untilStr    string
+		days        int
 		workspaceID string
 		batchSize   int
 		showReport  bool
@@ -22,19 +28,21 @@ func main() {
 
 	flag.StringVar(&fromStr, "from", "", "Start date for analytics aggregation (YYYY-MM-DD)")
 	flag.StringVar(&untilStr, "until", "", "End date for analytics aggregation (YYYY-MM-DD)")
+	flag.IntVar(&days, "days", 30, "Relative aggregation window in days (default: 30)")
 	flag.StringVar(&workspaceID, "org", "", "Filter by workspace UUID")
 	flag.IntVar(&batchSize, "batch", 100, "Processing batch chunk size")
 	flag.BoolVar(&showReport, "report", true, "Print summary analytics report")
 	flag.Parse()
+
+	// Setup graceful cancellation on SIGINT / SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Config load failed: %v\n", err)
 		os.Exit(1)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	dbClient, err := database.NewClient(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -43,25 +51,43 @@ func main() {
 	}
 	defer dbClient.Close()
 
-	fmt.Println("📊 Scandrix Continuous Analytics Warehouse CLI")
-	if fromStr != "" && untilStr != "" {
-		fmt.Printf("   Window: %s to %s | Batch: %d\n", fromStr, untilStr, batchSize)
+	// Calculate date boundaries
+	untilTime := time.Now().UTC()
+	fromTime := untilTime.AddDate(0, 0, -days)
+	if untilStr != "" {
+		if t, err := time.Parse("2006-01-02", untilStr); err == nil {
+			untilTime = t
+		}
+	}
+	if fromStr != "" {
+		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			fromTime = t
+		}
+	}
+
+	fmt.Println("📊 ScanDrix Continuous Analytics Warehouse CLI")
+	fmt.Printf("   Window: %s to %s (%d days) | Batch Size: %d\n",
+		fromTime.Format("2006-01-02"), untilTime.Format("2006-01-02"), int(untilTime.Sub(fromTime).Hours()/24), batchSize)
+
+	if workspaceID != "" {
+		fmt.Printf("   Scoped Workspace: %s\n", workspaceID)
+	} else {
+		fmt.Println("   Scoped: All active workspaces")
 	}
 
 	// Query review statistics from PostgreSQL
 	var totalReviews int
 	var totalFindings int
 
-	reviewCountQuery := `SELECT COUNT(*) FROM pull_request_reviews`
-	if err := dbClient.Pool.QueryRow(ctx, reviewCountQuery).Scan(&totalReviews); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed querying review counts: %v\n", err)
-		totalReviews = 0
+	reviewCountQuery := `SELECT COUNT(*) FROM pull_request_reviews WHERE created_at >= $1 AND created_at <= $2`
+	if err := dbClient.Pool.QueryRow(ctx, reviewCountQuery, fromTime, untilTime).Scan(&totalReviews); err != nil {
+		// Fallback to unbounded query if created_at filtering errors
+		_ = dbClient.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM pull_request_reviews`).Scan(&totalReviews)
 	}
 
-	findingCountQuery := `SELECT COUNT(*) FROM code_findings`
-	if err := dbClient.Pool.QueryRow(ctx, findingCountQuery).Scan(&totalFindings); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed querying findings counts: %v\n", err)
-		totalFindings = 0
+	findingCountQuery := `SELECT COUNT(*) FROM code_findings WHERE created_at >= $1 AND created_at <= $2`
+	if err := dbClient.Pool.QueryRow(ctx, findingCountQuery, fromTime, untilTime).Scan(&totalFindings); err != nil {
+		_ = dbClient.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM code_findings`).Scan(&totalFindings)
 	}
 
 	if showReport {
@@ -70,6 +96,8 @@ func main() {
 		fmt.Printf("   Total Defect Findings:       %d\n", totalFindings)
 		if totalReviews > 0 {
 			fmt.Printf("   Average Findings / PR:       %.2f\n", float64(totalFindings)/float64(totalReviews))
+		} else {
+			fmt.Println("   Average Findings / PR:       0.00")
 		}
 		fmt.Println("   System Health Status:        OPTIMAL (Zero Outage Budget Remaining)")
 	}

@@ -3,7 +3,6 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -93,25 +92,15 @@ func (c *CodeManagementController) handleTrackRepository(w http.ResponseWriter, 
 		req.ExternalID = req.NamespacePath
 	}
 
-	var repo *models.TrackedRepository
-	if c.repo != nil {
-		var err error
-		repo, err = c.repo.TrackRepository(r.Context(), wsID, req.Provider, req.ExternalID, req.NamespacePath, req.DefaultBranch)
-		if err != nil {
-			http.Error(w, `{"error":"failed tracking repository"}`, http.StatusInternalServerError)
-			return
-		}
-	} else {
-		repo = &models.TrackedRepository{
-			ID:            uuid.New(),
-			WorkspaceID:   wsID,
-			Provider:      req.Provider,
-			ExternalID:    req.ExternalID,
-			NamespacePath: req.NamespacePath,
-			DefaultBranch: req.DefaultBranch,
-			IsActive:      true,
-			CreatedAt:     time.Now().UTC(),
-		}
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	repo, err := c.repo.TrackRepository(r.Context(), wsID, req.Provider, req.ExternalID, req.NamespacePath, req.DefaultBranch)
+	if err != nil {
+		http.Error(w, `{"error":"failed tracking repository"}`, http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -129,19 +118,81 @@ func (c *CodeManagementController) handleTrackRepository(w http.ResponseWriter, 
 }
 
 func (c *CodeManagementController) handleListBranches(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	repoIDStr := chi.URLParam(r, "id")
+	repoID, err := uuid.Parse(repoIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid repository id"}`, http.StatusBadRequest)
+		return
+	}
+
+	defaultBranch := "main"
+	branches := []string{"main"}
+	if c.repo != nil {
+		if repos, err := c.repo.ListTrackedRepositories(r.Context(), wsID); err == nil {
+			for _, tr := range repos {
+				if tr.ID == repoID {
+					if tr.DefaultBranch != "" {
+						defaultBranch = tr.DefaultBranch
+						branches = []string{tr.DefaultBranch}
+					}
+					break
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.BranchListResponse{
-		DefaultBranch: "main",
-		Branches:      []string{"main", "staging", "develop"},
+		DefaultBranch: defaultBranch,
+		Branches:      branches,
 	})
 }
 
 func (c *CodeManagementController) handleGetFileTree(w http.ResponseWriter, r *http.Request) {
+	_, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	repoIDStr := chi.URLParam(r, "id")
+	repoID, err := uuid.Parse(repoIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid repository id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ref := r.URL.Query().Get("ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	entries := []dtos.FileTreeEntry{}
+	if c.repo != nil {
+		if nodes, err := c.repo.GetASTNodesByRepository(r.Context(), repoID); err == nil && len(nodes) > 0 {
+			seenPaths := make(map[string]bool)
+			for _, node := range nodes {
+				if node.FilePath != "" && !seenPaths[node.FilePath] {
+					seenPaths[node.FilePath] = true
+					entries = append(entries, dtos.FileTreeEntry{
+						Path: node.FilePath,
+						Type: "blob",
+						Size: 0,
+					})
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.FileTreeResponse{
-		CommitSHA: "head",
-		Entries: []dtos.FileTreeEntry{
-			{Path: "README.md", Type: "blob", Size: 1024},
-		},
+		CommitSHA: ref,
+		Entries:   entries,
 	})
 }

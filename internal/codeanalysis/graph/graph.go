@@ -359,3 +359,234 @@ func (g *GraphIndexer) IndexPythonFile(ctx context.Context, repoID uuid.UUID, fi
 
 	return extractedNodes, nil
 }
+
+// IndexJavaFile parses Java sources, extracting class/interface/method declarations and call graph edges.
+func (g *GraphIndexer) IndexJavaFile(ctx context.Context, repoID uuid.UUID, filePath, content string) ([]ASTNode, error) {
+	analysis := languages.AnalyzeJavaSource(content)
+	var extractedNodes []ASTNode
+	symbolMap := make(map[string]uuid.UUID)
+
+	now := time.Now().UTC()
+
+	// 1. Index Methods
+	for _, fn := range analysis.Methods {
+		nodeID := uuid.New()
+		symbolMap[fn.Name] = nodeID
+
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeFunction,
+			SymbolName:   fn.Name,
+			FilePath:     filePath,
+			StartLine:    fn.StartLine,
+			EndLine:      fn.EndLine,
+			Signature:    fn.Signature,
+			Language:     "java",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 2. Index Classes
+	for _, cls := range analysis.Classes {
+		nodeID := uuid.New()
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeClass,
+			SymbolName:   cls,
+			FilePath:     filePath,
+			StartLine:    1,
+			EndLine:      1,
+			Signature:    "class " + cls,
+			Language:     "java",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 3. Connect Method Calls
+	for _, fn := range analysis.Methods {
+		fromNodeID, ok := symbolMap[fn.Name]
+		if !ok {
+			continue
+		}
+		for _, callee := range fn.Calls {
+			if toNodeID, exists := symbolMap[callee]; exists && toNodeID != fromNodeID {
+				g.AddEdge(ASTEdge{
+					ID:           uuid.New(),
+					RepositoryID: repoID,
+					FromNodeID:   fromNodeID,
+					ToNodeID:     toNodeID,
+					Kind:         EdgeCalls,
+				})
+			}
+		}
+	}
+
+	return extractedNodes, nil
+}
+
+// IndexRustFile parses Rust sources, extracting functions, structs, and call graph edges.
+func (g *GraphIndexer) IndexRustFile(ctx context.Context, repoID uuid.UUID, filePath, content string) ([]ASTNode, error) {
+	analysis := languages.AnalyzeRustSource(content)
+	var extractedNodes []ASTNode
+	symbolMap := make(map[string]uuid.UUID)
+
+	now := time.Now().UTC()
+
+	// 1. Index Functions
+	for _, fn := range analysis.Functions {
+		nodeID := uuid.New()
+		symbolMap[fn.Name] = nodeID
+
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeFunction,
+			SymbolName:   fn.Name,
+			FilePath:     filePath,
+			StartLine:    fn.StartLine,
+			EndLine:      fn.EndLine,
+			Signature:    fn.Signature,
+			Language:     "rust",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 2. Index Structs
+	for _, st := range analysis.Structs {
+		nodeID := uuid.New()
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeClass,
+			SymbolName:   st,
+			FilePath:     filePath,
+			StartLine:    1,
+			EndLine:      1,
+			Signature:    "struct " + st,
+			Language:     "rust",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 3. Connect Function Calls
+	for _, fn := range analysis.Functions {
+		fromNodeID, ok := symbolMap[fn.Name]
+		if !ok {
+			continue
+		}
+		for _, callee := range fn.Calls {
+			if toNodeID, exists := symbolMap[callee]; exists && toNodeID != fromNodeID {
+				g.AddEdge(ASTEdge{
+					ID:           uuid.New(),
+					RepositoryID: repoID,
+					FromNodeID:   fromNodeID,
+					ToNodeID:     toNodeID,
+					Kind:         EdgeCalls,
+				})
+			}
+		}
+	}
+
+	return extractedNodes, nil
+}
+
+// IndexCppFile parses C/C++ sources, extracting functions, classes, and call graph edges.
+func (g *GraphIndexer) IndexCppFile(ctx context.Context, repoID uuid.UUID, filePath, content string) ([]ASTNode, error) {
+	analysis := languages.AnalyzeCppSource(content)
+	var extractedNodes []ASTNode
+	symbolMap := make(map[string]uuid.UUID)
+
+	now := time.Now().UTC()
+
+	// 1. Index Functions
+	for _, fn := range analysis.Functions {
+		nodeID := uuid.New()
+		symbolMap[fn.Name] = nodeID
+
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeFunction,
+			SymbolName:   fn.Name,
+			FilePath:     filePath,
+			StartLine:    fn.StartLine,
+			EndLine:      fn.EndLine,
+			Signature:    fn.Signature,
+			Language:     "cpp",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 2. Index Classes
+	for _, cls := range analysis.Classes {
+		nodeID := uuid.New()
+		node := ASTNode{
+			ID:           nodeID,
+			RepositoryID: repoID,
+			Kind:         NodeClass,
+			SymbolName:   cls,
+			FilePath:     filePath,
+			StartLine:    1,
+			EndLine:      1,
+			Signature:    "class " + cls,
+			Language:     "cpp",
+			UpdatedAt:    now,
+		}
+		g.UpsertNode(node)
+		extractedNodes = append(extractedNodes, node)
+	}
+
+	// 3. Connect Function Calls
+	for _, fn := range analysis.Functions {
+		fromNodeID, ok := symbolMap[fn.Name]
+		if !ok {
+			continue
+		}
+		for _, callee := range fn.Calls {
+			if toNodeID, exists := symbolMap[callee]; exists && toNodeID != fromNodeID {
+				g.AddEdge(ASTEdge{
+					ID:           uuid.New(),
+					RepositoryID: repoID,
+					FromNodeID:   fromNodeID,
+					ToNodeID:     toNodeID,
+					Kind:         EdgeCalls,
+				})
+			}
+		}
+	}
+
+	return extractedNodes, nil
+}
+
+// IndexSourceFile dynamically identifies the language and indexes the file in the repository graph.
+func (g *GraphIndexer) IndexSourceFile(ctx context.Context, repoID uuid.UUID, filePath, content string) ([]ASTNode, error) {
+	lang := languages.DetectLanguage(filePath, content)
+	switch lang {
+	case languages.LangGo:
+		return g.IndexGoFile(ctx, repoID, filePath, content)
+	case languages.LangTypeScript, languages.LangJavaScript:
+		return g.IndexTSFile(ctx, repoID, filePath, content)
+	case languages.LangPython:
+		return g.IndexPythonFile(ctx, repoID, filePath, content)
+	case languages.LangJava, languages.LangKotlin:
+		return g.IndexJavaFile(ctx, repoID, filePath, content)
+	case languages.LangRust:
+		return g.IndexRustFile(ctx, repoID, filePath, content)
+	case languages.LangCpp, languages.LangC:
+		return g.IndexCppFile(ctx, repoID, filePath, content)
+	default:
+		return nil, nil
+	}
+}

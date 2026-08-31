@@ -14,8 +14,9 @@ import (
 type OAuthProvider string
 
 const (
-	ProviderGitHub OAuthProvider = "github"
-	ProviderGitLab OAuthProvider = "gitlab"
+	ProviderGitHub    OAuthProvider = "github"
+	ProviderGitLab    OAuthProvider = "gitlab"
+	ProviderBitbucket OAuthProvider = "bitbucket"
 )
 
 var (
@@ -46,14 +47,14 @@ type ProviderConfig struct {
 	Scope        string
 }
 
-// OAuthService coordinates social login with GitHub and GitLab.
+// OAuthService coordinates social login with GitHub, GitLab, and Bitbucket.
 type OAuthService struct {
 	providers  map[OAuthProvider]ProviderConfig
 	httpClient *http.Client
 }
 
 // NewOAuthService initializes the OAuth provider registry.
-func NewOAuthService(githubCfg, gitlabCfg ProviderConfig) *OAuthService {
+func NewOAuthService(githubCfg, gitlabCfg ProviderConfig, bitbucketCfgs ...ProviderConfig) *OAuthService {
 	providers := make(map[OAuthProvider]ProviderConfig)
 
 	// Defaults for GitHub
@@ -88,6 +89,28 @@ func NewOAuthService(githubCfg, gitlabCfg ProviderConfig) *OAuthService {
 		gitlabCfg.Scope = "read_user"
 	}
 	providers[ProviderGitLab] = gitlabCfg
+
+	// Defaults for Bitbucket
+	var bitbucketCfg ProviderConfig
+	if len(bitbucketCfgs) > 0 {
+		bitbucketCfg = bitbucketCfgs[0]
+	}
+	if bitbucketCfg.AuthURL == "" {
+		bitbucketCfg.AuthURL = "https://bitbucket.org/site/oauth2/authorize"
+	}
+	if bitbucketCfg.TokenURL == "" {
+		bitbucketCfg.TokenURL = "https://bitbucket.org/site/oauth2/access_token"
+	}
+	if bitbucketCfg.UserURL == "" {
+		bitbucketCfg.UserURL = "https://api.bitbucket.org/2.0/user"
+	}
+	if bitbucketCfg.EmailURL == "" {
+		bitbucketCfg.EmailURL = "https://api.bitbucket.org/2.0/user/emails"
+	}
+	if bitbucketCfg.Scope == "" {
+		bitbucketCfg.Scope = "account email"
+	}
+	providers[ProviderBitbucket] = bitbucketCfg
 
 	return &OAuthService{
 		providers: providers,
@@ -233,6 +256,26 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 				profile.Email = email
 			}
 		}
+	} else if provider == ProviderBitbucket {
+		if uuidVal, ok := rawUser["uuid"].(string); ok {
+			profile.ProviderID = uuidVal
+		}
+		if username, ok := rawUser["username"].(string); ok {
+			profile.Username = username
+		}
+		if name, ok := rawUser["display_name"].(string); ok {
+			profile.DisplayName = name
+		}
+		if links, ok := rawUser["links"].(map[string]any); ok {
+			if avatar, ok := links["avatar"].(map[string]any); ok {
+				if href, ok := avatar["href"].(string); ok {
+					profile.AvatarURL = href
+				}
+			}
+		}
+		if cfg.EmailURL != "" {
+			profile.Email = s.fetchBitbucketPrimaryEmail(ctx, tokenResp.AccessToken, cfg.EmailURL)
+		}
 	}
 
 	if profile.Email == "" {
@@ -243,6 +286,42 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 	}
 
 	return profile, nil
+}
+
+func (s *OAuthService) fetchBitbucketPrimaryEmail(ctx context.Context, token, emailURL string) string {
+	req, err := http.NewRequestWithContext(ctx, "GET", emailURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var res struct {
+		Values []struct {
+			Email       string `json:"email"`
+			IsPrimary   bool   `json:"is_primary"`
+			IsConfirmed bool   `json:"is_confirmed"`
+		} `json:"values"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return ""
+	}
+
+	for _, e := range res.Values {
+		if e.IsPrimary && e.IsConfirmed {
+			return e.Email
+		}
+	}
+	if len(res.Values) > 0 {
+		return res.Values[0].Email
+	}
+	return ""
 }
 
 func (s *OAuthService) fetchGitHubPrimaryEmail(ctx context.Context, token, emailURL string) string {

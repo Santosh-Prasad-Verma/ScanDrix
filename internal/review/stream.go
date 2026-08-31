@@ -102,11 +102,17 @@ func (h *StreamHub) HandleSSE(w http.ResponseWriter, r *http.Request, reviewID u
 	fmt.Fprintf(w, "event: init\ndata: %s\n\n", string(initData))
 	flusher.Flush()
 
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
 	notify := r.Context().Done()
 	for {
 		select {
 		case <-notify:
 			return
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
 		case evt, ok := <-ch:
 			if !ok {
 				return

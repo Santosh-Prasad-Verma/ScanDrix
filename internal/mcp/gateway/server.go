@@ -65,6 +65,15 @@ func (s *MCPServer) RegisterTool(tool Tool, handler ToolHandler) {
 	s.handlers[tool.Name] = handler
 }
 
+type contextKey string
+
+const ContextKeyRole contextKey = "mcp_caller_role"
+
+// WithCallerRole attaches an agent authorization role to the context for MCP requests.
+func WithCallerRole(ctx context.Context, role AgentRole) context.Context {
+	return context.WithValue(ctx, ContextKeyRole, role)
+}
+
 // HandleRequest processes an incoming JSON-RPC 2.0 message and returns the response.
 func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSONRPCResponse {
 	if req.JSONRPC != "2.0" {
@@ -109,6 +118,7 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
+			Role      AgentRole      `json:"role,omitempty"`
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -121,13 +131,49 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 
 		s.mu.RLock()
 		handler, exists := s.handlers[params.Name]
+		var targetTool *Tool
+		for i := range s.tools {
+			if s.tools[i].Name == params.Name {
+				toolCopy := s.tools[i]
+				targetTool = &toolCopy
+				break
+			}
+		}
 		s.mu.RUnlock()
 
-		if !exists {
+		if !exists || targetTool == nil {
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Error:   &JSONRPCError{Code: CodeMethodNotFound, Message: fmt.Sprintf("tool '%s' not found", params.Name)},
+			}
+		}
+
+		// Enforce role-based access control
+		callerRole := params.Role
+		if callerRole == "" {
+			if ctxRole, ok := ctx.Value(ContextKeyRole).(AgentRole); ok {
+				callerRole = ctxRole
+			}
+		}
+
+		if callerRole != "" && len(targetTool.AllowedRoles) > 0 {
+			authorized := false
+			for _, allowed := range targetTool.AllowedRoles {
+				if allowed == callerRole || callerRole == RoleAdmin {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return &JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &JSONRPCError{
+						Code:    CodeForbidden,
+						Message: fmt.Sprintf("agent role '%s' is not authorized to execute tool '%s'", callerRole, params.Name),
+					},
+				}
 			}
 		}
 

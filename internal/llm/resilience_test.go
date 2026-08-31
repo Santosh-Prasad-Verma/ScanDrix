@@ -51,3 +51,41 @@ func TestCircuitBreakerTrippingAndRecovery(t *testing.T) {
 		t.Errorf("expected circuit to be CLOSED, got %d", cb.state)
 	}
 }
+
+func TestProviderBreakerRegistryIsolation(t *testing.T) {
+	registry := NewProviderBreakerRegistry(2, 50*time.Millisecond)
+
+	cbAnthropic := registry.GetOrCreate("BYOK-Anthropic")
+	cbOpenAI := registry.GetOrCreate("BYOK-OpenAI")
+
+	failErr := errors.New("anthropic 503 outage")
+
+	// Trip Anthropic breaker
+	for i := 0; i < 2; i++ {
+		_ = cbAnthropic.Execute(context.Background(), 0, func(ctx context.Context) error {
+			return failErr
+		})
+	}
+
+	// Anthropic should fail fast
+	errAnthropic := cbAnthropic.Execute(context.Background(), 0, func(ctx context.Context) error {
+		return nil
+	})
+	if !errors.Is(errAnthropic, ErrCircuitOpen) {
+		t.Fatalf("expected Anthropic to be open, got %v", errAnthropic)
+	}
+
+	// OpenAI breaker must still be healthy (StateClosed) and execute successfully
+	executedOpenAI := false
+	errOpenAI := cbOpenAI.Execute(context.Background(), 0, func(ctx context.Context) error {
+		executedOpenAI = true
+		return nil
+	})
+
+	if errOpenAI != nil {
+		t.Errorf("OpenAI should succeed, but got: %v", errOpenAI)
+	}
+	if !executedOpenAI {
+		t.Error("OpenAI should have executed despite Anthropic outage")
+	}
+}

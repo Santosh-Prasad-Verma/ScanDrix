@@ -21,6 +21,7 @@ build/
 coverage.html
 coverage.xml
 coverage.txt
+junit.xml
 cpu.pprof
 mem.pprof
 trace.out
@@ -49,6 +50,9 @@ Thumbs.db
 # 5. IDE, Editor & Workspace Artifacts
 .idea/
 .vscode/
+.agents/
+.claude/
+.cursor/
 *.swp
 *.swo
 *~
@@ -59,4 +63,6 @@ Thumbs.db
 tmp/
 temp/
 .scratch/
+/cli
+prompt.md
 SCANDRIX_ENGINEERING_MASTERCLASS.md

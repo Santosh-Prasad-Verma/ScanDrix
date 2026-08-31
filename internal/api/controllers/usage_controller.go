@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -11,7 +12,7 @@ import (
 	"github.com/scandrix/backend/internal/database"
 )
 
-// UsageController manages AI token metering and spend caps.
+// UsageController manages AI token metering, live quota headroom, and spend caps.
 type UsageController struct {
 	repo *database.Repository
 }
@@ -26,6 +27,8 @@ func (c *UsageController) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/", c.handleGetUsage)
+	r.Get("/quota", c.handleGetQuota)
+	r.Get("/history", c.handleGetUsageHistory)
 	r.Put("/spend-limit", c.handleUpdateSpendLimit)
 
 	return r
@@ -64,6 +67,80 @@ func (c *UsageController) handleGetUsage(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (c *UsageController) handleGetQuota(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	quota, err := c.repo.GetLiveTokenQuota(r.Context(), wsID)
+	if err != nil {
+		http.Error(w, `{"error":"failed evaluating live token quota"}`, http.StatusInternalServerError)
+		return
+	}
+
+	isExhausted := !quota.BYOKEnabled && quota.MonthlyTokenLimit > 0 && quota.TokensUsedThisMonth >= quota.MonthlyTokenLimit
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(dtos.LiveQuotaResponse{
+		Tier:                quota.Tier,
+		BYOKEnabled:         quota.BYOKEnabled,
+		MonthlyTokenLimit:   quota.MonthlyTokenLimit,
+		TokensUsedThisMonth: quota.TokensUsedThisMonth,
+		TokensRemaining:     quota.TokensRemaining,
+		PercentUsed:         quota.PercentUsed,
+		EstimatedCostUSD:    quota.EstimatedCostUSD,
+		BurstLimitPerMin:    quota.BurstLimitPerMin,
+		IsExhausted:         isExhausted,
+		BillingPeriodStart:  quota.BillingPeriodStart,
+		BillingPeriodEnd:    quota.BillingPeriodEnd,
+	})
+}
+
+func (c *UsageController) handleGetUsageHistory(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	days := 30
+	if daysStr := r.URL.Query().Get("days"); daysStr != "" {
+		if parsed, err := strconv.Atoi(daysStr); err == nil && parsed > 0 && parsed <= 90 {
+			days = parsed
+		}
+	}
+
+	history, err := c.repo.GetWorkspaceDailyUsageHistory(r.Context(), wsID, days)
+	if err != nil {
+		http.Error(w, `{"error":"failed querying usage history"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var totalTokens int64
+	var totalCost float64
+	points := make([]dtos.DailyUsagePoint, 0, len(history))
+	for _, h := range history {
+		totalTokens += h.TotalTokens
+		totalCost += h.CostUSD
+		points = append(points, dtos.DailyUsagePoint{
+			Date:             h.Date,
+			PromptTokens:     h.PromptTokens,
+			CompletionTokens: h.CompletionTokens,
+			TotalTokens:      h.TotalTokens,
+			CostUSD:          h.CostUSD,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(dtos.UsageHistoryResponse{
+		Days:         days,
+		DailyUsage:   points,
+		TotalTokens:  totalTokens,
+		TotalCostUSD: totalCost,
+	})
+}
 
 func (c *UsageController) handleUpdateSpendLimit(w http.ResponseWriter, r *http.Request) {
 	wsID, err := auth.WorkspaceFromContext(r.Context())

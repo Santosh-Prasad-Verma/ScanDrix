@@ -67,6 +67,28 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Replay / Delivery Deduplication: Extract unique delivery IDs from SCM providers
+	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Gitlab-Event-UUID")
+	}
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Hook-UUID")
+	}
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Delivery")
+	}
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Request-Id")
+	}
+	if deliveryID != "" {
+		if parsedUUID, err := uuid.Parse(deliveryID); err == nil {
+			event.ID = parsedUUID
+		} else {
+			event.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(string(provider)+":"+deliveryID))
+		}
+	}
+
 	// Ignore events that don't require review
 	if event.Action == ActionIgnored || event.Action == ActionClosed {
 		w.Header().Set("Content-Type", "application/json")
@@ -125,8 +147,7 @@ func detectProvider(r *http.Request) (models.SCMProvider, string) {
 
 func (h *IngestionHandler) verifyRequest(provider models.SCMProvider, r *http.Request, body []byte, secret string) bool {
 	if secret == "" {
-		// If no secret configured for repo/provider, allow for open webhook testing
-		return true
+		return false
 	}
 
 	switch provider {

@@ -1,0 +1,203 @@
+#!/bin/sh
+# ScanDrix CLI Installer (macOS, Linux, BSD)
+# Usage: curl -fsSL http://127.0.0.1:5500/install | sh
+# Or:    curl -fsSL https://get.scandrix.dev/install | sh -s -- [options]
+
+set -e
+
+if [ -t 1 ]; then
+  BOLD="\033[1m"
+  GREEN="\033[32m"
+  YELLOW="\033[33m"
+  DARK="\033[90m"
+  CYAN="\033[36m"
+  VIOLET="\033[38;5;141m"
+  RESET="\033[0m"
+else
+  BOLD=""
+  GREEN=""
+  YELLOW=""
+  DARK=""
+  CYAN=""
+  VIOLET=""
+  RESET=""
+fi
+
+print_ascii() {
+  printf "${CYAN}${BOLD}%s${RESET}\n" \
+'  ███████╗ ██████╗ █████╗ ███╗   ██╗██████╗ ██████╗ ██╗██╗  ██╗' \
+'  ██╔════╝██╔════╝██╔══██╗████╗  ██║██╔══██╗██╔══██╗██║╚██╗██╔╝' \
+'  ███████╗██║     ███████║██╔██╗ ██║██║  ██║██████╔╝██║ ╚███╔╝ ' \
+'  ╚════██║██║     ██╔══██║██║╚██╗██║██║  ██║██╔══██╗██║ ██╔██╗ ' \
+'  ███████║╚██████╗██║  ██║██║ ╚████║██████╔╝██║  ██║██║██╔╝ ██╗' \
+'  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝'
+
+  printf "\n"
+  printf "  ${VIOLET}Autonomous AI Code Review & Security Gate${RESET}\n"
+}
+
+print_success() {
+  printf "${GREEN}✓${RESET} %s\n" "$1"
+}
+
+print_info() {
+  printf "${CYAN}→${RESET} %s\n" "$1"
+}
+
+print_error() {
+  printf "${BOLD}\033[31mError:${RESET} %s\n" "$1" >&2
+}
+
+print_dim() {
+  printf "${DARK}%s${RESET}\n" "$1"
+}
+
+REPO="scandrix/backend"
+BINARY_NAME="scandrix"
+INSTALL_DIR="/usr/local/bin"
+
+# Check OS and Architecture
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+
+case "$ARCH" in
+  x86_64|amd64)
+    TARGET_ARCH="amd64"
+    ;;
+  arm64|aarch64)
+    TARGET_ARCH="arm64"
+    ;;
+  *)
+    print_error "Unsupported architecture: $ARCH"
+    exit 1
+    ;;
+esac
+
+case "$OS" in
+  linux|darwin)
+    TARGET_OS="$OS"
+    ;;
+  *)
+    print_error "Unsupported operating system: $OS"
+    exit 1
+    ;;
+esac
+
+TEAM_KEY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --team-key)
+      TEAM_KEY="$2"
+      shift 2
+      ;;
+    --team-key=*)
+      TEAM_KEY="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: curl -fsSL <url> | sh -s -- [options]"
+      echo ""
+      echo "Options:"
+      echo "  --team-key <key>  Authenticate with team key after installation"
+      echo "  -h, --help        Show this help message"
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+print_ascii
+printf "\n"
+
+# Resolve installation directory (fallback to ~/.local/bin if not root or writable)
+if [ ! -w "$INSTALL_DIR" ]; then
+  INSTALL_DIR="$HOME/.local/bin"
+  mkdir -p "$INSTALL_DIR"
+fi
+
+TARGET_BIN="${INSTALL_DIR}/${BINARY_NAME}"
+TEMP_FILE="/tmp/${BINARY_NAME}_install_$$"
+
+print_info "Installing ScanDrix CLI for ${TARGET_OS}/${TARGET_ARCH} into ${INSTALL_DIR}..."
+
+DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/scandrix-cli-${TARGET_OS}-${TARGET_ARCH}"
+
+# 1. Try downloading release binary
+DOWNLOAD_OK=0
+if command -v curl >/dev/null 2>&1; then
+  if curl -fsSL -o "$TEMP_FILE" "$DOWNLOAD_URL" 2>/dev/null; then
+    if [ -s "$TEMP_FILE" ]; then
+      DOWNLOAD_OK=1
+    fi
+  fi
+fi
+
+# 2. If release is not yet on GitHub, try building or using local build
+if [ "$DOWNLOAD_OK" -ne 1 ]; then
+  if [ -f "./bin/scandrix-cli" ]; then
+    cp "./bin/scandrix-cli" "$TEMP_FILE"
+  elif [ -f "./ScanDrix/bin/scandrix-cli" ]; then
+    cp "./ScanDrix/bin/scandrix-cli" "$TEMP_FILE"
+  elif [ -f "./scandrix" ]; then
+    cp "./scandrix" "$TEMP_FILE"
+  elif [ -f "./ScanDrix/scandrix" ]; then
+    cp "./ScanDrix/scandrix" "$TEMP_FILE"
+  elif command -v go >/dev/null 2>&1; then
+    print_info "Compiling native binary from Go toolchain..."
+    if [ -d "./cmd/cli" ]; then
+      go build -o "$TEMP_FILE" ./cmd/cli
+    elif [ -d "./ScanDrix/cmd/cli" ]; then
+      (cd "./ScanDrix" && go build -o "$TEMP_FILE" ./cmd/cli)
+    else
+      go build -o "$TEMP_FILE" github.com/scandrix/backend/cmd/cli@latest 2>/dev/null || true
+    fi
+  fi
+fi
+
+if [ ! -s "$TEMP_FILE" ]; then
+  print_error "Failed to download or build ScanDrix binary."
+  print_dim "You can build locally by running: cd ScanDrix && go build -o scandrix ./cmd/cli"
+  rm -f "$TEMP_FILE"
+  exit 1
+fi
+
+chmod +x "$TEMP_FILE"
+mv "$TEMP_FILE" "$TARGET_BIN"
+
+SCANDRIX_VERSION=$("$TARGET_BIN" --version 2>/dev/null || echo "v1.2.0")
+print_success "ScanDrix CLI installed successfully (${SCANDRIX_VERSION})"
+
+# Ensure directory is in user PATH
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    print_dim "Note: Add $INSTALL_DIR to your PATH if 'scandrix' is not found."
+    ;;
+esac
+
+# Team key authentication if supplied
+if [ -n "$TEAM_KEY" ]; then
+  print_info "Authenticating with team key..."
+  if "$TARGET_BIN" auth team-key --key "$TEAM_KEY"; then
+    print_success "Authenticated successfully"
+  else
+    print_error "Authentication failed"
+  fi
+  printf "\n"
+fi
+
+# Synchronize bundled agent skills
+print_info "Synchronizing bundled AI agent skills into local environment..."
+if "$TARGET_BIN" skills install >/dev/null 2>&1; then
+  print_success "Agent skills synchronized for Cursor, Claude Code, Codex, and AGY"
+fi
+
+printf "\n"
+printf "${BOLD}Quick Start:${RESET}\n"
+printf "  ${CYAN}scandrix auth login${RESET}        Authenticate terminal\n"
+printf "  ${CYAN}scandrix review --staged${RESET}   Review staged git changes\n"
+printf "  ${CYAN}scandrix tui${RESET}               Launch interactive 3-panel cockpit\n"
+printf "  ${CYAN}scandrix skills prompt${RESET}     Generate AI system prompt context\n"
+printf "\n"
