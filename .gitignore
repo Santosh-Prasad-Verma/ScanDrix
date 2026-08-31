@@ -1,17 +1,62 @@
-# Binaries and build artifacts
+# ==============================================================================
+# ScanDrix Enterprise Git Ignore Configuration
+# ==============================================================================
+
+# 1. Compiled Binaries & Build Output
 bin/
 dist/
+build/
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 *.test
+/scandrix-*
 
-# Environment variables and secrets (Master Rule 1.5)
+# 2. Test Coverage & Go Profiling Artifacts
+*.out
+*.prof
+*.pprof
+coverage.html
+coverage.xml
+coverage.txt
+cpu.pprof
+mem.pprof
+trace.out
+
+# 3. Environment Variables & Secret Credentials (Master Rule 1.5)
 .env
 .env.*
+.env.extra
+.env.local
 !.env.example
 *.pem
 *.key
+*.p12
+*.crt
+*.cer
 
-# IDE and OS artifacts
+# 4. OS-Specific Metadata Files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 5. IDE, Editor & Workspace Artifacts
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# 6. Temporary Directories & Local Documentation
+tmp/
+temp/
+.scratch/
+SCANDRIX_ENGINEERING_MASTERCLASS.md

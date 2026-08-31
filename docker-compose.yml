@@ -23,26 +23,6 @@ services:
     networks:
       - scandrix-network
 
-  # ----------------------------------------------------------------------------
-  # MongoDB (Audit Trail, Unstructured Payloads, Finding State Ledger)
-  # ----------------------------------------------------------------------------
-  mongodb:
-    image: mongo:7.0
-    container_name: scandrix-mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_DATABASE: ${MONGO_DB:-scandrix_audit}
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - scandrix-network
 
   # ----------------------------------------------------------------------------
   # RabbitMQ (Quorum Queues, Dead Letter Exchanges, Review Worker Distribution)
@@ -100,7 +80,6 @@ services:
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
-      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
@@ -114,6 +93,18 @@ services:
       - SMTP_USERNAME=${SMTP_USERNAME:-}
       - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SMTP_FROM=${SMTP_FROM:-no-reply@scandrix.dev}
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
+      - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID:-}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET:-}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - JIRA_CLIENT_ID=${JIRA_CLIENT_ID:-}
+      - JIRA_CLIENT_SECRET=${JIRA_CLIENT_SECRET:-}
+      - SCANDRIX_ENCRYPTION_KEY=${SCANDRIX_ENCRYPTION_KEY:-}
     ports:
       - "8080:8080"
     depends_on:
@@ -137,10 +128,19 @@ services:
     environment:
       - PORT=8081
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET:-}
+      - BITBUCKET_WEBHOOK_SECRET=${BITBUCKET_WEBHOOK_SECRET:-}
+      - AZURE_DEVOPS_WEBHOOK_SECRET=${AZURE_DEVOPS_WEBHOOK_SECRET:-}
+      - FORGEJO_WEBHOOK_SECRET=${FORGEJO_WEBHOOK_SECRET:-}
     ports:
       - "8081:8081"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - scandrix-network
@@ -157,13 +157,38 @@ services:
     entrypoint: ["/app/bin/scandrix-worker"]
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
-      - MONGO_URI=mongodb://mongodb:27017/${MONGO_DB:-scandrix_audit}
       - REDIS_URL=redis://redis:6379/0
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - BEDROCK_AWS_ACCESS_KEY_ID=${BEDROCK_AWS_ACCESS_KEY_ID:-}
+      - BEDROCK_AWS_SECRET_ACCESS_KEY=${BEDROCK_AWS_SECRET_ACCESS_KEY:-}
+      - BEDROCK_AWS_REGION=${BEDROCK_AWS_REGION:-us-east-1}
+      - VERTEX_ACCESS_TOKEN=${VERTEX_ACCESS_TOKEN:-}
+      - VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID:-}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-us-central1}
+      - OLLAMA_ENDPOINT=${OLLAMA_ENDPOINT:-http://localhost:11434}
+      - AI_MODEL_TRIAGE=${AI_MODEL_TRIAGE:-minimax/minimax-m3:free}
+      - AI_MODEL_LOGIC=${AI_MODEL_LOGIC:-nvidia/nemotron-3-ultra-550b-a55b:free}
+      - AI_MODEL_SECURITY=${AI_MODEL_SECURITY:-stealth/ox-alpha}
+      - AI_MODEL_PERF=${AI_MODEL_PERF:-google/gemini-2.5-flash}
+      - AI_MODEL_VERIFIER=${AI_MODEL_VERIFIER:-qwen/qwen-2.5-coder-32b-instruct}
+      - E2B_API_KEY=${E2B_API_KEY:-}
+      - E2B_ENDPOINT=${E2B_ENDPOINT:-}
+      - PROOFOFFIX_SANDBOX_ENABLED=${PROOFOFFIX_SANDBOX_ENABLED:-false}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      - BITBUCKET_USERNAME=${BITBUCKET_USERNAME:-}
+      - BITBUCKET_APP_PASSWORD=${BITBUCKET_APP_PASSWORD:-}
+      - SCANDRIX_ENCRYPTION_KEY=${SCANDRIX_ENCRYPTION_KEY:-}
+      - PROVENANCE_KEY_PATH=${PROVENANCE_KEY_PATH:-}
     depends_on:
       postgres:
-        condition: service_healthy
-      mongodb:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -174,7 +199,6 @@ services:
 
 volumes:
   postgres_data:
-  mongo_data:
   rabbitmq_data:
   redis_data:
 

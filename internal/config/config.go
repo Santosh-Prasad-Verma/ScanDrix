@@ -93,8 +93,9 @@ type Config struct {
 	MistralAPIKey     string
 
 	// Ephemeral Sandbox Execution
-	E2BAPIKey   string
-	E2BEndpoint string
+	E2BAPIKey                string
+	E2BEndpoint              string
+	ProofOfFixSandboxEnabled bool
 
 	// OpenRouter Multi-Model Configuration
 	AIModelTriage      string
@@ -220,6 +221,7 @@ func Load() (*Config, error) {
 		MistralAPIKey:             os.Getenv("MISTRAL_API_KEY"),
 		E2BAPIKey:                 os.Getenv("E2B_API_KEY"),
 		E2BEndpoint:               os.Getenv("E2B_ENDPOINT"),
+		ProofOfFixSandboxEnabled:  os.Getenv("PROOFOFFIX_SANDBOX_ENABLED") == "true",
 		AIModelTriage:             getEnvOrDefault("AI_MODEL_TRIAGE", "minimax/minimax-m3:free"),
 		AIModelLogic:              getEnvOrDefault("AI_MODEL_LOGIC", "nvidia/nemotron-3-ultra-550b-a55b:free"),
 		AIModelSecurity:           getEnvOrDefault("AI_MODEL_SECURITY", "stealth/ox-alpha"),
