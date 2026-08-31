@@ -49,22 +49,15 @@ func (c *TeamController) handleCreateTeam(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var team *models.Team
-	if c.repo != nil {
-		var err error
-		team, err = c.repo.CreateTeam(r.Context(), wsID, req.Name, req.Description)
-		if err != nil {
-			http.Error(w, `{"error":"failed creating team"}`, http.StatusInternalServerError)
-			return
-		}
-	} else {
-		team = &models.Team{
-			ID:          uuid.New(),
-			WorkspaceID: wsID,
-			Name:        req.Name,
-			Description: req.Description,
-			CreatedAt:   time.Now().UTC(),
-		}
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	team, err := c.repo.CreateTeam(r.Context(), wsID, req.Name, req.Description)
+	if err != nil {
+		http.Error(w, `{"error":"failed creating team"}`, http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -162,7 +155,13 @@ func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Requ
 		req.Role = models.RoleMember
 	}
 
-	userID := uuid.New()
+	var userID uuid.UUID
+	if user, err := c.repo.GetUserByEmail(r.Context(), req.Email); err == nil && user != nil {
+		userID = user.UUID
+	} else {
+		userID = uuid.New()
+	}
+
 	err = c.repo.AddTeamMember(r.Context(), teamID, userID, req.Email, string(req.Role))
 	if err != nil {
 		http.Error(w, `{"error":"failed adding member"}`, http.StatusInternalServerError)

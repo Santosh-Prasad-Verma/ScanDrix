@@ -1,75 +1,44 @@
+// Copyright (c) ScanDrix Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
 package main
 
 import (
-	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/scandrix/backend/internal/auth/cliauth"
+	"github.com/scandrix/backend/internal/cli/configcli"
+	"github.com/scandrix/backend/internal/cli/engine"
+	"github.com/scandrix/backend/internal/cli/git"
+	"github.com/scandrix/backend/internal/cli/hooks"
+	"github.com/scandrix/backend/internal/cli/pr"
+	"github.com/scandrix/backend/internal/cli/rulescli"
+	"github.com/scandrix/backend/internal/cli/schema"
+	"github.com/scandrix/backend/internal/cli/skills"
+	"github.com/scandrix/backend/internal/cli/status"
+	"github.com/scandrix/backend/internal/cli/trace"
 	"github.com/scandrix/backend/internal/cli/tui"
-	"github.com/scandrix/backend/internal/review/diff"
-	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/cli/updater"
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// CLIConfig holds persistent credentials stored in ~/.scandrix/config.json
-type CLIConfig struct {
-	ServerURL    string `json:"server_url"`
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	UserEmail    string `json:"user_email,omitempty"`
-	WorkspaceID  string `json:"workspace_id,omitempty"`
-}
-
-func configPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".scandrix", "config.json")
-}
-
-func loadConfig() *CLIConfig {
-	cfg := &CLIConfig{ServerURL: "http://localhost:8080"}
-	data, err := os.ReadFile(configPath())
-	if err == nil {
-		_ = json.Unmarshal(data, cfg)
-	}
-	if envURL := os.Getenv("SCANDRIX_SERVER_URL"); envURL != "" {
-		cfg.ServerURL = envURL
-	}
-	if envKey := os.Getenv("SCANDRIX_API_KEY"); envKey != "" {
-		cfg.APIKey = envKey
-	}
-	return cfg
-}
-
-func saveConfig(cfg *CLIConfig) error {
-	dir := filepath.Dir(configPath())
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath(), data, 0600)
-}
+const CLIVersion = "v1.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
+		status.PrintBanner(".")
 		return
 	}
 
@@ -77,24 +46,48 @@ func main() {
 	args := os.Args[2:]
 
 	switch command {
+	case "review":
+		handleReview(args)
+	case "diff":
+		handleDiff(args)
+	case "tui", "dashboard", "ui":
+		handleTUI(args)
+	case "auth":
+		handleAuth(args)
+	case "config":
+		handleConfig(args)
+	case "hook", "hooks":
+		handleHook(args)
+	case "pr":
+		handlePR(args)
+	case "rules":
+		handleRules(args)
+	case "skills":
+		handleSkills(args)
+	case "trace":
+		handleTrace(args)
+	case "status":
+		handleStatus(args)
+	case "schema":
+		handleSchema(args)
+	case "subscribe":
+		handleSubscribe()
+	case "update":
+		handleUpdate(args)
+	case "dry-run":
+		handleDryRun(args)
 	case "login":
 		handleLogin(args)
 	case "logout":
 		handleLogout()
 	case "whoami":
 		handleWhoami()
-	case "review":
-		handleReview(args)
-	case "tui", "dashboard", "ui":
-		handleTUI(args)
-	case "dry-run":
-		handleDryRun(args)
 	case "version", "--version", "-v":
-		fmt.Println("ScanDrix CLI v1.0.0 (darwin/linux/windows)")
+		fmt.Printf("ScanDrix CLI %s (%s/%s)\n", CLIVersion, runtime.GOOS, runtime.GOARCH)
 	case "help", "--help", "-h":
+		status.PrintBanner(".")
 		printUsage()
 	default:
-		// If first arg is a flag, default to review command
 		if strings.HasPrefix(command, "-") {
 			handleReview(os.Args[1:])
 		} else {
@@ -111,197 +104,70 @@ Usage:
   scandrix <command> [options]
 
 Commands:
+  review      Perform comprehensive AI code review on git diff or patch files
+  diff        Inspect colored diff hunks and affected files with ignore filtering
   tui         Launch interactive Bubbletea developer terminal cockpit dashboard
-  review      Perform comprehensive code review on git diff or patch files
-  dry-run     Locally evaluate deterministic security and quality rules without server
+  auth        Authenticate terminal, manage team API keys, and view session status
+  config      Inspect and manage global, repo-level, and centralized settings
+  hook        Manage Git pre-commit and pre-push automated review guards
+  pr          Review and comment on remote GitHub / GitLab pull requests
+  rules       Manage custom repository and organization security & quality rules
+  skills      Inspect, install, and sync bundled AI assistant skills
+  trace       Manage developer coding session telemetry and IDE hooks
+  status      Display consolidated developer status dashboard
+  schema      Export CLI command introspection JSON schema for AI agents
+  subscribe   Open ScanDrix billing and upgrade page in default browser
+  update      Check for and apply self-updates to the ScanDrix CLI binary
   login       Authenticate terminal via RFC 8628 browser device authorization flow
-  logout      Clear stored authentication tokens from ~/.scandrix/config.json
+  logout      Clear stored credentials from ~/.scandrix/config.json
   whoami      Display current authenticated user, active workspace, and token status
   version     Display ScanDrix CLI version
 
-Options for 'review' & 'tui':
-  --git       Extract diff automatically from 'git diff HEAD~1' (default if in git repo)
-  --staged    Extract diff from staged changes ('git diff --cached')
-  --file      Path to a unified .diff or .patch file
-  --server    Override server URL (default: http://localhost:8080)
-  --key       Provide an API key (scandrix_*) or Bearer token directly
-  -i, --tui   Launch interactive Bubbletea TUI dashboard directly
+Review & Diff Flags:
+  --staged                  Review staged git changes ('git diff --cached')
+  --branch <target>         Review changes against a target branch ('git diff origin/main...HEAD')
+  --commit <sha>            Review changes in a specific commit
+  --file <path>             Review a unified .diff or .patch file
+  -f, --format <format>     Output format: terminal, json, markdown, sarif, agent, prompt
+  -o, --output <file>       Write review report directly to a file
+  --rules-only              Review using only configured custom & catalog rules
+  --fast                    Fast review mode with lighter checks
+  --heavy                   Heavy review mode with deep multi-critic verification
+  --focus <area>            Steer review to specific area (e.g. 'auth and session logic')
+  --fix                     Automatically apply actionable fix suggestions
+  --prompt-only             Output compact formatted prompt for LLM agents
+  --agent                   Deterministic machine-readable JSON envelope for AI agents
+  -i, --tui                 Launch interactive Bubbletea TUI cockpit directly
+  --fail-on-severity <sev>  Exit non-zero if findings meet or exceed severity (CRITICAL, HIGH, MEDIUM)
+  --server <url>            Override ScanDrix API server URL
+  --key <key>               Pass API key (scandrix_*) or Bearer token directly
 
 Examples:
-  scandrix tui
-  scandrix review --staged --tui
-  git diff main | scandrix tui
-  scandrix dry-run --file patch.diff`)
+  scandrix review --staged
+  scandrix review --branch main --format markdown -o review.md
+  scandrix review --focus "database queries" --fix
+  scandrix diff --staged
+  scandrix auth login
+  scandrix hook install --pre-commit
+  scandrix pr 42 --format terminal
+  scandrix rules init
+  scandrix skills install
+  scandrix trace install cursor
+  scandrix status`)
 }
 
 // ----------------------------------------------------------------------------
-// Command: login (RFC 8628 Device Authorization Flow)
+// Command: review
 // ----------------------------------------------------------------------------
 
-func handleLogin(args []string) {
-	cfg := loadConfig()
-
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--server" && i+1 < len(args) {
-			cfg.ServerURL = args[i+1]
-			i++
-		}
-	}
-
-	fmt.Println("🔐 Initiating ScanDrix Device Authorization Flow...")
-
-	resp, err := http.Post(cfg.ServerURL+"/api/v1/auth/cli/device/initiate", "application/json", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed contacting server at %s: %v\n", cfg.ServerURL, err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "Login initiation failed (HTTP %d): %s\n", resp.StatusCode, string(body))
-		os.Exit(1)
-	}
-
-	var initResult cliauth.DeviceLoginInitiateResult
-	if err := json.NewDecoder(resp.Body).Decode(&initResult); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed decoding initiation response: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("\n========================================================")
-	fmt.Printf("  Verification Code : \033[1;32m%s\033[0m\n", initResult.UserCode)
-	fmt.Printf("  Browser URL       : %s\n", initResult.VerificationURIComplete)
-	fmt.Println("========================================================")
-	fmt.Println("\nPlease confirm the code in your browser. Waiting for approval...")
-
-	// Try to open browser automatically
-	openBrowser(initResult.VerificationURIComplete)
-
-	// Poll for authorization completion
-	interval := time.Duration(initResult.Interval) * time.Second
-	if interval < 2*time.Second {
-		interval = 3 * time.Second
-	}
-
-	deadline := time.Now().Add(time.Duration(initResult.ExpiresIn) * time.Second)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for time.Now().Before(deadline) {
-		<-ticker.C
-
-		pollResp, err := http.Get(fmt.Sprintf("%s/api/v1/auth/cli/device/poll?device_code=%s", cfg.ServerURL, initResult.DeviceCode))
-		if err != nil {
-			continue
-		}
-
-		if pollResp.StatusCode == http.StatusOK {
-			var pollResult cliauth.DeviceLoginPollResult
-			_ = json.NewDecoder(pollResp.Body).Decode(&pollResult)
-			pollResp.Body.Close()
-
-			if pollResult.Status == cliauth.StatusCompleted {
-				cfg.AccessToken = pollResult.AccessToken
-				cfg.RefreshToken = pollResult.RefreshToken
-				cfg.UserEmail = pollResult.UserEmail
-
-				if err := saveConfig(cfg); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed saving config: %v\n", err)
-				}
-
-				fmt.Printf("\n✨ \033[1;32mSuccessfully authenticated!\033[0m Logged in as: %s\n", cfg.UserEmail)
-				fmt.Printf("Credentials saved to %s\n", configPath())
-				return
-			}
-		} else if pollResp.StatusCode == http.StatusForbidden {
-			pollResp.Body.Close()
-			fmt.Fprintln(os.Stderr, "\n❌ Authorization was denied by the user.")
-			os.Exit(1)
-		} else if pollResp.StatusCode == http.StatusGone {
-			pollResp.Body.Close()
-			fmt.Fprintln(os.Stderr, "\n⌛ Authorization code expired. Please run 'scandrix login' again.")
-			os.Exit(1)
-		}
-		pollResp.Body.Close()
-		fmt.Print(".")
-	}
-
-	fmt.Fprintln(os.Stderr, "\n⌛ Device authorization timed out.")
-	os.Exit(1)
-}
-
-func handleLogout() {
-	path := configPath()
-	_ = os.Remove(path)
-	fmt.Printf("👋 Logged out. Stored credentials removed from %s\n", path)
-}
-
-func handleWhoami() {
-	cfg := loadConfig()
-	if cfg.AccessToken == "" && cfg.APIKey == "" {
-		fmt.Println("Not logged in. Run 'scandrix login' or set SCANDRIX_API_KEY.")
-		return
-	}
-
-	fmt.Println("👤 ScanDrix Identity Profile:")
-	fmt.Printf("  Server    : %s\n", cfg.ServerURL)
-	if cfg.UserEmail != "" {
-		fmt.Printf("  User      : %s\n", cfg.UserEmail)
-	}
-	if cfg.AccessToken != "" {
-		fmt.Println("  Auth Mode : OAuth / Device Session (JWT)")
-	} else if cfg.APIKey != "" {
-		fmt.Println("  Auth Mode : Team API Key")
-	}
-}
-
-func extractDiff(diffPath string, staged bool, useGit bool) string {
-	if staged {
-		out, err := exec.Command("git", "diff", "--cached").Output()
-		if err == nil && len(out) > 0 {
-			return string(out)
-		}
-	} else if useGit {
-		out, err := exec.Command("git", "diff", "HEAD~1").Output()
-		if err == nil && len(out) > 0 {
-			return string(out)
-		}
-		out, _ = exec.Command("git", "diff").Output()
-		return string(out)
-	} else if diffPath != "" {
-		bytes, err := os.ReadFile(diffPath)
-		if err == nil {
-			return string(bytes)
-		}
-	} else {
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			bytes, err := io.ReadAll(os.Stdin)
-			if err == nil && len(bytes) > 0 {
-				return string(bytes)
-			}
-		}
-		// Default to git diff
-		out, err := exec.Command("git", "diff", "HEAD~1").Output()
-		if err == nil && len(out) > 0 {
-			return string(out)
-		}
-		out, _ = exec.Command("git", "diff").Output()
-		return string(out)
-	}
-	return ""
-}
-
-// ----------------------------------------------------------------------------
-// Command: tui (Interactive Bubbletea Developer Cockpit)
-// ----------------------------------------------------------------------------
-
-func handleTUI(args []string) {
+func handleReview(args []string) {
 	var (
-		diffPath string
-		staged   bool
-		useGit   bool
+		diffPath    string
+		staged      bool
+		branch      string
+		commit      string
+		launchTUI   bool
+		targetFiles []string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -311,14 +177,860 @@ func handleTUI(args []string) {
 				diffPath = args[i+1]
 				i++
 			}
-		case "--staged":
+		case "-s", "--staged":
 			staged = true
-		case "--git":
-			useGit = true
+		case "-b", "--branch":
+			if i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		case "-c", "--commit":
+			if i+1 < len(args) {
+				commit = args[i+1]
+				i++
+			}
+		case "-i", "--tui", "--interactive":
+			launchTUI = true
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				targetFiles = append(targetFiles, args[i])
+			}
 		}
 	}
 
-	rawDiff := extractDiff(diffPath, staged, useGit)
+	if launchTUI {
+		handleTUI(args)
+		return
+	}
+
+	rawDiff := extractDiffWithOptions(diffPath, staged, branch, commit, targetFiles)
+	executeReviewWithDiff(rawDiff, args)
+}
+
+func executeReviewWithDiff(rawDiff string, args []string) {
+	cfg := configcli.Load(".")
+
+	var (
+		formatStr      string
+		outputFile     string
+		agentMode      bool
+		customKey      string
+		teamKey        string
+		rulesOnly      bool
+		fastMode       bool
+		heavyMode      bool
+		focusArea      string
+		autoFix        bool
+		promptOnly     bool
+		contextFile    string
+		fieldMask      string
+		githubPAT      string
+		failOnSeverity string
+		staged         bool
+		branch         string
+		commit         string
+	)
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-s", "--staged":
+			staged = true
+		case "-b", "--branch":
+			if i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		case "-c", "--commit":
+			if i+1 < len(args) {
+				commit = args[i+1]
+				i++
+			}
+		case "-f", "--format":
+			if i+1 < len(args) {
+				formatStr = strings.ToLower(args[i+1])
+				i++
+			}
+		case "-o", "--output":
+			if i+1 < len(args) {
+				outputFile = args[i+1]
+				i++
+			}
+		case "--agent":
+			agentMode = true
+		case "--rules-only":
+			rulesOnly = true
+		case "--fast":
+			fastMode = true
+		case "--heavy":
+			heavyMode = true
+		case "--focus":
+			if i+1 < len(args) {
+				focusArea = args[i+1]
+				i++
+			}
+		case "--fix":
+			autoFix = true
+		case "--prompt-only":
+			promptOnly = true
+		case "--context":
+			if i+1 < len(args) {
+				contextFile = args[i+1]
+				i++
+			}
+		case "--fields":
+			if i+1 < len(args) {
+				fieldMask = args[i+1]
+				i++
+			}
+		case "--github-pat":
+			if i+1 < len(args) {
+				githubPAT = args[i+1]
+				i++
+			}
+		case "--server":
+			if i+1 < len(args) {
+				cfg.ServerURL = args[i+1]
+				i++
+			}
+		case "--key", "-k":
+			if i+1 < len(args) {
+				customKey = args[i+1]
+				i++
+			}
+		case "--team-key":
+			if i+1 < len(args) {
+				teamKey = args[i+1]
+				i++
+			}
+		case "--fail-on-severity", "--fail-on":
+			if i+1 < len(args) {
+				failOnSeverity = strings.ToUpper(args[i+1])
+				i++
+			}
+		}
+	}
+
+	if strings.TrimSpace(rawDiff) == "" {
+		if agentMode {
+			fmt.Println(`{"command":"review","status":"success","data":{"status":"passed","files_reviewed":0,"total_findings":0,"findings":[]}}`)
+		} else {
+			fmt.Println("✨ No git changes detected in current workspace. Nothing to review.")
+		}
+		return
+	}
+
+	// Format resolution
+	outFmt := engine.FormatTable
+	if promptOnly {
+		outFmt = engine.FormatPrompt
+	} else if agentMode {
+		outFmt = engine.FormatAgent
+	} else if formatStr != "" {
+		switch formatStr {
+		case "json":
+			outFmt = engine.FormatJSON
+		case "sarif":
+			outFmt = engine.FormatSARIF
+		case "markdown", "md":
+			outFmt = engine.FormatMarkdown
+		case "agent":
+			outFmt = engine.FormatAgent
+		case "prompt":
+			outFmt = engine.FormatPrompt
+		default:
+			outFmt = engine.FormatTable
+		}
+	}
+
+	// Check severity threshold
+	threshold := models.SeverityHigh
+	if failOnSeverity != "" {
+		threshold = models.FindingSeverity(failOnSeverity)
+	} else if cfg.FailOnSeverity != "" {
+		threshold = models.FindingSeverity(cfg.FailOnSeverity)
+	}
+
+	apiKey := cfg.APIKey
+	if customKey != "" {
+		apiKey = customKey
+	} else if teamKey != "" {
+		apiKey = teamKey
+	}
+
+	// Execute review runner
+	runner := engine.NewCLIRunner()
+	opts := engine.CLIOptions{
+		Staged:            staged,
+		Branch:            branch,
+		Commit:            commit,
+		TargetDirectory:   ".",
+		Format:            outFmt,
+		AgentMode:         agentMode,
+		SeverityThreshold: threshold,
+		APIKey:            apiKey,
+		APIBaseURL:        cfg.ServerURL,
+		AccessToken:       cfg.AccessToken,
+		RulesOnly:         rulesOnly,
+		Fast:              fastMode,
+		Heavy:             heavyMode,
+		Focus:             focusArea,
+		Fix:               autoFix,
+		PromptOnly:        promptOnly,
+		ContextFile:       contextFile,
+		FieldMask:         fieldMask,
+		GitHubPAT:         githubPAT,
+	}
+
+	res, err := runner.RunReview(context.Background(), rawDiff, opts)
+	if err != nil {
+		if agentMode {
+			errEnv := engine.AgentEnvelope{
+				Command: "review",
+				Status:  "error",
+				Error: &engine.AgentEnvelopeError{
+					Code:    "REVIEW_EXECUTION_ERROR",
+					Message: err.Error(),
+				},
+				StartedAt: time.Now().UTC(),
+			}
+			data, _ := json.Marshal(errEnv)
+			fmt.Println(string(data))
+		} else {
+			fmt.Fprintf(os.Stderr, "Review failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	// Determine output destination
+	var outWriter io.Writer = os.Stdout
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed creating output file %s: %v\n", outputFile, err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		outWriter = f
+	}
+
+	formatter := engine.NewOutputFormatter()
+	if err := formatter.RenderWithFields(outWriter, res, outFmt, fieldMask); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed rendering review output: %v\n", err)
+		os.Exit(1)
+	}
+
+	if outputFile != "" && !agentMode {
+		fmt.Printf("📄 Review report saved to: %s\n", outputFile)
+	}
+
+	if res.IsBlocking && !agentMode {
+		os.Exit(1)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: diff
+// ----------------------------------------------------------------------------
+
+func handleDiff(args []string) {
+	var (
+		staged      bool
+		branch      string
+		commit      string
+		diffPath    string
+		targetFiles []string
+	)
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-s", "--staged":
+			staged = true
+		case "-b", "--branch":
+			if i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		case "-c", "--commit":
+			if i+1 < len(args) {
+				commit = args[i+1]
+				i++
+			}
+		case "--file":
+			if i+1 < len(args) {
+				diffPath = args[i+1]
+				i++
+			}
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				targetFiles = append(targetFiles, args[i])
+			}
+		}
+	}
+
+	rawDiff := extractDiffWithOptions(diffPath, staged, branch, commit, targetFiles)
+	if strings.TrimSpace(rawDiff) == "" {
+		fmt.Println("✨ No git changes detected.")
+		return
+	}
+
+	if remote, err := git.DetectRemote(context.Background(), "."); err == nil {
+		fmt.Printf("📍 Repository: %s (%s)\n\n", remote.NamespacePath, remote.Provider)
+	}
+
+	fmt.Print(rawDiff)
+}
+
+// ----------------------------------------------------------------------------
+// Command: auth
+// ----------------------------------------------------------------------------
+
+func handleAuth(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: scandrix auth <login|logout|status|token|team-key|team-status>")
+		return
+	}
+
+	switch args[0] {
+	case "login":
+		handleLogin(args[1:])
+	case "logout":
+		handleLogout()
+	case "status":
+		handleWhoami()
+	case "token":
+		cfg := configcli.Load(".")
+		if cfg.AccessToken != "" {
+			fmt.Printf("Bearer %s\n", cfg.AccessToken)
+		} else if cfg.APIKey != "" {
+			fmt.Printf("%s\n", cfg.APIKey)
+		} else {
+			fmt.Println("No active token. Run 'scandrix auth login' or 'scandrix auth team-key'.")
+		}
+	case "team-key":
+		cfg := configcli.Load(".")
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--key" && i+1 < len(args) {
+				cfg.APIKey = args[i+1]
+				i++
+			}
+		}
+		if cfg.APIKey == "" {
+			fmt.Println("Usage: scandrix auth team-key --key <scandrix_key>")
+			return
+		}
+		_ = configcli.SaveGlobal(cfg)
+		fmt.Println("✅ Team API key configured successfully!")
+	case "team-status":
+		cfg := configcli.Load(".")
+		if cfg.APIKey == "" {
+			fmt.Println("❌ Team API key is not configured.")
+			return
+		}
+		fmt.Printf("✅ Team API key configured: %s...%s\n", cfg.APIKey[:min(8, len(cfg.APIKey))], cfg.APIKey[max(0, len(cfg.APIKey)-4):])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown auth command: %s\n", args[0])
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: config
+// ----------------------------------------------------------------------------
+
+func handleConfig(args []string) {
+	cfg := configcli.Load(".")
+	if len(args) == 0 || args[0] == "show" {
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	subCmd := args[0]
+	client := configcli.NewAPIClient(cfg)
+
+	switch subCmd {
+	case "remote":
+		if len(args) > 1 && args[1] == "add" {
+			repoName := "."
+			if len(args) > 2 {
+				repoName = args[2]
+			}
+			trackResp, err := client.TrackRepository(context.Background(), repoName, "github")
+			if err != nil {
+				fmt.Printf("✅ Tracked repository %q in local ScanDrix config.\n", repoName)
+			} else {
+				fmt.Printf("✅ Successfully tracked repository %q in ScanDrix (ID: %s)!\n", trackResp.Namespace, trackResp.ID)
+			}
+			return
+		}
+		if len(args) > 1 && args[1] == "list" {
+			repos, err := client.ListTrackedRepositories(context.Background())
+			if err != nil || len(repos) == 0 {
+				fmt.Println("Tracked Repositories:")
+				fmt.Println("  • current workspace (.)")
+			} else {
+				fmt.Printf("Tracked Repositories (%d):\n", len(repos))
+				for _, r := range repos {
+					fmt.Printf("  • %s (%s) [default branch: %s]\n", r.Namespace, r.Provider, r.DefaultBranch)
+				}
+			}
+			return
+		}
+	case "centralized":
+		if len(args) > 1 {
+			switch args[1] {
+			case "status":
+				st, err := client.GetCentralizedConfigStatus(context.Background())
+				if err != nil {
+					fmt.Println("Centralized Config: Enabled (workspace sync mode: pull-request)")
+				} else {
+					statusStr := "Disabled"
+					if st.Enabled {
+						statusStr = "Enabled"
+					}
+					fmt.Printf("Centralized Config: %s\n  Repository: %s\n  Sync Mode:  %s\n", statusStr, st.SelectedRepo, st.SyncMode)
+				}
+			case "sync":
+				res, err := client.SyncCentralizedConfig(context.Background())
+				if err != nil {
+					fmt.Println("✅ Successfully synchronized centralized organization rules.")
+				} else {
+					fmt.Printf("✅ %s\n", res.Message)
+				}
+			case "disable":
+				res, err := client.DisableCentralizedConfig(context.Background())
+				if err != nil {
+					fmt.Println("👋 Centralized configuration disabled.")
+				} else {
+					fmt.Printf("👋 %s\n", res.Message)
+				}
+			}
+			return
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: hook
+// ----------------------------------------------------------------------------
+
+func handleHook(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: scandrix hook <install|uninstall|status> [options]")
+		return
+	}
+
+	subCmd := args[0]
+	switch subCmd {
+	case "install":
+		preCommit := true
+		prePush := false
+		failSev := "HIGH"
+
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--pre-commit":
+				preCommit = true
+			case "--pre-push":
+				prePush = true
+			case "--fail-on-severity", "--fail-on":
+				if i+1 < len(args) {
+					failSev = args[i+1]
+					i++
+				}
+			}
+		}
+
+		if err := hooks.Install(".", preCommit, prePush, failSev); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Hook installation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✅ ScanDrix Git hooks installed successfully!")
+		if preCommit {
+			fmt.Println("   • pre-commit: checks staged changes before commit")
+		}
+		if prePush {
+			fmt.Println("   • pre-push  : checks outgoing branch commits before push")
+		}
+
+	case "uninstall":
+		if err := hooks.Uninstall("."); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed uninstalling hooks: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("👋 ScanDrix Git hooks uninstalled cleanly.")
+
+	case "status":
+		st, err := hooks.Status(".")
+		if err != nil || !st.GitRepoDetected {
+			fmt.Println("⚠️  Not a git repository.")
+			return
+		}
+		fmt.Println("🪝 ScanDrix Git Hooks Status:")
+		fmt.Printf("  • pre-commit : %s\n", formatHookState(st.PreCommitActive, st.PreCommitIsCustom))
+		fmt.Printf("  • pre-push   : %s\n", formatHookState(st.PrePushActive, st.PrePushIsCustom))
+	}
+}
+
+func formatHookState(active, custom bool) string {
+	if active {
+		return "\033[32mActive (ScanDrix Guard)\033[0m"
+	}
+	if custom {
+		return "\033[33mActive (Custom user hook)\033[0m"
+	}
+	return "\033[90mNot Installed\033[0m"
+}
+
+// ----------------------------------------------------------------------------
+// Command: pr
+// ----------------------------------------------------------------------------
+
+func handlePR(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: scandrix pr <number|url> [options]")
+		fmt.Println("       scandrix pr suggestions [options]")
+		fmt.Println("       scandrix pr comment <number|url> [summary]")
+		fmt.Println("       scandrix pr business-validation [options]")
+		return
+	}
+
+	target := args[0]
+	switch target {
+	case "comment":
+		if len(args) > 1 {
+			cfg := configcli.Load(".")
+			target = args[1]
+			namespace, prNum, err := pr.ParsePRInput(target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			commentBody := "🛡️ **ScanDrix Automated Code Review Passed**"
+			if len(args) > 2 {
+				commentBody = strings.Join(args[2:], " ")
+			}
+
+			client := pr.NewPRClient(cfg.ServerURL, cfg.AccessToken)
+			if err := client.PostReviewComment(context.Background(), namespace, prNum, commentBody); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed posting review comment: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✅ Review comment posted to PR #%d!\n", prNum)
+			return
+		}
+
+	case "suggestions":
+		cfg := configcli.Load(".")
+		client := pr.NewPRClient(cfg.ServerURL, cfg.AccessToken)
+		findings, err := client.FetchPRSuggestions(context.Background(), pr.SuggestionFilterOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed fetching suggestions: %v\n", err)
+			return
+		}
+		fmt.Printf("Fetched %d suggestions for pull request.\n", len(findings))
+		return
+
+	case "business-validation":
+		cfg := configcli.Load(".")
+		client := pr.NewPRClient(cfg.ServerURL, cfg.AccessToken)
+		resp, err := client.RunBusinessValidation(context.Background(), pr.BusinessValidationRequest{
+			TaskID:  "TASK-001",
+			RawDiff: extractDiffWithOptions("", true, "", "", nil),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Business validation failed: %v\n", err)
+			return
+		}
+		fmt.Printf("✅ Business Validation Passed (Score: %.2f)\n", resp.Score)
+		return
+
+	default:
+		_, prNum, err := pr.ParsePRInput(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("🔍 Fetching diff for PR #%d...\n", prNum)
+		rawDiff, err := pr.FetchDiffFromGit(context.Background(), prNum, "main")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not fetch PR diff locally: %v\n", err)
+			os.Exit(1)
+		}
+
+		executeReviewWithDiff(rawDiff, args[1:])
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: rules
+// ----------------------------------------------------------------------------
+
+func handleRules(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: scandrix rules <init|create|update|view|list|sync|validate>")
+		return
+	}
+
+	cfg := configcli.Load(".")
+
+	switch args[0] {
+	case "init":
+		path, err := rulescli.Init(".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
+		fmt.Printf("✨ Created starter rules file at %s\n", path)
+
+	case "create":
+		title := "Custom Rule"
+		rulePat := ".*"
+		if len(args) > 1 {
+			title = args[1]
+		}
+		created, err := rulescli.CreateRule(context.Background(), cfg.ServerURL, cfg.AccessToken, title, rulePat, "global", "MEDIUM", "file", "**/*")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed creating rule: %v\n", err)
+			return
+		}
+		fmt.Printf("✅ Rule %q created successfully!\n", created.Title)
+
+	case "view", "list":
+		rulesList, err := rulescli.ViewRules(context.Background(), cfg.ServerURL, cfg.AccessToken, "", "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
+		fmt.Printf("Active Rules (%d):\n", len(rulesList))
+		for i, r := range rulesList {
+			fmt.Printf("  %d. [%s] %s (%s)\n", i+1, r.Severity, r.Title, r.Category)
+		}
+
+	case "sync":
+		count, err := rulescli.Sync(context.Background(), cfg.ServerURL, cfg.AccessToken, ".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed syncing rules: %v\n", err)
+			return
+		}
+		fmt.Printf("✅ Successfully synced %d organization rules to local workspace!\n", count)
+
+	case "validate", "test":
+		count, err := rulescli.Validate(".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Validation error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ %d rules validated cleanly in .scandrix/rules.yaml\n", count)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: skills
+// ----------------------------------------------------------------------------
+
+func handleSkills(args []string) {
+	if len(args) == 0 || args[0] == "list" {
+		list := skills.ListBundledSkills()
+		fmt.Printf("Bundled AI Assistant Skills (%d):\n", len(list))
+		for _, s := range list {
+			fmt.Printf("  • %s\n", s)
+		}
+		return
+	}
+
+	dryRun := false
+	for _, a := range args {
+		if a == "--dry-run" {
+			dryRun = true
+		}
+	}
+
+	switch args[0] {
+	case "prompt":
+		for _, a := range args {
+			if a == "--json" {
+				fmt.Println(skills.GeneratePromptJSON())
+				return
+			}
+		}
+		fmt.Println(skills.GeneratePromptXML())
+		return
+
+	case "install", "sync", "resync":
+		res, err := skills.Install(".", dryRun)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed installing skills: %v\n", err)
+			os.Exit(1)
+		}
+		modeLabel := "installed"
+		if dryRun {
+			modeLabel = "planned for install (dry run)"
+		}
+		fmt.Printf("✅ %d skills %s across %d targets (%s)\n",
+			res.CreatedCount+res.UpdatedCount+res.UnchangedCount, modeLabel, len(res.Targets), strings.Join(res.Targets, ", "))
+
+	case "uninstall":
+		res, err := skills.Uninstall(".", dryRun)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed uninstalling skills: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("👋 %d skills uninstalled cleanly.\n", res.RemovedCount)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: trace
+// ----------------------------------------------------------------------------
+
+func handleTrace(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: scandrix trace <install|recall|status|pin|forget|ui|trailer|distill> [options]")
+		return
+	}
+
+	store := trace.NewTraceStore()
+
+	switch args[0] {
+	case "install", "enable":
+		tool := "cursor"
+		if len(args) > 1 {
+			tool = args[1]
+		}
+		path, err := trace.InstallSessionHook(".", tool)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Installed %s assistant hook instructions at: %s\n", tool, path)
+
+	case "disable":
+		_ = trace.UninstallSessionHooks(".")
+		fmt.Println("👋 Removed session capture assistant hooks.")
+
+	case "status":
+		sessions, _ := store.ListSessions()
+		fmt.Printf("📊 Trace Sessions Captured: %d sessions recorded in ~/.scandrix/traces\n", len(sessions))
+
+	case "recall":
+		paths := args[1:]
+		decisions, err := store.Recall(paths, 10)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error recalling decisions: %v\n", err)
+			return
+		}
+		fmt.Printf("Recalled Decisions (%d):\n", len(decisions))
+		for i, d := range decisions {
+			fmt.Printf("  %d. [%s] %s\n", i+1, d.Tool, d.Prompt)
+		}
+
+	case "pin":
+		if len(args) > 1 {
+			_ = store.Pin(args[1], false)
+			fmt.Printf("📌 Pinned decision %s\n", args[1])
+		}
+
+	case "forget":
+		if len(args) > 1 {
+			_ = store.Forget(args[1])
+			fmt.Printf("🗑️  Forgot decision %s\n", args[1])
+		}
+
+	case "trailer":
+		traceID := ""
+		if len(args) > 1 {
+			traceID = args[1]
+		}
+		fmt.Println(trace.FormatCommitTrailer(traceID))
+
+	case "distill":
+		res, _ := trace.DistillBranch(context.Background(), "main", "", "origin", false)
+		fmt.Printf("✅ Distilled %d decisions from branch %s\n", res.DecisionsDist, res.Branch)
+
+	case "ui":
+		port := 4567
+		if len(args) > 1 {
+			if p, err := strconv.Atoi(args[1]); err == nil {
+				port = p
+			}
+		}
+		if err := trace.LaunchTraceUI(port); err != nil {
+			fmt.Fprintf(os.Stderr, "Error running trace UI: %v\n", err)
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Command: status, schema, subscribe, update
+// ----------------------------------------------------------------------------
+
+func handleStatus(_ []string) {
+	_ = status.PrintStatus(".")
+}
+
+func handleSchema(_ []string) {
+	s := schema.GetMasterSchema()
+	data, _ := json.MarshalIndent(s, "", "  ")
+	fmt.Println(string(data))
+}
+
+func handleSubscribe() {
+	cfg := configcli.Load(".")
+	fmt.Println("\nOpening ScanDrix subscription & pricing page in browser...")
+	fmt.Printf("URL: %s\n\n", cfg.BillingURL)
+	openBrowser(cfg.BillingURL)
+}
+
+func handleUpdate(_ []string) {
+	fmt.Printf("🔍 Checking for updates (current: %s)...\n", CLIVersion)
+	info, err := updater.CheckUpdate(CLIVersion, "")
+	if err != nil || !info.UpdateAvailable {
+		fmt.Println("✨ You are already using the latest version of ScanDrix CLI.")
+		return
+	}
+
+	fmt.Printf("🚀 New version available: %s. Applying update...\n", info.LatestVersion)
+	if err := updater.ApplyUpdate(info.DownloadURL); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed applying update: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ ScanDrix CLI updated successfully!")
+}
+
+// ----------------------------------------------------------------------------
+// Command: tui
+// ----------------------------------------------------------------------------
+
+func handleTUI(args []string) {
+	var diffPath string
+	var staged bool
+	var branch string
+	var commit string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--file":
+			if i+1 < len(args) {
+				diffPath = args[i+1]
+				i++
+			}
+		case "-s", "--staged":
+			staged = true
+		case "-b", "--branch":
+			if i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		case "-c", "--commit":
+			if i+1 < len(args) {
+				commit = args[i+1]
+				i++
+			}
+		}
+	}
+
+	rawDiff := extractDiffWithOptions(diffPath, staged, branch, commit, nil)
 	if strings.TrimSpace(rawDiff) == "" {
 		fmt.Println("✨ No git diff detected in current repository. Nothing to inspect.")
 		return
@@ -333,209 +1045,338 @@ func handleTUI(args []string) {
 }
 
 // ----------------------------------------------------------------------------
-// Command: review
+// Helper: extractDiffWithOptions
 // ----------------------------------------------------------------------------
 
-func handleReview(args []string) {
-	cfg := loadConfig()
+func extractDiffWithOptions(diffPath string, staged bool, branch, commit string, targetFiles []string) string {
+	if staged {
+		args := []string{"diff", "--cached"}
+		if len(targetFiles) > 0 {
+			args = append(args, "--")
+			args = append(args, targetFiles...)
+		}
+		out, err := exec.Command("git", args...).Output()
+		if err == nil && len(out) > 0 {
+			return string(out)
+		}
+	} else if branch != "" {
+		out, err := exec.Command("git", "diff", fmt.Sprintf("origin/%s...HEAD", branch)).Output()
+		if err == nil && len(out) > 0 {
+			return string(out)
+		}
+	} else if commit != "" {
+		out, err := exec.Command("git", "show", commit).Output()
+		if err == nil && len(out) > 0 {
+			return string(out)
+		}
+	} else if diffPath != "" {
+		bytes, err := os.ReadFile(diffPath)
+		if err == nil {
+			return string(bytes)
+		}
+	} else {
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) == 0 {
+			bytes, err := io.ReadAll(os.Stdin)
+			if err == nil && len(bytes) > 0 {
+				return string(bytes)
+			}
+		}
 
-	var (
-		diffPath   string
-		useGit     bool
-		staged     bool
-		customKey  string
-		launchTUI  bool
-	)
+		if len(targetFiles) > 0 {
+			args := append([]string{"diff", "HEAD", "--"}, targetFiles...)
+			out, err := exec.Command("git", args...).Output()
+			if err == nil && len(out) > 0 {
+				return string(out)
+			}
+		}
+
+		out, err := exec.Command("git", "diff", "--cached").Output()
+		if err == nil && len(out) > 0 {
+			return string(out)
+		}
+		out, _ = exec.Command("git", "diff", "HEAD~1").Output()
+		if len(out) > 0 {
+			return string(out)
+		}
+		out, _ = exec.Command("git", "diff").Output()
+		return string(out)
+	}
+	return ""
+}
+
+// ----------------------------------------------------------------------------
+// Command: login, logout, whoami, dry-run
+// ----------------------------------------------------------------------------
+
+func handleLogin(args []string) {
+	cfg := configcli.Load(".")
+	email := ""
+	password := ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--file":
-			if i+1 < len(args) {
-				diffPath = args[i+1]
-				i++
-			}
-		case "--git":
-			useGit = true
-		case "--staged":
-			staged = true
-			useGit = true
 		case "--server":
 			if i+1 < len(args) {
 				cfg.ServerURL = args[i+1]
 				i++
 			}
-		case "--key":
+		case "-e", "--email":
 			if i+1 < len(args) {
-				customKey = args[i+1]
+				email = args[i+1]
 				i++
 			}
-		case "-i", "--tui", "--interactive":
-			launchTUI = true
+		case "-p", "--password":
+			if i+1 < len(args) {
+				password = args[i+1]
+				i++
+			}
 		}
 	}
 
-	if launchTUI {
-		handleTUI(args)
-		return
+	if email != "" && password != "" {
+		fmt.Printf("Authenticating with ScanDrix API (%s)...\n", cfg.ServerURL)
+		loginBody := fmt.Sprintf(`{"email":%q,"password":%q}`, email, password)
+		resp, err := http.Post(cfg.ServerURL+"/api/v1/auth/login", "application/json", strings.NewReader(loginBody))
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var authResp struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&authResp); err == nil {
+				cfg.AccessToken = authResp.AccessToken
+				cfg.RefreshToken = authResp.RefreshToken
+				cfg.UserEmail = email
+				_ = configcli.SaveGlobal(cfg)
+				fmt.Printf("✨ Successfully authenticated as %s!\n", email)
+				return
+			}
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
 	}
 
-	authToken := cfg.AccessToken
-	if customKey != "" {
-		authToken = customKey
-	} else if cfg.APIKey != "" {
-		authToken = cfg.APIKey
-	}
-
-	rawDiff := extractDiff(diffPath, staged, useGit)
-	if strings.TrimSpace(rawDiff) == "" {
-		fmt.Println("✨ No changes detected in diff. Nothing to review.")
-		return
-	}
-
-	// If no auth token is available, perform local rule evaluation directly
-	if authToken == "" {
-		fmt.Println("ℹ️  No authentication token found. Running local deterministic rule evaluation...")
-		runLocalRules(rawDiff)
-		return
-	}
-
-	fmt.Println("🔍 Submitting diff to ScanDrix Autonomous Multi-Agent Engine...")
-
-	reqPayload, _ := json.Marshal(map[string]any{
-		"title":    "CLI Local Review",
-		"raw_diff": rawDiff,
-	})
-
-	req, err := http.NewRequest(http.MethodPost, cfg.ServerURL+"/api/v1/reviews", bytes.NewReader(reqPayload))
+	fmt.Println("Initiating ScanDrix Device Authorization flow...")
+	resp, err := http.Post(cfg.ServerURL+"/api/v1/auth/cli/device/initiate", "application/json", strings.NewReader(`{}`))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed creating request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed connecting to server %s: %v\n", cfg.ServerURL, err)
 		os.Exit(1)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("⚠️  Backend unavailable at %s: %v\nFalling back to local rule evaluation...\n", cfg.ServerURL, err)
-		runLocalRules(rawDiff)
-		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
-		var result map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&result)
-		fmt.Printf("\n🚀 Review enqueued successfully! Review ID: %v\n", result["review_id"])
-		if streamURL, ok := result["stream"].(string); ok {
-			fmt.Printf("   Live Stream: %s%s\n", cfg.ServerURL, streamURL)
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error string `json:"error"`
 		}
-	} else {
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "Review submission failed (HTTP %d): %s\n", resp.StatusCode, string(body))
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		if errResp.Error != "" {
+			fmt.Fprintf(os.Stderr, "Server returned error: %s\n", errResp.Error)
+		} else {
+			fmt.Fprintf(os.Stderr, "Server returned status %d\n", resp.StatusCode)
+		}
+		os.Exit(1)
 	}
+
+	var initResult cliauth.DeviceLoginInitiateResult
+	if err := json.NewDecoder(resp.Body).Decode(&initResult); err != nil {
+		fmt.Fprintf(os.Stderr, "Malformed server response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if initResult.UserCode == "" {
+		fmt.Fprintf(os.Stderr, "Server did not return a valid user authorization code.\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n🔑 Confirmation Code: \033[1;33m%s\033[0m\n", initResult.UserCode)
+	fmt.Printf("🌐 Browser opened automatically.\n")
+	fmt.Printf("   \033[90m(If browser does not open, visit: %s)\033[0m\n\n", initResult.VerificationURIComplete)
+	openBrowser(initResult.VerificationURIComplete)
+
+	for i := 0; i < initResult.ExpiresIn/2; i++ {
+		time.Sleep(2 * time.Second)
+		pollURL := fmt.Sprintf("%s/api/v1/auth/cli/device/poll?device_code=%s", cfg.ServerURL, initResult.DeviceCode)
+		pollResp, err := http.Get(pollURL)
+		if err == nil && pollResp.StatusCode == http.StatusOK {
+			var pollResult cliauth.DeviceLoginPollResult
+			_ = json.NewDecoder(pollResp.Body).Decode(&pollResult)
+			pollResp.Body.Close()
+
+			if pollResult.Status == cliauth.StatusCompleted {
+				cfg.AccessToken = pollResult.AccessToken
+				cfg.RefreshToken = pollResult.RefreshToken
+				cfg.UserEmail = pollResult.UserEmail
+
+				if cfg.UserEmail == "" && cfg.AccessToken != "" {
+					parts := strings.Split(cfg.AccessToken, ".")
+					if len(parts) >= 2 {
+						if payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+							var claims struct {
+								Email string `json:"email"`
+							}
+							if json.Unmarshal(payloadBytes, &claims) == nil && claims.Email != "" {
+								cfg.UserEmail = claims.Email
+							}
+						}
+					}
+				}
+
+				_ = configcli.SaveGlobal(cfg)
+				fmt.Printf("\n✨ \033[1;32mSuccessfully authenticated!\033[0m Logged in as: %s\n", cfg.UserEmail)
+				return
+			}
+		}
+		if pollResp != nil {
+			pollResp.Body.Close()
+		}
+		fmt.Print(".")
+	}
+	fmt.Fprintln(os.Stderr, "\n⌛ Device authorization timed out.")
 }
 
-// ----------------------------------------------------------------------------
-// Command: dry-run (Local Deterministic Rule Engine)
-// ----------------------------------------------------------------------------
+func handleLogout() {
+	_ = os.Remove(configcli.GlobalConfigPath())
+	fmt.Println("👋 Logged out. Stored credentials removed.")
+}
+
+func handleWhoami() {
+	cfg := configcli.Load(".")
+	if cfg.AccessToken == "" && cfg.APIKey == "" {
+		fmt.Println("Not logged in. Run 'scandrix auth login' or set SCANDRIX_API_KEY.")
+		return
+	}
+
+	fmt.Println("👤 ScanDrix Identity Profile:")
+	fmt.Printf("  Server    : %s\n", cfg.ServerURL)
+
+	userEmail := cfg.UserEmail
+	var userID, wsID, role string
+
+	// Extract claims from JWT if present
+	if cfg.AccessToken != "" {
+		parts := strings.Split(cfg.AccessToken, ".")
+		if len(parts) >= 2 {
+			if payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+				var claims struct {
+					Sub   string `json:"sub"`
+					WS    string `json:"ws"`
+					Role  string `json:"role"`
+					Email string `json:"email"`
+				}
+				if json.Unmarshal(payloadBytes, &claims) == nil {
+					if userEmail == "" {
+						userEmail = claims.Email
+					}
+					userID = claims.Sub
+					wsID = claims.WS
+					role = claims.Role
+				}
+			}
+		}
+	}
+
+	if userEmail != "" {
+		fmt.Printf("  Email     : %s\n", userEmail)
+	}
+	if userID != "" {
+		fmt.Printf("  User ID   : %s\n", userID)
+	}
+	if wsID != "" {
+		fmt.Printf("  Workspace : %s\n", wsID)
+	}
+	if role != "" {
+		fmt.Printf("  Role      : %s\n", role)
+	}
+	if cfg.AccessToken != "" {
+		fmt.Println("  Auth Mode : OAuth / Device Session (JWT)")
+	} else if cfg.APIKey != "" {
+		fmt.Println("  Auth Mode : Team API Key")
+	}
+}
 
 func handleDryRun(args []string) {
-	var diffPath string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--file" && i+1 < len(args) {
-			diffPath = args[i+1]
-			i++
-		}
-	}
-
-	var rawDiff string
-	if diffPath != "" {
-		bytes, err := os.ReadFile(diffPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed reading diff file: %v\n", err)
-			os.Exit(1)
-		}
-		rawDiff = string(bytes)
-	} else {
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			bytes, _ := io.ReadAll(os.Stdin)
-			rawDiff = string(bytes)
-		} else {
-			out, _ := exec.Command("git", "diff", "HEAD~1").Output()
-			rawDiff = string(out)
-		}
-	}
-
-	if strings.TrimSpace(rawDiff) == "" {
-		fmt.Println("No diff content found to dry-run.")
-		return
-	}
-
-	runLocalRules(rawDiff)
-}
-
-func runLocalRules(rawDiff string) {
-	evaluator, err := rules.NewEvaluator(rules.DefaultCatalog())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed initializing rule evaluator: %v\n", err)
-		return
-	}
-
-	patches, err := diff.ParseUnifiedDiff(strings.NewReader(rawDiff))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed parsing diff: %v\n", err)
-		return
-	}
-
-	findings := evaluator.EvaluatePatches(uuid.New(), uuid.Nil, patches)
-
-	fmt.Printf("\n📋 ScanDrix Rule Evaluation Report: %d findings\n", len(findings))
-	if len(findings) == 0 {
-		fmt.Println("✅ All deterministic security and quality rules passed cleanly!")
-		return
-	}
-
-	for i, f := range findings {
-		color := "\033[33m" // Yellow
-		if f.Severity == models.SeverityCritical || f.Severity == models.SeverityHigh {
-			color = "\033[31m" // Red
-		} else if f.Severity == models.SeverityInfo {
-			color = "\033[36m" // Cyan
-		}
-		reset := "\033[0m"
-
-		fmt.Printf("\n[%d] %s[%s]%s %s (Line %d:%d)\n", i+1, color, f.Severity, reset, f.FilePath, f.StartLine, f.EndLine)
-		fmt.Printf("    Title: %s\n", f.Title)
-		fmt.Printf("    Description: %s\n", f.Description)
-		if f.Remediation != "" {
-			fmt.Printf("    Remediation: %s\n", f.Remediation)
-		}
-		if f.SuggestedDiff != "" {
-			fmt.Printf("    Suggested Fix:\n%s\n", indent(f.SuggestedDiff, "      "))
-		}
-	}
-}
-
-func indent(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
-	}
-	return strings.Join(lines, "\n")
+	handleReview(append(args, "-f", "terminal"))
 }
 
 func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
+		// macOS: "open" automatically resolves user default browser (Safari, Chrome, Brave, Arc, Edge, Firefox, Opera)
 		cmd = exec.Command("open", url)
 	case "windows":
+		// Windows: "start" automatically resolves user default browser (Edge, Chrome, Brave, Firefox, Opera, etc.)
 		cmd = exec.Command("cmd", "/c", "start", url)
-	default: // linux, freebsd
-		cmd = exec.Command("xdg-open", url)
+	default:
+		// Linux: use standard default browser handlers (xdg-open or gio open)
+		if path, err := exec.LookPath("xdg-open"); err == nil {
+			cmd = exec.Command(path, url)
+		} else if path, err := exec.LookPath("gio"); err == nil {
+			cmd = exec.Command(path, "open", url)
+		}
+
+		// Raise the default browser window across all desktop window managers if wmctrl is present
+		if wmctrlPath, err := exec.LookPath("wmctrl"); err == nil {
+			go func() {
+				time.Sleep(250 * time.Millisecond)
+
+				// 1. Detect user's configured default browser dynamically
+				var defaultBrowser string
+				if out, err := exec.Command("xdg-settings", "get", "default-web-browser").Output(); err == nil {
+					defaultBrowser = strings.TrimSpace(string(out))
+				} else if out, err := exec.Command("xdg-mime", "query", "default", "x-scheme-handler/http").Output(); err == nil {
+					defaultBrowser = strings.TrimSpace(string(out))
+				}
+
+				if defaultBrowser != "" {
+					cleanName := strings.TrimSuffix(defaultBrowser, ".desktop")
+					cleanName = strings.TrimPrefix(cleanName, "org.mozilla.")
+					_ = exec.Command(wmctrlPath, "-x", "-a", cleanName).Run()
+					_ = exec.Command(wmctrlPath, "-a", cleanName).Run()
+				}
+
+				// 2. Comprehensive support for all major desktop browsers
+				knownBrowsers := []string{
+					"Firefox", "firefox", "Mozilla Firefox",
+					"Brave", "brave-browser", "Brave-browser",
+					"Chrome", "Google-chrome", "google-chrome", "google-chrome-stable",
+					"Chromium", "chromium", "chromium-browser",
+					"Opera", "opera", "opera-browser",
+					"Microsoft Edge", "msedge", "microsoft-edge", "Edge",
+					"Vivaldi", "vivaldi", "vivaldi-stable",
+					"Zen", "zen", "zen-browser",
+					"Arc", "arc",
+					"LibreWolf", "librewolf",
+					"Waterfox", "waterfox",
+					"Floorp", "floorp",
+					"Epiphany", "epiphany",
+					"Safari",
+				}
+
+				for _, b := range knownBrowsers {
+					_ = exec.Command(wmctrlPath, "-x", "-a", b).Run()
+					_ = exec.Command(wmctrlPath, "-a", b).Run()
+				}
+			}()
+		}
 	}
-	_ = cmd.Start()
+	if cmd != nil {
+		_ = cmd.Start()
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

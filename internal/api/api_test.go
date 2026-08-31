@@ -136,7 +136,7 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	}
 
 
-	// 7. Test Teams API
+	// 7. Test Teams API (expects 503 without DB)
 	teamBody, _ := json.Marshal(dtos.CreateTeamRequest{
 		Name:        "Security Architecture",
 		Description: "Owns security controls and compliance checks",
@@ -145,11 +145,11 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	reqTeam.Header.Set("Authorization", "Bearer "+accessToken)
 	wTeam := httptest.NewRecorder()
 	router.ServeHTTP(wTeam, reqTeam)
-	if wTeam.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for /api/v1/teams, got %d", wTeam.Code)
+	if wTeam.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for /api/v1/teams (no DB), got %d", wTeam.Code)
 	}
 
-	// 8. Test Repository Tracking API
+	// 8. Test Repository Tracking API (expects 503 without DB)
 	repoBody, _ := json.Marshal(dtos.TrackRepositoryRequest{
 		NamespacePath: "acme/auth-service",
 		DefaultBranch: "main",
@@ -158,8 +158,8 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	reqRepo.Header.Set("Authorization", "Bearer "+accessToken)
 	wRepo := httptest.NewRecorder()
 	router.ServeHTTP(wRepo, reqRepo)
-	if wRepo.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for /api/v1/repos/track, got %d", wRepo.Code)
+	if wRepo.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for /api/v1/repos/track (no DB), got %d", wRepo.Code)
 	}
 
 	// 9. Test Review Parameters API

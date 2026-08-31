@@ -42,6 +42,11 @@ func (rc *ResilientConsumer) Start(ctx context.Context) {
 	go func() {
 		defer rc.wg.Done()
 
+		if rc.broker == nil {
+			slog.Warn("Broker is nil, ResilientConsumer skipping subscription loop")
+			return
+		}
+
 		for {
 			select {
 			case <-ctx.Done():

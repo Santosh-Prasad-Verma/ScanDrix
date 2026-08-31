@@ -46,11 +46,16 @@ type Config struct {
 	KMSMasterKey string
 
 	// Web App & OAuth Configuration
-	AppBaseURL             string
-	GitHubOAuthClientID     string
-	GitHubOAuthClientSecret string
-	GitLabOAuthClientID     string
-	GitLabOAuthClientSecret string
+	AppBaseURL                 string
+	GitHubOAuthClientID        string
+	GitHubOAuthClientSecret    string
+	GitLabOAuthClientID        string
+	GitLabOAuthClientSecret    string
+	BitbucketOAuthClientID     string
+	BitbucketOAuthClientSecret string
+	GitHubOAuthRedirectURI     string
+	GitLabOAuthRedirectURI     string
+	BitbucketOAuthRedirectURI  string
 
 	// Transactional Email / SMTP Configuration
 	SMTPHost     string
@@ -75,6 +80,7 @@ type Config struct {
 	// AI Engine Credentials (BYOK / Enterprise Cloud)
 	AnthropicAPIKey   string
 	OpenAIAPIKey      string
+	OpenAIBaseURL     string
 	GeminiAPIKey      string
 	DeepSeekAPIKey    string
 	OpenRouterAPIKey  string
@@ -97,7 +103,7 @@ type Config struct {
 	E2BEndpoint              string
 	ProofOfFixSandboxEnabled bool
 
-	// OpenRouter Multi-Model Configuration
+	// Multi-Model Configuration
 	AIModelTriage      string
 	AIModelLogic       string
 	AIModelSecurity    string
@@ -105,6 +111,7 @@ type Config struct {
 	AIModelArbiter     string
 	AIModelSynthesizer string
 	AIModelDefault     string
+	AIModelFallback    string
 
 	// Razorpay Billing & Subscription Configuration
 	RazorpayKeyID         string
@@ -196,13 +203,19 @@ func Load() (*Config, error) {
 		GitHubOAuthClientSecret:   os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
 		GitLabOAuthClientID:       os.Getenv("GITLAB_OAUTH_CLIENT_ID"),
 		GitLabOAuthClientSecret:   os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"),
+		BitbucketOAuthClientID:    os.Getenv("BITBUCKET_OAUTH_CLIENT_ID"),
+		BitbucketOAuthClientSecret: os.Getenv("BITBUCKET_OAUTH_CLIENT_SECRET"),
+		GitHubOAuthRedirectURI:     os.Getenv("GITHUB_OAUTH_REDIRECT_URI"),
+		GitLabOAuthRedirectURI:     getEnvOrDefault("GITLAB_OAUTH_REDIRECT_URI", os.Getenv("GLOBAL_GITLAB_REDIRECT_URL")),
+		BitbucketOAuthRedirectURI:  os.Getenv("BITBUCKET_OAUTH_REDIRECT_URI"),
 		SMTPHost:                  os.Getenv("SMTP_HOST"),
 		SMTPPort:                  smtpPort,
 		SMTPUsername:              os.Getenv("SMTP_USERNAME"),
 		SMTPPassword:              os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:                  getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"),
 		AnthropicAPIKey:           os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:              os.Getenv("OPENAI_API_KEY"),
+		OpenAIAPIKey:              getEnvOrDefault("OPENAI_API_KEY", os.Getenv("API_OPEN_AI_API_KEY")),
+		OpenAIBaseURL:             getEnvOrDefault("OPENAI_BASE_URL", getEnvOrDefault("API_OPENAI_FORCE_BASE_URL", "https://api.openai.com/v1")),
 		GeminiAPIKey:              os.Getenv("GEMINI_API_KEY"),
 		DeepSeekAPIKey:            os.Getenv("DEEPSEEK_API_KEY"),
 		OpenRouterAPIKey:          os.Getenv("OPENROUTER_API_KEY"),
@@ -222,13 +235,14 @@ func Load() (*Config, error) {
 		E2BAPIKey:                 os.Getenv("E2B_API_KEY"),
 		E2BEndpoint:               os.Getenv("E2B_ENDPOINT"),
 		ProofOfFixSandboxEnabled:  os.Getenv("PROOFOFFIX_SANDBOX_ENABLED") == "true",
-		AIModelTriage:             getEnvOrDefault("AI_MODEL_TRIAGE", "minimax/minimax-m3:free"),
-		AIModelLogic:              getEnvOrDefault("AI_MODEL_LOGIC", "nvidia/nemotron-3-ultra-550b-a55b:free"),
-		AIModelSecurity:           getEnvOrDefault("AI_MODEL_SECURITY", "stealth/ox-alpha"),
-		AIModelThreatModel:        getEnvOrDefault("AI_MODEL_THREAT_MODEL", "thinkingmachines/inkling:free"),
-		AIModelArbiter:            getEnvOrDefault("AI_MODEL_ARBITER", "stealth/ox-alpha"),
-		AIModelSynthesizer:        getEnvOrDefault("AI_MODEL_SYNTHESIZER", "thinkingmachines/inkling:free"),
-		AIModelDefault:            getEnvOrDefault("AI_MODEL_DEFAULT", "stealth/ox-alpha"),
+		AIModelTriage:             getEnvOrDefault("AI_MODEL_TRIAGE", "free/gemini-3.7-flash"), // prev: "minimax/minimax-m3:free"
+		AIModelLogic:              getEnvOrDefault("AI_MODEL_LOGIC", "free/deepseek-v4-pro-0813"), // prev: "nvidia/nemotron-3-ultra-550b-a55b:free"
+		AIModelSecurity:           getEnvOrDefault("AI_MODEL_SECURITY", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
+		AIModelThreatModel:        getEnvOrDefault("AI_MODEL_THREAT_MODEL", "free/deepseek-v4-pro-0813"), // prev: "thinkingmachines/inkling:free"
+		AIModelArbiter:            getEnvOrDefault("AI_MODEL_ARBITER", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
+		AIModelSynthesizer:        getEnvOrDefault("AI_MODEL_SYNTHESIZER", "free/deepseek-v4-pro-0813"), // prev: "thinkingmachines/inkling:free"
+		AIModelDefault:            getEnvOrDefault("AI_MODEL_DEFAULT", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
+		AIModelFallback:           getEnvOrDefault("AI_MODEL_FALLBACK", "free/gemini-3.7-flash"),
 		RazorpayKeyID:             os.Getenv("RAZORPAY_KEY_ID"),
 		RazorpayKeySecret:         os.Getenv("RAZORPAY_KEY_SECRET"),
 		RazorpayWebhookSecret:     os.Getenv("RAZORPAY_WEBHOOK_SECRET"),

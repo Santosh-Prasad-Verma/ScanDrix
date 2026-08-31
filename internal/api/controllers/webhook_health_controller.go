@@ -94,9 +94,16 @@ func (c *WebhookHealthController) handleGetOutboxLag(w http.ResponseWriter, r *h
 }
 
 func (c *WebhookHealthController) handleRetryDLQ(w http.ResponseWriter, r *http.Request) {
+	requeued := 0
+	if c.repo != nil {
+		if count, err := c.repo.RetryDeadLetterOutboxEvents(r.Context(), 100); err == nil {
+			requeued = count
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":            "RETRY_INITIATED",
-		"requeued_messages": 0,
+		"requeued_messages": requeued,
 	})
 }

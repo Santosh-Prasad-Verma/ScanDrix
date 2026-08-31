@@ -1,12 +1,16 @@
 package settings
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
 )
 
 var (
@@ -33,6 +37,61 @@ func init() {
 		if err == nil {
 			privateIPBlocks = append(privateIPBlocks, block)
 		}
+	}
+}
+
+// NewSafeHTTPClient returns an http.Client configured with socket-level IP pinning to block DNS rebinding.
+func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				host = address
+			}
+			ip := net.ParseIP(host)
+			if ip != nil && isRestrictedIP(ip) {
+				return fmt.Errorf("connection to restricted IP %s blocked by SSRF defense", ip.String())
+			}
+			return nil
+		},
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if isRestrictedIP(ip) {
+					return nil, fmt.Errorf("SSRF protection: IP %s is restricted", ip.String())
+				}
+			}
+			if len(ips) == 0 {
+				return nil, errors.New("no IP addresses found for host")
+			}
+			// Pin connection directly to verified IP
+			pinnedAddr := net.JoinHostPort(ips[0].String(), port)
+			return dialer.DialContext(ctx, network, pinnedAddr)
+		},
+		TLSHandshakeTimeout: 10 * time.Second,
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 

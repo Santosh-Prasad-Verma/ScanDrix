@@ -1,3 +1,6 @@
+// Copyright (c) ScanDrix Authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0.
+
 package engine
 
 import (
@@ -10,37 +13,78 @@ import (
 type OutputFormat string
 
 const (
-	FormatTable OutputFormat = "table"
-	FormatJSON  OutputFormat = "json"
-	FormatSARIF OutputFormat = "sarif"
+	FormatTable    OutputFormat = "table"
+	FormatTerminal OutputFormat = "terminal"
+	FormatJSON     OutputFormat = "json"
+	FormatMarkdown OutputFormat = "markdown"
+	FormatSARIF    OutputFormat = "sarif"
+	FormatAgent    OutputFormat = "agent"
+	FormatPrompt   OutputFormat = "prompt"
 )
 
-// CLIOptions encapsulates flags passed to the CLI binary.
+// CLIOptions encapsulates flags passed to the ScanDrix CLI binary.
 type CLIOptions struct {
 	Staged            bool                   `json:"staged"`
 	Branch            string                 `json:"branch"`
+	Commit            string                 `json:"commit"`
 	CommitRange       string                 `json:"commit_range"`
 	TargetDirectory   string                 `json:"target_directory"`
+	OutputFile        string                 `json:"output_file,omitempty"`
 	Offline           bool                   `json:"offline"`
 	DryRun            bool                   `json:"dry_run"`
 	Format            OutputFormat           `json:"format"`
+	AgentMode         bool                   `json:"agent_mode"`
+	Verbose           bool                   `json:"verbose"`
+	Quiet             bool                   `json:"quiet"`
 	SeverityThreshold models.FindingSeverity `json:"severity_threshold"`
 	APIKey            string                 `json:"api_key,omitempty"`
 	APIBaseURL        string                 `json:"api_base_url,omitempty"`
+	AccessToken       string                 `json:"access_token,omitempty"`
+	RulesOnly         bool                   `json:"rules_only"`
+	Fast              bool                   `json:"fast"`
+	Heavy             bool                   `json:"heavy"`
+	Focus             string                 `json:"focus,omitempty"`
+	Fix               bool                   `json:"fix"`
+	PromptOnly        bool                   `json:"prompt_only"`
+	ContextFile       string                 `json:"context_file,omitempty"`
+	FieldMask         string                 `json:"field_mask,omitempty"`
+	GitHubPAT         string                 `json:"github_pat,omitempty"`
+	CustomRulesFile   string                 `json:"custom_rules_file,omitempty"`
+	PromptOverride    string                 `json:"prompt_override,omitempty"`
 }
 
-// CLIResult aggregates findings, counts, and exit code.
+// AgentEnvelope wraps command results into a deterministic machine-readable payload.
+type AgentEnvelope struct {
+	Command    string              `json:"command"`
+	Status     string              `json:"status"` // "success" or "error"
+	Data       any                 `json:"data,omitempty"`
+	Error      *AgentEnvelopeError `json:"error,omitempty"`
+	StartedAt  time.Time           `json:"started_at"`
+	DurationMs int64               `json:"duration_ms"`
+}
+
+// AgentEnvelopeError details an execution failure in agent mode.
+type AgentEnvelopeError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
+}
+
+// CLIResult aggregates findings, statistics, exit code, and remediation metadata.
 type CLIResult struct {
-	FilesReviewed  int                  `json:"files_reviewed"`
-	TotalFindings  int                  `json:"total_findings"`
-	CriticalCount  int                  `json:"critical_count"`
-	HighCount      int                  `json:"high_count"`
-	MediumCount    int                  `json:"medium_count"`
-	LowCount       int                  `json:"low_count"`
-	Findings       []models.CodeFinding `json:"findings"`
-	ExitCode       int                  `json:"exit_code"`
-	Duration       time.Duration        `json:"duration"`
-	IsBlocking     bool                 `json:"is_blocking"`
+	Status        string               `json:"status"`
+	FilesReviewed int                  `json:"files_reviewed"`
+	TotalFindings int                  `json:"total_findings"`
+	CriticalCount int                  `json:"critical_count"`
+	HighCount     int                  `json:"high_count"`
+	MediumCount   int                  `json:"medium_count"`
+	LowCount      int                  `json:"low_count"`
+	Summary       string               `json:"summary,omitempty"`
+	Findings      []models.CodeFinding `json:"findings"`
+	ExitCode      int                  `json:"exit_code"`
+	Duration      time.Duration        `json:"duration"`
+	IsBlocking    bool                 `json:"is_blocking"`
+	FixesApplied  int                  `json:"fixes_applied,omitempty"`
 }
 
 // SARIFLog represents the root of a SARIF v2.1.0 report for CI integrations.
@@ -92,13 +136,12 @@ type SARIFPhysicalLocation struct {
 	Region           SARIFRegion           `json:"region"`
 }
 
-// SARIFArtifactLocation holds the relative file path.
+// SARIFArtifactLocation contains the URI.
 type SARIFArtifactLocation struct {
 	URI string `json:"uri"`
 }
 
-// SARIFRegion points to line numbers.
+// SARIFRegion contains the line number.
 type SARIFRegion struct {
 	StartLine int `json:"startLine"`
-	EndLine   int `json:"endLine,omitempty"`
 }

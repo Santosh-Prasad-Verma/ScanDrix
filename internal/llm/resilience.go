@@ -20,18 +20,31 @@ const (
 
 // CircuitBreaker guards AI API calls from cascade failures during provider outages.
 type CircuitBreaker struct {
-	mu             sync.Mutex
-	state          CircuitState
-	failureCount   int
-	successCount   int
+	mu               sync.Mutex
+	name             string
+	state            CircuitState
+	failureCount     int
+	successCount     int
 	failureThreshold int
 	cooldownDuration time.Duration
 	lastStateChange  time.Time
 }
 
-// NewCircuitBreaker initializes a circuit breaker.
+// NewCircuitBreaker initializes a circuit breaker with threshold and cooldown.
 func NewCircuitBreaker(failureThreshold int, cooldownDuration time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
+		name:             "default",
+		state:            StateClosed,
+		failureThreshold: failureThreshold,
+		cooldownDuration: cooldownDuration,
+		lastStateChange:  time.Now(),
+	}
+}
+
+// NewNamedCircuitBreaker initializes a named circuit breaker.
+func NewNamedCircuitBreaker(name string, failureThreshold int, cooldownDuration time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		name:             name,
 		state:            StateClosed,
 		failureThreshold: failureThreshold,
 		cooldownDuration: cooldownDuration,
@@ -40,6 +53,18 @@ func NewCircuitBreaker(failureThreshold int, cooldownDuration time.Duration) *Ci
 }
 
 var ErrCircuitOpen = errors.New("ai provider circuit breaker is OPEN: fast-failing call")
+
+// State returns the current circuit state safely.
+func (cb *CircuitBreaker) State() CircuitState {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state
+}
+
+// Name returns the identifier of the circuit breaker.
+func (cb *CircuitBreaker) Name() string {
+	return cb.name
+}
 
 // Execute wraps an external network call with circuit breaker monitoring and exponential backoff.
 func (cb *CircuitBreaker) Execute(ctx context.Context, maxRetries int, fn func(ctx context.Context) error) error {
@@ -53,7 +78,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, maxRetries int, fn func(c
 			cb.successCount = 0
 		} else {
 			cb.mu.Unlock()
-			return ErrCircuitOpen
+			return fmt.Errorf("%w for provider '%s'", ErrCircuitOpen, cb.name)
 		}
 	}
 	cb.mu.Unlock()
@@ -84,7 +109,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, maxRetries int, fn func(c
 	}
 
 	cb.recordFailure()
-	return fmt.Errorf("exhausted %d retries: %w", maxRetries, lastErr)
+	return fmt.Errorf("exhausted %d retries for provider '%s': %w", maxRetries, cb.name, lastErr)
 }
 
 func (cb *CircuitBreaker) recordSuccess() {
@@ -138,5 +163,52 @@ func (cb *CircuitBreaker) RecordSuccess() {
 // RecordFailure registers a failed invocation.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.recordFailure()
+}
+
+// Reset restores the circuit breaker to StateClosed.
+func (cb *CircuitBreaker) Reset() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.state = StateClosed
+	cb.failureCount = 0
+	cb.successCount = 0
+	cb.lastStateChange = time.Now()
+}
+
+// ProviderBreakerRegistry manages per-upstream-provider circuit breakers with independent failure domains.
+type ProviderBreakerRegistry struct {
+	mu               sync.RWMutex
+	breakers         map[string]*CircuitBreaker
+	defaultThreshold int
+	defaultCooldown  time.Duration
+}
+
+// NewProviderBreakerRegistry creates a thread-safe registry of per-provider circuit breakers.
+func NewProviderBreakerRegistry(defaultThreshold int, defaultCooldown time.Duration) *ProviderBreakerRegistry {
+	return &ProviderBreakerRegistry{
+		breakers:         make(map[string]*CircuitBreaker),
+		defaultThreshold: defaultThreshold,
+		defaultCooldown:  defaultCooldown,
+	}
+}
+
+// GetOrCreate returns the isolated circuit breaker for the given provider.
+func (r *ProviderBreakerRegistry) GetOrCreate(providerName string) *CircuitBreaker {
+	r.mu.RLock()
+	cb, exists := r.breakers[providerName]
+	r.mu.RUnlock()
+	if exists {
+		return cb
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cb, exists = r.breakers[providerName]; exists {
+		return cb
+	}
+
+	cb = NewNamedCircuitBreaker(providerName, r.defaultThreshold, r.defaultCooldown)
+	r.breakers[providerName] = cb
+	return cb
 }
 

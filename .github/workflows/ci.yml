@@ -33,20 +33,9 @@ jobs:
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@latest
 
-      - name: Run Tests with Race Detector & Generate JUnit Report
+      - name: Run Tests with Race Detector, Coverage & Generate JUnit Report
         run: |
-          gotestsum --junitfile junit.xml --format pkgname -- -race ./...
-
-      - name: Generate Code Coverage Profile
-        run: |
-          echo "mode: atomic" > coverage.out
-          for d in $(go list ./internal/... ./pkg/...); do
-            go test -coverprofile=profile.out -covermode=atomic "$d"
-            if [ -f profile.out ]; then
-              tail -n +2 profile.out >> coverage.out
-              rm -f profile.out
-            fi
-          done
+          gotestsum --junitfile junit.xml --format pkgname -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Upload Coverage Reports to Codecov
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5.5.5

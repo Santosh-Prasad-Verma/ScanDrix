@@ -20,6 +20,7 @@ import (
 	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/enterprise/scim"
+	"github.com/scandrix/backend/internal/integrations/pm"
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
@@ -57,7 +58,12 @@ func main() {
 	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint)
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
 	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
-	scimService := scim.NewSCIMService()
+	autoTicketMgr := pm.NewAutoTicketManager(repo, nil)
+	orchestrator.SetAutoTicketManager(autoTicketMgr)
+	scimService := scim.NewSCIMService(repo)
+	if cfg.JWTSecret != "" {
+		scimService.SetBearerToken(cfg.JWTSecret)
+	}
 
 	// Device Flow, OAuth & Email Mailer Services
 	cliStore := database.NewPostgresCLISessionStore(repo)
@@ -117,12 +123,18 @@ func main() {
 		}
 	}()
 
-	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup)
+	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup, PR Approvals, Rule Learning, Feedback Sync, Orphaned Sessions, Spend Limit, Repo Report)
 	cronScheduler := cron.NewScheduler()
 	cronScheduler.Register(cron.NewStaleReviewWatchdog(repo, 15*time.Minute, 30))
 	cronScheduler.Register(cron.NewLicenseSeatPruner(repo, 24*time.Hour, 30))
 	cronScheduler.Register(cron.NewSSOSessionCleanup(repo, 1*time.Hour))
 	cronScheduler.Register(cron.NewDORAAggregatorCron(repo, 6*time.Hour))
+	cronScheduler.Register(cron.NewCheckPRApprovalCron(repo, 5*time.Minute, 25))
+	cronScheduler.Register(cron.NewRuleLearningCron(repo, 30*time.Minute))
+	cronScheduler.Register(cron.NewReviewFeedbackCron(repo, 10*time.Minute))
+	cronScheduler.Register(cron.NewClassifyOrphanedSessionsCron(repo, 15*time.Minute, 30, 25))
+	cronScheduler.Register(cron.NewSpendLimitAlertCron(repo, 1*time.Hour))
+	cronScheduler.Register(cron.NewRepoReportCron(repo, 24*time.Hour, 15))
 	cronScheduler.Start(ctx)
 
 	stop := make(chan os.Signal, 1)

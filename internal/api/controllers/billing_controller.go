@@ -3,8 +3,8 @@ package controllers
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/scandrix/backend/internal/api/dtos"
@@ -87,7 +87,8 @@ func (c *BillingController) handleCreateOrder(w http.ResponseWriter, r *http.Req
 
 	orderResp, err := c.billingSvc.CreateSubscriptionOrder(r.Context(), wsID, planTier, req.Currency)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		slog.Error("Failed creating subscription order", "workspace_id", wsID, "plan", planTier, "error", err)
+		http.Error(w, `{"error":"failed creating subscription order"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -122,7 +123,8 @@ func (c *BillingController) handleVerifyPayment(w http.ResponseWriter, r *http.R
 		RecipientName:  req.RecipientName,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		slog.Warn("Payment verification failed", "workspace_id", wsID, "order_id", req.OrderID, "error", err)
+		http.Error(w, `{"error":"payment verification failed"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -142,41 +144,25 @@ func (c *BillingController) handleGetPlan(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Read directly from PostgreSQL Single Source of Truth
-	if c.repo != nil {
-		planDetails, err := c.repo.GetWorkspacePlanDetails(r.Context(), wsID)
-		if err == nil && planDetails != nil {
-			if c.limiter != nil {
-				_, _, usedMin, _, exists := c.limiter.GetUsage(wsID)
-				if exists && usedMin > planDetails.BurstTokensUsed {
-					planDetails.BurstTokensUsed = usedMin
-				}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(planDetails)
-			return
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	planDetails, err := c.repo.GetWorkspacePlanDetails(r.Context(), wsID)
+	if err != nil || planDetails == nil {
+		http.Error(w, `{"error":"failed querying workspace plan details"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if c.limiter != nil {
+		_, _, usedMin, _, exists := c.limiter.GetUsage(wsID)
+		if exists && usedMin > planDetails.BurstTokensUsed {
+			planDetails.BurstTokensUsed = usedMin
 		}
 	}
-
-	// Fallback only when database repository is not wired (e.g. mock unit tests)
-	quota := license.GetPlanQuota(license.TierCommunity)
-	resp := dtos.WorkspacePlanStatusResponse{
-		PlanTier:          "COMMUNITY",
-		OrganizationName:  "Community Tier",
-		TotalSeats:        5,
-		AllocatedSeats:    1,
-		ExpiresAt:         time.Now().AddDate(10, 0, 0),
-		MonthlyTokenLimit: quota.MonthlyTokens,
-		MonthlyTokensUsed: 0,
-		BurstLimitPerMin:  quota.BurstLimitPerMin,
-		BurstTokensUsed:   0,
-		AllocatedModels:   license.GetAllocatedModelsList(license.TierCommunity),
-		FeaturesEnabled:   []string{"automated_reviews", "custom_rules"},
-		BYOKAllowed:       true,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(planDetails)
 }
 
 func (c *BillingController) handleWebhook(w http.ResponseWriter, r *http.Request) {

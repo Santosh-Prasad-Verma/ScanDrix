@@ -68,6 +68,24 @@ services:
       - scandrix-network
 
   # ----------------------------------------------------------------------------
+  # ScanDrix Database Schema Migrations (Init container, runs once on startup)
+  # ----------------------------------------------------------------------------
+  scandrix-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-migrate
+    restart: "no"
+    entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
   # ScanDrix REST API Service
   # ----------------------------------------------------------------------------
   scandrix-api:
@@ -112,6 +130,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
     networks:
       - scandrix-network
 
@@ -142,6 +162,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
     networks:
       - scandrix-network
 
@@ -194,6 +216,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
     networks:
       - scandrix-network
 

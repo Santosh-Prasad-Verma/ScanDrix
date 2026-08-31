@@ -51,12 +51,14 @@ func main() {
 	repo := database.NewRepository(dbClient)
 
 	// Redis Cache & Distributed Lock Client
+	var cacheClient *cache.Client
 	if cfg.RedisURL != "" {
 		rc, err := cache.NewClient(ctx, cfg.RedisURL)
 		if err != nil {
 			slog.Warn("Redis connection deferred", "error", err)
 		} else {
 			defer rc.Close()
+			cacheClient = rc
 			slog.Info("Redis connection pool initialized for distributed caching")
 		}
 	}
@@ -67,11 +69,26 @@ func main() {
 	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
 
 	aiGatewayOpts := make([]llm.GatewayOption, 0)
+	if cfg.OpenAIBaseURL != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithOpenAIBaseURL(cfg.OpenAIBaseURL))
+	}
+	aiGatewayOpts = append(aiGatewayOpts, llm.WithOpenAIModels(
+		cfg.AIModelDefault,
+		cfg.AIModelFallback,
+		cfg.AIModelSecurity,
+		cfg.AIModelLogic,
+		cfg.AIModelTriage,
+		cfg.AIModelThreatModel,
+		cfg.AIModelArbiter,
+		cfg.AIModelSynthesizer,
+	))
+
 	if cfg.OpenRouterAPIKey != "" {
 		aiGatewayOpts = append(aiGatewayOpts,
 			llm.WithOpenRouter(cfg.OpenRouterAPIKey),
 			llm.WithOpenRouterModels(
 				cfg.AIModelDefault,
+				cfg.AIModelFallback,
 				cfg.AIModelSecurity,
 				cfg.AIModelLogic,
 				cfg.AIModelTriage,
@@ -80,8 +97,9 @@ func main() {
 				cfg.AIModelSynthesizer,
 			),
 		)
-		slog.Info("OpenRouter primary & fallback multi-model chain attached to API",
+		slog.Info("AI primary & fallback multi-model chain attached to API",
 			"default", cfg.AIModelDefault,
+			"fallback", cfg.AIModelFallback,
 			"security", cfg.AIModelSecurity,
 			"logic", cfg.AIModelLogic,
 			"triage", cfg.AIModelTriage,
@@ -92,20 +110,41 @@ func main() {
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
 	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
 	scimService := scim.NewSCIMService(repo)
+	if cfg.JWTSecret != "" {
+		scimService.SetBearerToken(cfg.JWTSecret)
+	}
 
 	// Device Flow, OAuth & Email Mailer Services
 	cliStore := database.NewPostgresCLISessionStore(repo)
 	deviceFlow := cliauth.NewDeviceFlowManager(cliStore, cfg.AppBaseURL)
+	githubRedirect := cfg.GitHubOAuthRedirectURI
+	if githubRedirect == "" {
+		githubRedirect = fmt.Sprintf("%s/api/v1/auth/oauth/github/callback", cfg.AppBaseURL)
+	}
+	gitlabRedirect := cfg.GitLabOAuthRedirectURI
+	if gitlabRedirect == "" {
+		gitlabRedirect = fmt.Sprintf("%s/api/v1/auth/oauth/gitlab/callback", cfg.AppBaseURL)
+	}
+	bitbucketRedirect := cfg.BitbucketOAuthRedirectURI
+	if bitbucketRedirect == "" {
+		bitbucketRedirect = fmt.Sprintf("%s/api/v1/auth/oauth/bitbucket/callback", cfg.AppBaseURL)
+	}
+
 	oauthService := oauth.NewOAuthService(
 		oauth.ProviderConfig{
 			ClientID:     cfg.GitHubOAuthClientID,
 			ClientSecret: cfg.GitHubOAuthClientSecret,
-			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/github/callback", cfg.AppBaseURL),
+			RedirectURI:  githubRedirect,
 		},
 		oauth.ProviderConfig{
 			ClientID:     cfg.GitLabOAuthClientID,
 			ClientSecret: cfg.GitLabOAuthClientSecret,
-			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/gitlab/callback", cfg.AppBaseURL),
+			RedirectURI:  gitlabRedirect,
+		},
+		oauth.ProviderConfig{
+			ClientID:     cfg.BitbucketOAuthClientID,
+			ClientSecret: cfg.BitbucketOAuthClientSecret,
+			RedirectURI:  bitbucketRedirect,
 		},
 	)
 	emailSender := mailer.NewSender(mailer.SMTPConfig{
@@ -132,6 +171,7 @@ func main() {
 		Mailer:         emailSender,
 		BillingService: billingService,
 		BudgetLimiter:  budgetLimiter,
+		CacheClient:    cacheClient,
 		AppBaseURL:     cfg.AppBaseURL,
 		JWTSecret:      cfg.JWTSecret,
 	})

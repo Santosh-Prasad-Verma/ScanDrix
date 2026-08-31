@@ -87,6 +87,13 @@ var communityAllowedModels = map[string]bool{
 	"stealth/ox-alpha":                       true,
 	"thinkingmachines/inkling:free":          true,
 	"nvidia/nemotron-3-ultra-550b-a55b:free": true,
+	"free/deepseek-v4-pro-0813":              true,
+	"free/gemini-3.7-flash":                  true,
+	"free/gemini-3.1-pro":                    true,
+	"free/gpt-5.6-luna":                      true,
+	"free/deepseek-v4-flash-0731":            true,
+	"free/glm-5.3-flash":                     true,
+	"free/muse-spark-1.2":                    true,
 }
 
 // Ultra-heavyweight models reserved exclusively for Enterprise tier (or BYOK).
@@ -120,7 +127,7 @@ func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, strin
 
 	// 2. Community tier
 	if normTier == TierCommunity {
-		if communityAllowedModels[cleanModel] {
+		if communityAllowedModels[cleanModel] || strings.HasPrefix(cleanModel, "free/") {
 			return true, ""
 		}
 		return false, fmt.Sprintf(

@@ -169,10 +169,13 @@ func (s *SSOService) ParseSAMLResponse(rawBase64 string) (*models.AccountProfile
 		return nil, errors.New("saml assertion missing NameID email")
 	}
 
-	// Just-In-Time provisioned account profile
+	// Just-In-Time provisioned account profile.
+	// The workspace ID must be resolved by the caller from the SSO
+	// configuration that initiated this flow — it is NOT safe to
+	// hardcode a fallback workspace here.
 	return &models.AccountProfile{
 		ID:          uuid.New(),
-		WorkspaceID: uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		WorkspaceID: uuid.Nil, // Caller MUST populate from SAML config's workspace
 		Email:       email,
 		DisplayName: strings.Split(email, "@")[0],
 		Role:        models.RoleMember,

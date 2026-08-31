@@ -53,6 +53,13 @@ var (
 	hunkHeaderRegex = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$`)
 )
 
+const (
+	MaxDiffLines     = 100000
+	MaxDiffFiles     = 1000
+	MaxHunksPerFile  = 1000
+	MaxTotalHunks    = 10000
+)
+
 // ParseUnifiedDiff parses a multi-file unified git diff stream into structured FilePatch slices.
 func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
 	scanner := bufio.NewScanner(r)
@@ -64,12 +71,22 @@ func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
 	var currentPatch *FilePatch
 	var currentHunk *Hunk
 	var oldLineTracker, newLineTracker int
+	totalLines := 0
+	totalHunks := 0
 
 	for scanner.Scan() {
+		totalLines++
+		if totalLines > MaxDiffLines {
+			break // Ceil processing to prevent memory exhaustion on extreme files
+		}
+
 		line := scanner.Text()
 
 		// Check for diff header
 		if matches := diffHeaderRegex.FindStringSubmatch(line); len(matches) == 3 {
+			if len(patches) >= MaxDiffFiles {
+				break
+			}
 			if currentHunk != nil && currentPatch != nil {
 				currentPatch.Hunks = append(currentPatch.Hunks, *currentHunk)
 				currentHunk = nil
@@ -104,9 +121,13 @@ func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
 
 		// Check for hunk header: @@ -1,5 +1,6 @@
 		if matches := hunkHeaderRegex.FindStringSubmatch(line); len(matches) >= 5 {
+			if totalHunks >= MaxTotalHunks || len(currentPatch.Hunks) >= MaxHunksPerFile {
+				continue // Cap total hunks to prevent CPU exhaustion
+			}
 			if currentHunk != nil {
 				currentPatch.Hunks = append(currentPatch.Hunks, *currentHunk)
 			}
+			totalHunks++
 
 			oldStart, _ := strconv.Atoi(matches[1])
 			oldLines := 1

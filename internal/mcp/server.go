@@ -44,6 +44,8 @@ func NewServer() *Server {
 // ServeStdio executes the MCP JSON-RPC 2.0 protocol over standard input/output.
 func (s *Server) ServeStdio(ctx context.Context, r io.Reader, w io.Writer) error {
 	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // Support up to 10MB payload / unified diff lines
 	encoder := json.NewEncoder(w)
 
 	for scanner.Scan() {

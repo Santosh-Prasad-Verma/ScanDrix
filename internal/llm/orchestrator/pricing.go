@@ -26,6 +26,66 @@ import (
 var defaultCatalog = map[string]ModelProfile{
 
 	// =========================================================================
+	// APINEX FREE MODELS — verified Aug 2026
+	// =========================================================================
+	"free/deepseek-v4-pro-0813": {
+		ModelID:          "free/deepseek-v4-pro-0813",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/gemini-3.7-flash": {
+		ModelID:          "free/gemini-3.7-flash",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/gemini-3.1-pro": {
+		ModelID:          "free/gemini-3.1-pro",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/gpt-5.6-luna": {
+		ModelID:          "free/gpt-5.6-luna",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1050000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/deepseek-v4-flash-0731": {
+		ModelID:          "free/deepseek-v4-flash-0731",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/glm-5.3-flash": {
+		ModelID:          "free/glm-5.3-flash",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+	"free/muse-spark-1.2": {
+		ModelID:          "free/muse-spark-1.2",
+		Provider:         ProviderOpenAI,
+		ContextWindow:    1000000,
+		InputPerMillion:  0.00,
+		OutputPerMillion: 0.00,
+		SupportsThinking: true,
+	},
+
+	// =========================================================================
 	// OPENAI — verified against OpenAI's pricing page + OpenRouter, Aug 2026
 	// GPT-5.6 GA'd July 9 2026 with a 1.05M context window across all 3 tiers;
 	// Terra/Luna got cut 20%/80% on July 30 2026.

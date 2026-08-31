@@ -52,6 +52,29 @@ func TestClassifyLLMError(t *testing.T) {
 	if err503.Category != llm.CategoryTransient || !err503.IsTransient {
 		t.Fatalf("expected transient CategoryTransient for 503, got %+v", err503)
 	}
+
+	// 8. Content Filter Blocked
+	errFilter := llm.ClassifyLLMError(errors.New("content_filter triggered by safety policy"), http.StatusBadRequest)
+	if errFilter.Category != llm.CategoryContentFilterBlocked || !errFilter.IsTerminal {
+		t.Fatalf("expected CategoryContentFilterBlocked, got %+v", errFilter)
+	}
+
+	// 9. Verify ShouldFailover rules
+	if !llm.ShouldFailover(err503) {
+		t.Error("expected transient 503 error to trigger failover")
+	}
+	if !llm.ShouldFailover(err401) {
+		t.Error("expected auth invalid error on specific model to allow failover")
+	}
+	if llm.ShouldFailover(errOverflow) {
+		t.Error("expected context overflow error NOT to trigger failover")
+	}
+	if llm.ShouldFailover(errFilter) {
+		t.Error("expected content filter blocked error NOT to trigger failover")
+	}
+	if llm.ShouldFailover(err429) {
+		t.Error("expected rate limit error NOT to trigger failover (cooldown handles it)")
+	}
 }
 
 func TestTokenBudgetLimiter(t *testing.T) {

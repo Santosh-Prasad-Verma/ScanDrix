@@ -108,5 +108,98 @@ func TestBuiltInWatchdogJobsWithNilRepo(t *testing.T) {
 	if err := doraCron.Run(ctx); err != nil {
 		t.Fatalf("expected nil error on nil repo, got %v", err)
 	}
+
+	// 1. CheckPRApprovalCron
+	approvalCron := cron.NewCheckPRApprovalCron(nil, 5*time.Minute, 20)
+	if approvalCron.Name() != "CheckPRApprovalCron" {
+		t.Fatalf("expected CheckPRApprovalCron name, got %s", approvalCron.Name())
+	}
+	if approvalCron.Interval() != 5*time.Minute {
+		t.Fatalf("expected 5m interval, got %v", approvalCron.Interval())
+	}
+	if err := approvalCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+
+	// 2. RuleLearningCron
+	learningCron := cron.NewRuleLearningCron(nil, 30*time.Minute)
+	if learningCron.Name() != "RuleLearningCron" {
+		t.Fatalf("expected RuleLearningCron name, got %s", learningCron.Name())
+	}
+	if learningCron.Interval() != 30*time.Minute {
+		t.Fatalf("expected 30m interval, got %v", learningCron.Interval())
+	}
+	if err := learningCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+
+	// 3. ReviewFeedbackCron
+	feedbackCron := cron.NewReviewFeedbackCron(nil, 10*time.Minute)
+	if feedbackCron.Name() != "ReviewFeedbackCron" {
+		t.Fatalf("expected ReviewFeedbackCron name, got %s", feedbackCron.Name())
+	}
+	if feedbackCron.Interval() != 10*time.Minute {
+		t.Fatalf("expected 10m interval, got %v", feedbackCron.Interval())
+	}
+	if err := feedbackCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+
+	// 4. ClassifyOrphanedSessionsCron
+	classifyCron := cron.NewClassifyOrphanedSessionsCron(nil, 15*time.Minute, 30, 25)
+	if classifyCron.Name() != "ClassifyOrphanedSessionsCron" {
+		t.Fatalf("expected ClassifyOrphanedSessionsCron name, got %s", classifyCron.Name())
+	}
+	if classifyCron.Interval() != 15*time.Minute {
+		t.Fatalf("expected 15m interval, got %v", classifyCron.Interval())
+	}
+	if err := classifyCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+
+	// 5. SpendLimitAlertCron
+	spendCron := cron.NewSpendLimitAlertCron(nil, time.Hour)
+	if spendCron.Name() != "SpendLimitAlertCron" {
+		t.Fatalf("expected SpendLimitAlertCron name, got %s", spendCron.Name())
+	}
+	if spendCron.Interval() != time.Hour {
+		t.Fatalf("expected 1h interval, got %v", spendCron.Interval())
+	}
+	if err := spendCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+
+	// 6. RepoReportCron
+	reportCron := cron.NewRepoReportCron(nil, 24*time.Hour, 15)
+	if reportCron.Name() != "RepoReportCron" {
+		t.Fatalf("expected RepoReportCron name, got %s", reportCron.Name())
+	}
+	if reportCron.Interval() != 24*time.Hour {
+		t.Fatalf("expected 24h interval, got %v", reportCron.Interval())
+	}
+	if err := reportCron.Run(ctx); err != nil {
+		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
 }
 
+func TestAllCronsRegistrationInScheduler(t *testing.T) {
+	scheduler := cron.NewScheduler()
+
+	scheduler.Register(cron.NewStaleReviewWatchdog(nil, 10*time.Millisecond, 15))
+	scheduler.Register(cron.NewLicenseSeatPruner(nil, 10*time.Millisecond, 30))
+	scheduler.Register(cron.NewSSOSessionCleanup(nil, 10*time.Millisecond))
+	scheduler.Register(cron.NewDORAAggregatorCron(nil, 10*time.Millisecond))
+	scheduler.Register(cron.NewCheckPRApprovalCron(nil, 10*time.Millisecond, 20))
+	scheduler.Register(cron.NewRuleLearningCron(nil, 10*time.Millisecond))
+	scheduler.Register(cron.NewReviewFeedbackCron(nil, 10*time.Millisecond))
+	scheduler.Register(cron.NewClassifyOrphanedSessionsCron(nil, 10*time.Millisecond, 30, 20))
+	scheduler.Register(cron.NewSpendLimitAlertCron(nil, 10*time.Millisecond))
+	scheduler.Register(cron.NewRepoReportCron(nil, 10*time.Millisecond, 15))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	scheduler.Start(ctx)
+	time.Sleep(30 * time.Millisecond)
+	scheduler.Stop()
+}

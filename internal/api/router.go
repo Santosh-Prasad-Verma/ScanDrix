@@ -13,6 +13,7 @@ import (
 	"github.com/scandrix/backend/internal/auth/mailer"
 	"github.com/scandrix/backend/internal/auth/oauth"
 	"github.com/scandrix/backend/internal/billing/razorpay"
+	"github.com/scandrix/backend/internal/cache"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/enterprise/rbac"
 	"github.com/scandrix/backend/internal/enterprise/scim"
@@ -35,6 +36,7 @@ type RouterConfig struct {
 	Mailer         mailer.EmailSender
 	BillingService *razorpay.BillingService
 	BudgetLimiter  *llm.TokenBudgetLimiter
+	CacheClient    *cache.Client
 	AppBaseURL     string
 	JWTSecret      string
 }
@@ -43,13 +45,15 @@ type RouterConfig struct {
 func BuildRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
 
-	// Base Middlewares
+	// Base Middlewares (Order: Recoverer -> RequestID -> SecurityHeaders -> CORS -> CSRF -> Metrics -> Logger -> Timeout)
+	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(scandrixMiddleware.SecurityHeaders)
-	r.Use(scandrixMiddleware.CORS(scandrixMiddleware.DefaultCORSConfig()))
+	corsCfg := scandrixMiddleware.DefaultCORSConfig()
+	r.Use(scandrixMiddleware.CORS(corsCfg))
+	r.Use(scandrixMiddleware.CSRFProtection(corsCfg.AllowedOrigins))
 	r.Use(telemetry.MeasureHTTP)
 	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
 	// Prometheus Metrics
@@ -108,9 +112,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	issuesCtrl := controllers.NewIssuesController(cfg.Repo)
 	automationCtrl := controllers.NewAutomationController(cfg.Repo)
 	billingCtrl := controllers.NewBillingController(cfg.BillingService, cfg.Repo, cfg.BudgetLimiter)
+	auditCtrl := controllers.NewAuditController(cfg.Repo)
 
 	// mountAPIRoutes registers all functional domain routes
 	mountAPIRoutes := func(target chi.Router) {
+		// Root and API-level CLI device authorization web page
+		target.Get("/cli/authorize", authCtrl.HandleCLIAuthorizePage)
+		target.Post("/cli/authorize/approve", authCtrl.HandleCLIAuthorizeApprove)
+
 		// Public auth endpoints
 		target.Mount("/auth", authCtrl.Routes())
 		// Public billing webhook receiver (authenticates via HMAC signature)
@@ -122,26 +131,37 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 			authGroup.Mount("/reviews", reviewCtrl.Routes())
 			authGroup.Mount("/usage", usageCtrl.Routes())
-			authGroup.Mount("/teams", teamCtrl.Routes())
 			authGroup.Mount("/repos", codeCtrl.Routes())
-			authGroup.Mount("/parameters", paramCtrl.Routes())
 			authGroup.Mount("/permissions", permCtrl.Routes())
 			authGroup.Mount("/health", healthCtrl.Routes())
-			authGroup.Mount("/notifications", notifCtrl.Routes())
 			authGroup.Mount("/findings", feedCtrl.Routes())
 			authGroup.Mount("/issues", issuesCtrl.Routes())
-			authGroup.Mount("/automations", automationCtrl.Routes())
 
-			// RBAC-protected routes: rules require manage permission
+			// RBAC-protected routes: teams / members require member management policy
+			authGroup.Group(func(teamGroup chi.Router) {
+				teamGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceMembers))
+				teamGroup.Mount("/teams", teamCtrl.Routes())
+			})
+
+			// RBAC-protected routes: parameters & notifications require workspace update policy
+			authGroup.Group(func(paramGroup chi.Router) {
+				paramGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionUpdate, rbac.ResourceWorkspace))
+				paramGroup.Mount("/parameters", paramCtrl.Routes())
+				paramGroup.Mount("/notifications", notifCtrl.Routes())
+			})
+
+			// RBAC-protected routes: rules & automations require rule management policy
 			authGroup.Group(func(rulesGroup chi.Router) {
 				rulesGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceRules))
 				rulesGroup.Mount("/rules", rulesCtrl.Routes())
+				rulesGroup.Mount("/automations", automationCtrl.Routes())
 			})
 
 			// RBAC-protected routes: workspace management requires update permission
 			authGroup.Group(func(wsGroup chi.Router) {
 				wsGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionUpdate, rbac.ResourceWorkspace))
 				wsGroup.Mount("/workspaces", workspaceCtrl.Routes())
+				wsGroup.Mount("/workspaces/{workspaceId}/audit-logs", auditCtrl.Routes())
 			})
 
 			// RBAC-protected routes: integrations require manage permission

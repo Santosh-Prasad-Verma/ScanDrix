@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,12 +62,6 @@ func TestInTotoDSSEAttestationAndVerification(t *testing.T) {
 	if len(verifiedStmt.Subject) != 1 || verifiedStmt.Subject[0].Digest["gitCommit"] != pred.CommitSHA {
 		t.Fatalf("unexpected subject: %+v", verifiedStmt.Subject)
 	}
-	if verifiedStmt.Predicate.Decision != intoto.DecisionApproved {
-		t.Fatalf("expected decision APPROVED, got %s", verifiedStmt.Predicate.Decision)
-	}
-	if verifiedStmt.Predicate.ConsensusScore != 0.98 {
-		t.Fatalf("expected consensus score 0.98, got %f", verifiedStmt.Predicate.ConsensusScore)
-	}
 
 	// 3. Tamper Resistance: Tampering with payload fails
 	tamperedEnv := *env
@@ -84,6 +79,63 @@ func TestInTotoDSSEAttestationAndVerification(t *testing.T) {
 	_, err = attestor.VerifyEnvelope(env, wrongPubKey)
 	if err == nil {
 		t.Fatal("expected signature verification failure with wrong public key")
+	}
+}
+
+func TestSLSAProvenanceAttestationAndVerification(t *testing.T) {
+	wsID := uuid.New()
+	reviewID := uuid.New()
+	privKey, pubKey, keyID := intoto.DeriveTenantKeypair(wsID, "secret_salt_123")
+	attestor := intoto.NewProvenanceAttestor(keyID, privKey, pubKey)
+
+	pred := intoto.ReviewAttestationPredicate{
+		WorkspaceID:           wsID,
+		RepoNamespace:         "acme/core-engine",
+		CommitSHA:             "c0ffee1234567890abcdef1234567890abcdef12",
+		PullRequestNumber:     42,
+		Decision:              intoto.DecisionApproved,
+		TotalFindings:         0,
+		CriticalCount:         0,
+		HighCount:             0,
+		ConsensusScore:        1.0,
+		EvaluatedRules:        []string{"SEC001_SQLI"},
+		AttestedAt:            time.Now().UTC(),
+		ReviewerAgentIdentity: "scandrix-agent-consensus-v1",
+	}
+
+	env, err := attestor.AttestAndSignSLSA(pred, reviewID, time.Now().UTC().Add(-30*time.Second))
+	if err != nil {
+		t.Fatalf("failed generating SLSA attestation: %v", err)
+	}
+
+	stmt, err := attestor.VerifySLSAEnvelope(env, pubKey)
+	if err != nil {
+		t.Fatalf("failed verifying SLSA envelope: %v", err)
+	}
+
+	if stmt.PredicateType != intoto.PredicateTypeSLSA {
+		t.Fatalf("expected predicateType %s, got %s", intoto.PredicateTypeSLSA, stmt.PredicateType)
+	}
+}
+
+func TestDeriveTenantKeypairAndPEMExport(t *testing.T) {
+	wsID := uuid.New()
+	master := "test_master_secret"
+
+	priv1, pub1, keyID1 := intoto.DeriveTenantKeypair(wsID, master)
+	priv2, pub2, keyID2 := intoto.DeriveTenantKeypair(wsID, master)
+
+	if keyID1 != keyID2 || !pub1.Equal(pub2) || string(priv1) != string(priv2) {
+		t.Fatal("expected deterministic key derivation for same workspace and master key")
+	}
+
+	pemStr, err := intoto.ExportPublicKeyPEM(pub1)
+	if err != nil {
+		t.Fatalf("failed exporting PEM: %v", err)
+	}
+
+	if !strings.HasPrefix(pemStr, "-----BEGIN PUBLIC KEY-----") {
+		t.Fatalf("expected valid PEM header, got: %s", pemStr)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ type TokenClaims struct {
 	UserID      uuid.UUID       `json:"sub"`
 	WorkspaceID uuid.UUID       `json:"ws"`
 	Role        models.UserRole `json:"role"`
+	Email       string          `json:"email,omitempty"`
 	IssuedAt    int64           `json:"iat"`
 	ExpiresAt   int64           `json:"exp"`
 }
@@ -152,7 +154,8 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			if a.cliVerifier != nil {
 				wsID, profile, err := a.cliVerifier(r.Context(), token)
 				if err != nil {
-					http.Error(w, fmt.Sprintf(`{"error":"unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+					slog.Error("CLI token verification failed", "error", err)
+					http.Error(w, `{"error":"unauthorized: invalid CLI token"}`, http.StatusUnauthorized)
 					return
 				}
 				ctx := WithWorkspaceContext(r.Context(), wsID)
@@ -163,16 +166,17 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				return
 			}
 
-			// Fallback harness for pre-seeded test keys
-			ctx := WithWorkspaceContext(r.Context(), uuid.MustParse("00000000-0000-0000-0000-000000000001"))
-			next.ServeHTTP(w, r.WithContext(ctx))
+			// CLI verifier not configured — reject the token rather than
+			// silently granting access. Fail loudly so operators notice.
+			http.Error(w, `{"error":"unauthorized: CLI token authentication is not configured"}`, http.StatusUnauthorized)
 			return
 		}
 
 		// Cryptographic JWT signature and expiration verification (Master Rule 5.1)
 		claims, err := a.VerifyToken(token)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"unauthorized: %s"}`, err.Error()), http.StatusUnauthorized)
+			slog.Debug("JWT verification failed", "error", err)
+			http.Error(w, `{"error":"unauthorized: invalid or expired token"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -180,6 +184,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		ctx = WithAccountContext(ctx, &models.AccountProfile{
 			ID:          claims.UserID,
 			WorkspaceID: claims.WorkspaceID,
+			Email:       claims.Email,
 			Role:        claims.Role,
 		})
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -202,10 +207,8 @@ func RoleGuard(requiredRole models.UserRole, next http.HandlerFunc) http.Handler
 	return func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := r.Context().Value(AccountContextKey).(*models.AccountProfile)
 		if !ok || profile == nil {
-			if _, err := WorkspaceFromContext(r.Context()); err == nil {
-				next(w, r)
-				return
-			}
+			// Always deny when no profile is present — a workspace-only
+			// context without a profile has no role to check against.
 			http.Error(w, `{"error":"forbidden: insufficient access"}`, http.StatusForbidden)
 			return
 		}
@@ -221,9 +224,14 @@ func RoleGuard(requiredRole models.UserRole, next http.HandlerFunc) http.Handler
 
 // GenerateToken issues a signed access token containing tenant and user claims (expires in 24h).
 func (a *Authenticator) GenerateToken(userID, wsID uuid.UUID, role models.UserRole) (string, error) {
+	return a.GenerateTokenWithEmail(userID, wsID, role, "")
+}
+
+// GenerateTokenWithEmail issues a signed access token embedding the user's verified email.
+func (a *Authenticator) GenerateTokenWithEmail(userID, wsID uuid.UUID, role models.UserRole, email string) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payloadStr := fmt.Sprintf(`{"sub":"%s","ws":"%s","role":"%s","iat":%d,"exp":%d}`,
-		userID, wsID, role, time.Now().Unix(), time.Now().Add(24*time.Hour).Unix(),
+	payloadStr := fmt.Sprintf(`{"sub":"%s","ws":"%s","role":"%s","email":"%s","iat":%d,"exp":%d}`,
+		userID, wsID, role, email, time.Now().Unix(), time.Now().Add(24*time.Hour).Unix(),
 	)
 	payload := base64.RawURLEncoding.EncodeToString([]byte(payloadStr))
 
@@ -236,7 +244,12 @@ func (a *Authenticator) GenerateToken(userID, wsID uuid.UUID, role models.UserRo
 
 // GenerateTokenPair issues a short-lived access token along with a cryptographically secure random refresh token.
 func (a *Authenticator) GenerateTokenPair(userID, wsID uuid.UUID, role models.UserRole) (accessToken, refreshToken string, err error) {
-	accessToken, err = a.GenerateToken(userID, wsID, role)
+	return a.GenerateTokenPairWithEmail(userID, wsID, role, "")
+}
+
+// GenerateTokenPairWithEmail issues an access token with email claim and a refresh token.
+func (a *Authenticator) GenerateTokenPairWithEmail(userID, wsID uuid.UUID, role models.UserRole, email string) (accessToken, refreshToken string, err error) {
+	accessToken, err = a.GenerateTokenWithEmail(userID, wsID, role, email)
 	if err != nil {
 		return "", "", err
 	}

@@ -24,6 +24,7 @@ RUN go build -ldflags="-s -w" -o /build/bin/scandrix-api ./cmd/api && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-server ./cmd/server && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-webhooks ./cmd/webhooks && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-worker ./cmd/worker && \
+    go build -ldflags="-s -w" -o /build/bin/scandrix-migrate ./cmd/migrate && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-cli ./cmd/cli && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-mcp-manager ./cmd/mcp-manager && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-ast-cli ./cmd/ast-cli && \
@@ -39,8 +40,9 @@ RUN apk add --no-cache ca-certificates tzdata git && \
 
 WORKDIR /app
 
-# Copy compiled binaries from builder
+# Copy compiled binaries and migrations from builder
 COPY --from=builder /build/bin/ /app/bin/
+COPY --from=builder /build/migrations/ /app/migrations/
 
 # Create runtime directories with non-root ownership
 RUN mkdir -p /app/data /app/sandboxes /app/logs && \

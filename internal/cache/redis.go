@@ -21,19 +21,18 @@ func NewClient(ctx context.Context, redisURL string) (*Client, error) {
 	}
 
 	opt.PoolSize = 50
-	opt.MinIdleConns = 10
-	opt.DialTimeout = 5 * time.Second
-	opt.ReadTimeout = 3 * time.Second
-	opt.WriteTimeout = 3 * time.Second
-	opt.PoolTimeout = 4 * time.Second
+	opt.DialTimeout = 1 * time.Second
+	opt.ReadTimeout = 2 * time.Second
+	opt.WriteTimeout = 2 * time.Second
+	opt.MaxRetries = 1
 
 	rdb := redis.NewClient(opt)
 
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
 	if err := rdb.Ping(pingCtx).Err(); err != nil {
-		rdb.Close()
+		_ = rdb.Close()
 		return nil, fmt.Errorf("redis ping failed: %w", err)
 	}
 
@@ -62,22 +61,12 @@ func (c *Client) ReleaseLock(ctx context.Context, key string) error {
 	return c.rdb.Del(ctx, "lock:"+key).Err()
 }
 
-// CheckIdempotency checks if a webhook delivery has already been processed within the window.
-// Returns true if event is NEW and should be processed; false if already claimed/processed.
-func (c *Client) CheckIdempotency(ctx context.Context, deliveryID string, window time.Duration) (bool, error) {
-	isNew, err := c.rdb.SetNX(ctx, "idempotency:"+deliveryID, "claimed", window).Result()
-	if err != nil {
-		return false, fmt.Errorf("idempotency check error: %w", err)
-	}
-	return isNew, nil
+// Get retrieves a string cache value.
+func (c *Client) Get(ctx context.Context, key string) (string, error) {
+	return c.rdb.Get(ctx, key).Result()
 }
 
-// Get retrieves cached bytes by key.
-func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
-	return c.rdb.Get(ctx, key).Bytes()
-}
-
-// Set stores a key-value pair with TTL.
-func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+// Set stores a string cache value with TTL.
+func (c *Client) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	return c.rdb.Set(ctx, key, value, ttl).Err()
 }

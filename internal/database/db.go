@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,8 +24,21 @@ func NewClient(ctx context.Context, databaseURL string) (*Client, error) {
 		return nil, fmt.Errorf("failed to parse database configuration: %w", err)
 	}
 
-	config.MaxConns = 25
-	config.MinConns = 1
+	maxConns := 25
+	if val := os.Getenv("DATABASE_MAX_CONNS"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			maxConns = parsed
+		}
+	}
+	minConns := 2
+	if val := os.Getenv("DATABASE_MIN_CONNS"); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed >= 0 {
+			minConns = parsed
+		}
+	}
+
+	config.MaxConns = int32(maxConns)
+	config.MinConns = int32(minConns)
 	config.MaxConnLifetime = 1 * time.Hour
 	config.MaxConnIdleTime = 15 * time.Minute
 	config.HealthCheckPeriod = 1 * time.Minute
@@ -34,7 +49,13 @@ func NewClient(ctx context.Context, databaseURL string) (*Client, error) {
 	}
 
 	// Ping database with timeout (allow sufficient time for remote pooler TLS handshake)
-	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	pingTimeout := 20 * time.Second
+	if val := os.Getenv("DATABASE_ACQUIRE_TIMEOUT"); val != "" {
+		if parsed, err := time.ParseDuration(val); err == nil && parsed > 0 {
+			pingTimeout = parsed
+		}
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 
 	if err := pool.Ping(pingCtx); err != nil {

@@ -10,14 +10,15 @@ import (
 type ErrorCategory string
 
 const (
-	CategoryAuthInvalid       ErrorCategory = "AUTH_INVALID"
-	CategoryQuotaExceeded     ErrorCategory = "QUOTA_EXCEEDED"
-	CategoryRateLimit         ErrorCategory = "RATE_LIMIT"
-	CategoryModelNotFound     ErrorCategory = "MODEL_NOT_FOUND"
-	CategoryModelAccessDenied ErrorCategory = "MODEL_ACCESS_DENIED"
-	CategoryContextOverflow   ErrorCategory = "CONTEXT_OVERFLOW"
-	CategoryTransient         ErrorCategory = "TRANSIENT"
-	CategoryUnknown           ErrorCategory = "UNKNOWN"
+	CategoryAuthInvalid            ErrorCategory = "AUTH_INVALID"
+	CategoryQuotaExceeded          ErrorCategory = "QUOTA_EXCEEDED"
+	CategoryRateLimit              ErrorCategory = "RATE_LIMIT"
+	CategoryModelNotFound          ErrorCategory = "MODEL_NOT_FOUND"
+	CategoryModelAccessDenied      ErrorCategory = "MODEL_ACCESS_DENIED"
+	CategoryContextOverflow        ErrorCategory = "CONTEXT_OVERFLOW"
+	CategoryContentFilterBlocked   ErrorCategory = "CONTENT_FILTER_BLOCKED"
+	CategoryTransient              ErrorCategory = "TRANSIENT"
+	CategoryUnknown                ErrorCategory = "UNKNOWN"
 )
 
 // ClassifiedError standardizes provider error responses across OpenAI, Anthropic, Gemini, Vertex, and Novita.
@@ -34,8 +35,28 @@ func (e ClassifiedError) Error() string {
 	return fmt.Sprintf("[%s] %s (HTTP %d): %s", e.Category, e.FriendlyMessage, e.HTTPStatus, e.RawMessage)
 }
 
+func extractStatusFromError(err error) int {
+	if err == nil {
+		return 0
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, "HTTP ")
+	if idx != -1 && len(msg) >= idx+8 {
+		statusStr := msg[idx+5 : idx+8]
+		var status int
+		if n, _ := fmt.Sscanf(statusStr, "%d", &status); n == 1 && status >= 100 && status <= 599 {
+			return status
+		}
+	}
+	return 0
+}
+
 // ClassifyLLMError analyzes raw provider messages and HTTP status codes to determine retry and recovery actions.
 func ClassifyLLMError(err error, httpStatus int) ClassifiedError {
+	if httpStatus == 0 {
+		httpStatus = extractStatusFromError(err)
+	}
+
 	raw := ""
 	if err != nil {
 		raw = err.Error()
@@ -127,6 +148,31 @@ func ClassifyLLMError(err error, httpStatus int) ClassifiedError {
 
 	// 3. Fallback Substring Matching
 	switch {
+	case strings.Contains(lower, "content_filter") ||
+		strings.Contains(lower, "safety_ratings") ||
+		strings.Contains(lower, "responsible ai") ||
+		strings.Contains(lower, "moderation"):
+		return ClassifiedError{
+			Category:        CategoryContentFilterBlocked,
+			IsTerminal:      true,
+			IsTransient:     false,
+			HTTPStatus:      httpStatus,
+			FriendlyMessage: "AI provider content safety filter blocked the diff payload.",
+			RawMessage:      raw,
+		}
+	case strings.Contains(lower, "invalid_api_key") ||
+		strings.Contains(lower, "incorrect api key") ||
+		strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "permission_denied"):
+		return ClassifiedError{
+			Category:        CategoryAuthInvalid,
+			IsTerminal:      true,
+			IsTransient:     false,
+			HTTPStatus:      httpStatus,
+			FriendlyMessage: "Invalid or expired AI provider API key. Please update your BYOK credentials.",
+			RawMessage:      raw,
+		}
 	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests"):
 		return ClassifiedError{
 			Category:        CategoryRateLimit,
@@ -136,7 +182,7 @@ func ClassifyLLMError(err error, httpStatus int) ClassifiedError {
 			FriendlyMessage: "Rate limit reached. Retrying with backoff.",
 			RawMessage:      raw,
 		}
-	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing"):
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing") || strings.Contains(lower, "insufficient_quota"):
 		return ClassifiedError{
 			Category:        CategoryQuotaExceeded,
 			IsTerminal:      true,
@@ -145,7 +191,7 @@ func ClassifyLLMError(err error, httpStatus int) ClassifiedError {
 			FriendlyMessage: "AI provider quota exceeded.",
 			RawMessage:      raw,
 		}
-	case strings.Contains(lower, "timeout") || strings.Contains(lower, "connection reset") || strings.Contains(lower, "econnrefused"):
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "connection reset") || strings.Contains(lower, "econnrefused") || strings.Contains(lower, "etimedout"):
 		return ClassifiedError{
 			Category:        CategoryTransient,
 			IsTerminal:      false,
@@ -163,5 +209,25 @@ func ClassifyLLMError(err error, httpStatus int) ClassifiedError {
 			FriendlyMessage: "Unexpected error during AI model execution.",
 			RawMessage:      raw,
 		}
+	}
+}
+
+// ShouldFailover determines whether a provider failure warrants attempting the next candidate in the cascade.
+func ShouldFailover(classified ClassifiedError) bool {
+	switch classified.Category {
+	case CategoryTransient:
+		return true
+	case CategoryAuthInvalid, CategoryQuotaExceeded, CategoryModelAccessDenied, CategoryModelNotFound:
+		// Terminal errors on specific model credentials allow cascading to backup providers,
+		// but should be logged with alert-level provenance.
+		return true
+	case CategoryRateLimit:
+		// Rate limit is managed by cooldown backoff on the provider's circuit breaker
+		return false
+	case CategoryContextOverflow, CategoryContentFilterBlocked:
+		// Do not burn other providers on context overflow or content filter blocks
+		return false
+	default:
+		return false
 	}
 }

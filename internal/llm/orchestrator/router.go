@@ -72,11 +72,13 @@ func (r *FallbackRouter) SetBudgetLimiter(limiter *llm.TokenBudgetLimiter) {
 
 // defaultPrimaryModel is the router's baseline model when no preference is
 // given by the caller. Update this centrally when the "best default" shifts.
-const defaultPrimaryModel = "claude-sonnet-5"
+const defaultPrimaryModel = "free/deepseek-v4-pro-0813"
+// const defaultPrimaryModel = "claude-sonnet-5" // previous default
 
 // defaultFallbackChain is used only when the caller supplies neither a
 // PreferredModel nor a FallbackChain of their own.
-var defaultFallbackChain = []string{"gpt-5.6-terra", "gemini-3.1-pro"}
+var defaultFallbackChain = []string{"free/gemini-3.7-flash"}
+// var defaultFallbackChain = []string{"gpt-5.6-terra", "gemini-3.1-pro"} // previous fallback chain
 
 // Execute orchestrates inference with automatic fallback across models.
 func (r *FallbackRouter) Execute(ctx context.Context, req InferenceRequest) (*InferenceResponse, error) {

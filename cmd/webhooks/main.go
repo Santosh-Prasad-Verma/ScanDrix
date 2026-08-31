@@ -46,8 +46,11 @@ func main() {
 	handler := webhooks.NewIngestionHandler(repo, cfg.GitHubWebhookSecret, cfg.GitLabWebhookSecret)
 
 	secretsMap := map[string]string{
-		"github": cfg.GitHubWebhookSecret,
-		"gitlab": cfg.GitLabWebhookSecret,
+		"github":    cfg.GitHubWebhookSecret,
+		"gitlab":    cfg.GitLabWebhookSecret,
+		"bitbucket": cfg.BitbucketWebhookSecret,
+		"azure":     cfg.AzureDevOpsWebhookSecret,
+		"forgejo":   cfg.ForgejoWebhookSecret,
 	}
 	resolver := ingestion.NewStaticSecretResolver(secretsMap)
 	multiIngestion := ingestion.NewIngestionHandler(resolver, relay.NewOutboxStore())

@@ -93,3 +93,42 @@ func TestMCPGatewayServerAndClient(t *testing.T) {
 		t.Fatalf("expected error for non-existent tool, got nil")
 	}
 }
+
+func TestMCPGatewayRoleBasedAccessControl(t *testing.T) {
+	server := gateway.NewMCPServer()
+
+	// Register an admin-only destructive tool
+	server.RegisterTool(gateway.Tool{
+		Name:         "scandrix_delete_repo_comments",
+		Description:  "Deletes all previous PR comments (Admin only)",
+		AllowedRoles: []gateway.AgentRole{gateway.RoleAdmin},
+		IsReadOnly:   false,
+		InputSchema:  map[string]any{"type": "object"},
+	}, func(ctx context.Context, args map[string]any) (*gateway.ToolCallResult, error) {
+		return &gateway.ToolCallResult{
+			Content: []gateway.ToolContent{{Type: "text", Text: "deleted 5 comments"}},
+		}, nil
+	})
+
+	client := gateway.NewInProcessClient(server)
+
+	// 1. Reviewer role should be FORBIDDEN from calling admin tool
+	reviewerCtx := gateway.WithCallerRole(context.Background(), gateway.RoleReviewer)
+	resForbidden, err := client.CallTool(reviewerCtx, "scandrix_delete_repo_comments", map[string]any{})
+	if err == nil && !resForbidden.IsError {
+		t.Fatalf("expected reviewer role to be blocked from admin-only tool")
+	}
+
+	// 2. Admin role should SUCCEED calling admin tool
+	adminCtx := gateway.WithCallerRole(context.Background(), gateway.RoleAdmin)
+	resAdmin, err := client.CallTool(adminCtx, "scandrix_delete_repo_comments", map[string]any{})
+	if err != nil || resAdmin.IsError {
+		t.Fatalf("expected admin role to succeed calling admin tool, got: %+v, err: %v", resAdmin, err)
+	}
+
+	// 3. Reviewer role can call read-only builtin tool
+	resReviewer, err := client.CallTool(reviewerCtx, "scandrix_catalog_search", map[string]any{"query": "OWASP"})
+	if err != nil || resReviewer.IsError {
+		t.Fatalf("expected reviewer role to succeed calling read-only tool, got: %+v, err: %v", resReviewer, err)
+	}
+}

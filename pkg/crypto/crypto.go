@@ -115,6 +115,40 @@ func GenerateSecureToken(prefix string, byteLength int) (string, error) {
 	return token, nil
 }
 
+// EncryptStringAESGCM encrypts a plaintext string and returns a base64 encoded string containing (nonce + ciphertext).
+func EncryptStringAESGCM(key []byte, plaintext string) (string, error) {
+	if len(plaintext) == 0 {
+		return "", nil
+	}
+	cipherBytes, nonce, err := EncryptAESGCM(key, []byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+	combined := append(nonce, cipherBytes...)
+	return base64.StdEncoding.EncodeToString(combined), nil
+}
+
+// DecryptStringAESGCM decrypts a base64 encoded string (nonce + ciphertext) into a plaintext string.
+func DecryptStringAESGCM(key []byte, encodedCiphertext string) (string, error) {
+	if len(encodedCiphertext) == 0 {
+		return "", nil
+	}
+	combined, err := base64.StdEncoding.DecodeString(encodedCiphertext)
+	if err != nil {
+		return "", err
+	}
+	if len(combined) < 12 {
+		return "", errors.New("ciphertext too short")
+	}
+	nonce := combined[:12]
+	ciphertext := combined[12:]
+	plainBytes, err := DecryptAESGCM(key, ciphertext, nonce)
+	if err != nil {
+		return "", err
+	}
+	return string(plainBytes), nil
+}
+
 // FingerprintSHA256 computes a deterministic hex SHA-256 fingerprint of input data.
 func FingerprintSHA256(data string) string {
 	h := sha256.Sum256([]byte(data))

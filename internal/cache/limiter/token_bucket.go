@@ -17,6 +17,7 @@ type TokenBucketLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
 	config  RateLimitConfig
+	stopCh  chan struct{}
 }
 
 // NewTokenBucketLimiter creates a rate limiter with the specified bucket capacity and refill rate.
@@ -31,9 +32,39 @@ func NewTokenBucketLimiter(config RateLimitConfig) *TokenBucketLimiter {
 		config.ExpirationTimeout = 10 * time.Minute
 	}
 
-	return &TokenBucketLimiter{
+	tbl := &TokenBucketLimiter{
 		buckets: make(map[string]*bucket),
 		config:  config,
+		stopCh:  make(chan struct{}),
+	}
+
+	// Launch background cleanup goroutine to periodically prune inactive client buckets
+	go func() {
+		pruneInterval := config.ExpirationTimeout / 2
+		if pruneInterval < time.Minute {
+			pruneInterval = time.Minute
+		}
+		ticker := time.NewTicker(pruneInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				tbl.PruneInactive()
+			case <-tbl.stopCh:
+				return
+			}
+		}
+	}()
+
+	return tbl
+}
+
+// Stop terminates the background cleanup goroutine.
+func (l *TokenBucketLimiter) Stop() {
+	select {
+	case <-l.stopCh:
+	default:
+		close(l.stopCh)
 	}
 }
 

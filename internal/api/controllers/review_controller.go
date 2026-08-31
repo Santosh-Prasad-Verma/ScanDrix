@@ -1,9 +1,12 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -11,6 +14,7 @@ import (
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/provenance/intoto"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -20,6 +24,7 @@ type ReviewController struct {
 	repo         *database.Repository
 	orchestrator *review.Orchestrator
 	streamHub    *review.StreamHub
+	sem          chan struct{}
 }
 
 // NewReviewController initializes the review controller.
@@ -28,6 +33,7 @@ func NewReviewController(repo *database.Repository, orchestrator *review.Orchest
 		repo:         repo,
 		orchestrator: orchestrator,
 		streamHub:    streamHub,
+		sem:          make(chan struct{}, 16),
 	}
 }
 
@@ -40,6 +46,8 @@ func (c *ReviewController) Routes() chi.Router {
 	r.Get("/{id}/stream", c.handleStreamReview)
 	r.Get("/{id}/findings", c.handleListFindings)
 	r.Post("/findings/{findingId}/dismiss", c.handleDismissFinding)
+	r.Get("/{id}/attestation", c.handleGetAttestation)
+	r.Post("/{id}/attestation/verify", c.handleVerifyAttestation)
 
 	return r
 }
@@ -68,9 +76,22 @@ func (c *ReviewController) handleTriggerReview(w http.ResponseWriter, r *http.Re
 		RawDiff:       req.RawDiff,
 	}
 
-	// Trigger asynchronous or synchronous review processing
+	// Trigger asynchronous review processing with bounded worker pool semaphore
+	// Using context.WithoutCancel preserves request values/tracing while detaching HTTP request cancelation
+	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	go func() {
-		_ = c.orchestrator.ProcessReview(r.Context(), task)
+		defer cancel()
+		select {
+		case c.sem <- struct{}{}:
+			defer func() { <-c.sem }()
+		case <-bgCtx.Done():
+			slog.Warn("API review worker timed out waiting for worker semaphore slot", "review_id", reviewID)
+			return
+		}
+
+		if c.orchestrator != nil {
+			_ = c.orchestrator.ProcessReview(bgCtx, task)
+		}
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -90,15 +111,40 @@ func (c *ReviewController) handleGetReview(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dtos.ReviewSummaryResponse{
-		ReviewID:      reviewID,
-		Title:         "Automated Security Review",
-		Status:        models.ReviewStateCompleted,
-		Verdict:       "PASSED",
-		FindingsCount: 0,
-		CreatedAt:     time.Now().UTC(),
-	})
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo != nil {
+		rev, err := c.repo.GetReview(r.Context(), wsID, reviewID)
+		if err != nil {
+			slog.Error("Failed to fetch review", "review_id", reviewID, "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to retrieve review"}`, http.StatusInternalServerError)
+			return
+		}
+		if rev != nil {
+			verdict := "PASSED"
+			if rev.FindingsCount > 0 {
+				verdict = "ACTION_REQUIRED"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(dtos.ReviewSummaryResponse{
+				ReviewID:      rev.ID,
+				RepositoryID:  rev.RepositoryID,
+				PullNumber:    rev.PullNumber,
+				Title:         rev.Title,
+				Status:        rev.State,
+				Verdict:       verdict,
+				FindingsCount: rev.FindingsCount,
+				CreatedAt:     rev.CreatedAt,
+				CompletedAt:   rev.CompletedAt,
+			})
+		}
+	}
+
+	http.Error(w, `{"error":"review not found"}`, http.StatusNotFound)
 }
 
 func (c *ReviewController) handleStreamReview(w http.ResponseWriter, r *http.Request) {
@@ -120,9 +166,22 @@ func (c *ReviewController) handleListFindings(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	findings, err := c.repo.GetReviewFindings(r.Context(), reviewID)
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]models.CodeFinding{})
+		return
+	}
+
+	findings, err := c.repo.GetReviewFindings(r.Context(), reviewID, wsID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed to fetch review findings", "review_id", reviewID, "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed to retrieve review findings"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -132,13 +191,104 @@ func (c *ReviewController) handleListFindings(w http.ResponseWriter, r *http.Req
 
 func (c *ReviewController) handleDismissFinding(w http.ResponseWriter, r *http.Request) {
 	findingID := chi.URLParam(r, "findingId")
+	findingUUID, err := uuid.Parse(findingID)
+	if err != nil {
+		http.Error(w, `{"error":"invalid finding id"}`, http.StatusBadRequest)
+		return
+	}
+
 	var req dtos.DismissFindingRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo != nil {
+		_ = c.repo.DismissFinding(r.Context(), wsID, findingUUID, req.Reason)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"finding_id": findingID,
+		"finding_id": findingUUID,
 		"status":     "DISMISSED",
 		"reason":     req.Reason,
+	})
+}
+
+func (c *ReviewController) handleGetAttestation(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	reviewID, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid review id"}`, http.StatusBadRequest)
+		return
+	}
+
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var records []intoto.AttestationRecord
+	if c.repo != nil {
+		records, err = c.repo.GetReviewAttestations(r.Context(), wsID, reviewID)
+		if err != nil {
+			slog.Error("Failed to fetch review attestations", "review_id", reviewID, "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to retrieve review attestations"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"review_id":    reviewID,
+		"workspace_id": wsID,
+		"attestations": records,
+		"count":        len(records),
+	})
+}
+
+func (c *ReviewController) handleVerifyAttestation(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"unauthorized: workspace context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Envelope intoto.DSSEEnvelope `json:"envelope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid dsse envelope json"}`, http.StatusBadRequest)
+		return
+	}
+
+	masterSecret := os.Getenv("SCANDRIX_ENCRYPTION_KEY")
+	if masterSecret == "" {
+		masterSecret = os.Getenv("KMS_MASTER_KEY")
+	}
+	privKey, pubKey, keyID := intoto.DeriveTenantKeypair(wsID, masterSecret)
+	attestor := intoto.NewProvenanceAttestor(keyID, privKey, pubKey)
+
+	stmt, err := attestor.VerifyEnvelope(&req.Envelope, pubKey)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"valid":  false,
+			"error":  err.Error(),
+			"key_id": keyID,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"valid":     true,
+		"statement": stmt,
+		"key_id":    keyID,
 	})
 }

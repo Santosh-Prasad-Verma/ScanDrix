@@ -278,3 +278,80 @@ func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience s
 		RawClaims:  attrs,
 	}, nil
 }
+
+// IdPMetadata represents parsed Identity Provider XML metadata.
+type IdPMetadata struct {
+	EntityID    string
+	SSOURL      string
+	Certificate string
+}
+
+// ParseIdPMetadataXML extracts EntityID, SingleSignOnService HTTP-POST/Redirect URL, and X.509 Certificate from IdP metadata XML.
+func ParseIdPMetadataXML(metadataXML []byte) (*IdPMetadata, error) {
+	var raw struct {
+		EntityID         string `xml:"entityID,attr"`
+		IDPSSODescriptor struct {
+			KeyDescriptor []struct {
+				Use     string `xml:"use,attr"`
+				KeyInfo struct {
+					X509Certificate string `xml:"X509Data>X509Certificate"`
+				} `xml:"KeyInfo"`
+			} `xml:"KeyDescriptor"`
+			SingleSignOnService []struct {
+				Binding  string `xml:"Binding,attr"`
+				Location string `xml:"Location,attr"`
+			} `xml:"SingleSignOnService"`
+		} `xml:"IDPSSODescriptor"`
+	}
+
+	if err := xml.Unmarshal(metadataXML, &raw); err != nil {
+		return nil, fmt.Errorf("failed parsing IdP metadata XML: %w", err)
+	}
+
+	meta := &IdPMetadata{EntityID: raw.EntityID}
+	for _, sso := range raw.IDPSSODescriptor.SingleSignOnService {
+		if strings.Contains(sso.Binding, "HTTP-POST") || strings.Contains(sso.Binding, "HTTP-Redirect") {
+			meta.SSOURL = sso.Location
+			if strings.Contains(sso.Binding, "HTTP-POST") {
+				break
+			}
+		}
+	}
+
+	for _, kd := range raw.IDPSSODescriptor.KeyDescriptor {
+		if kd.Use == "signing" || kd.Use == "" {
+			cert := strings.TrimSpace(kd.KeyInfo.X509Certificate)
+			if cert != "" {
+				meta.Certificate = cert
+				break
+			}
+		}
+	}
+
+	if meta.SSOURL == "" && len(raw.IDPSSODescriptor.SingleSignOnService) > 0 {
+		meta.SSOURL = raw.IDPSSODescriptor.SingleSignOnService[0].Location
+	}
+
+	return meta, nil
+}
+
+// GenerateAuthnRequest constructs an RFC compliant SAML 2.0 AuthnRequest XML.
+func (h *SAMLHandler) GenerateAuthnRequest(spEntityID, acsURL, idpSSOURL string) (string, string) {
+	reqID := fmt.Sprintf("_%s", strings.ReplaceAll(time.Now().UTC().Format("20060102150405.000000"), ".", ""))
+	issueInstant := time.Now().UTC().Format(time.RFC3339)
+
+	xmlStr := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                    ID="%s"
+                    Version="2.0"
+                    IssueInstant="%s"
+                    Destination="%s"
+                    ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+                    AssertionConsumerServiceURL="%s">
+    <saml:Issuer>%s</saml:Issuer>
+    <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress" AllowCreate="true"/>
+</samlp:AuthnRequest>`, reqID, issueInstant, idpSSOURL, acsURL, spEntityID)
+
+	return xmlStr, reqID
+}
