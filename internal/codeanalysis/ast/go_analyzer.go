@@ -21,6 +21,10 @@ func NewGoASTAnalyzer() *GoASTAnalyzer {
 
 // Analyze parses Go source and calculates structural complexity and code smell findings.
 func (a *GoASTAnalyzer) Analyze(filePath, src string) (*ComplexityReport, error) {
+	if len(src) > MaxSourceFileSize {
+		return nil, fmt.Errorf("source file %s exceeds maximum AST analysis size (%d > %d bytes)", filePath, len(src), MaxSourceFileSize)
+	}
+
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, filePath, src, parser.ParseComments)
 	if err != nil {
@@ -54,8 +58,18 @@ func (a *GoASTAnalyzer) Analyze(filePath, src string) (*ComplexityReport, error)
 
 	totalCyclomatic := 0
 	totalCognitive := 0
+	nodeCount := 0
+	const maxInspectedNodes = 50000
 
 	ast.Inspect(node, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		nodeCount++
+		if nodeCount > maxInspectedNodes {
+			return false // Cap node traversal to prevent catastrophic backtracking on crafted ASTs
+		}
+
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return true

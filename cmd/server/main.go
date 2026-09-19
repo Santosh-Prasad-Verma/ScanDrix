@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,9 +15,11 @@ import (
 	"github.com/scandrix/backend/internal/api"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/auth/cliauth"
+	"github.com/scandrix/backend/internal/auth/clitokens"
 	"github.com/scandrix/backend/internal/auth/mailer"
 	"github.com/scandrix/backend/internal/auth/oauth"
 	"github.com/scandrix/backend/internal/billing/razorpay"
+	"github.com/scandrix/backend/internal/cache"
 	"github.com/scandrix/backend/internal/config"
 	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
@@ -24,15 +28,23 @@ import (
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/sandbox"
+	"github.com/scandrix/backend/internal/sandbox/lease"
 	"github.com/scandrix/backend/internal/storage"
 )
 
 func main() {
+	// ═══════════════════════════════════════════════════════════════
+	// 1. LOGGING & INITIALIZATION (Monolithic server bootstrap)
+	// ═══════════════════════════════════════════════════════════════
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
 	slog.Info("Starting Scandrix Unified Enterprise Server (Monolithic mode)")
 
+	// ═══════════════════════════════════════════════════════════════
+	// 2. CONFIGURATION & RUNTIME CONTEXT (Environment loading & context)
+	// ═══════════════════════════════════════════════════════════════
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("Configuration error", "error", err)
@@ -42,7 +54,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Connect to database
+	// ═══════════════════════════════════════════════════════════════
+	// 3. PERSISTENCE & REPOSITORY (Database connection & repository)
+	// ═══════════════════════════════════════════════════════════════
 	dbClient, err := database.NewClient(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("Database connection failed", "error", err)
@@ -51,13 +65,44 @@ func main() {
 	defer dbClient.Close()
 	repo := database.NewRepository(dbClient)
 
-	// Auth, Storage, AI, Rules, SCIM, and Streaming
+	// ═══════════════════════════════════════════════════════════════
+	// 4. DISTRIBUTED CACHING & REDIS (Locking, session cache & rate limiting)
+	// ═══════════════════════════════════════════════════════════════
+	var cacheClient *cache.Client
+	if cfg.RedisURL != "" {
+		rc, err := cache.NewClient(ctx, cfg.RedisURL)
+		if err != nil {
+			slog.Warn("Redis connection deferred", "error", err)
+		} else {
+			defer rc.Close()
+			cacheClient = rc
+			slog.Info("Redis connection pool initialized for distributed caching & rate limiting")
+		}
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// 5. ENTERPRISE DOMAIN SERVICES (Auth, Review, LLM, Rules & SCIM)
+	// ═══════════════════════════════════════════════════════════════
 	authenticator := auth.NewAuthenticator(cfg.JWTSecret)
+	authenticator.SetCLIVerifier(repo.VerifyCLIToken)
+	cliTokenService := clitokens.NewTokenService(repo)
 	streamHub := review.NewStreamHub()
+	if cacheClient != nil {
+		streamHub.SetRedisClient(cacheClient)
+	}
 	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
 	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint)
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
 	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
+	orchestrator.SetStreamHub(streamHub)
+
+	// Initialize Sandbox Subsystem & MicroVM Pool
+	sandboxProvider := sandbox.NewSandboxProviderFromConfig(cfg)
+	sandboxRepo := lease.NewPgSandboxLeaseRepository(dbClient.Pool)
+	sandboxLeaseMgr := lease.NewSandboxLeaseManager(sandboxProvider, sandboxRepo, cfg)
+	sandboxReaper := lease.NewSandboxLeaseReaper(sandboxRepo, cfg)
+	orchestrator.SetSandboxLeaseManager(sandboxLeaseMgr)
+
 	autoTicketMgr := pm.NewAutoTicketManager(repo, nil)
 	orchestrator.SetAutoTicketManager(autoTicketMgr)
 	scimService := scim.NewSCIMService(repo)
@@ -65,19 +110,21 @@ func main() {
 		scimService.SetBearerToken(cfg.JWTSecret)
 	}
 
-	// Device Flow, OAuth & Email Mailer Services
+	// ═══════════════════════════════════════════════════════════════
+	// 6. INTEGRATIONS & OUTBOUND SERVICES (OAuth, Mailer & Billing)
+	// ═══════════════════════════════════════════════════════════════
 	cliStore := database.NewPostgresCLISessionStore(repo)
 	deviceFlow := cliauth.NewDeviceFlowManager(cliStore, cfg.AppBaseURL)
 	oauthService := oauth.NewOAuthService(
 		oauth.ProviderConfig{
 			ClientID:     cfg.GitHubOAuthClientID,
 			ClientSecret: cfg.GitHubOAuthClientSecret,
-			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/github/callback", cfg.AppBaseURL),
+			RedirectURI:  cfg.GitHubOAuthRedirectURI,
 		},
 		oauth.ProviderConfig{
 			ClientID:     cfg.GitLabOAuthClientID,
 			ClientSecret: cfg.GitLabOAuthClientSecret,
-			RedirectURI:  fmt.Sprintf("%s/api/v1/auth/oauth/gitlab/callback", cfg.AppBaseURL),
+			RedirectURI:  cfg.GitLabOAuthRedirectURI,
 		},
 	)
 	emailSender := mailer.NewSender(mailer.SMTPConfig{
@@ -91,28 +138,54 @@ func main() {
 	budgetLimiter := llm.NewTokenBudgetLimiter()
 	billingService := razorpay.NewBillingService(repo, budgetLimiter, emailSender, cfg.AppBaseURL, cfg.RazorpayKeyID, cfg.RazorpayKeySecret, cfg.RazorpayWebhookSecret)
 
-	// Build Master Router with full Domain Controllers (Auth, Reviews, Rules, Workspaces, Usage, SCIM, Billing)
+	loopbackManager := cliauth.NewLoopbackManager(cfg.AppBaseURL)
+	deviceQuotaManager := auth.NewDeviceManager(repo, 10)
+	var helpdeskService *auth.HelpdeskTokenService
+	if cfg.HelpdeskJWTPrivateKeyPEM != "" {
+		if svc, err := auth.NewHelpdeskTokenService(cfg.HelpdeskJWTPrivateKeyPEM); err == nil {
+			helpdeskService = svc
+		}
+	}
+	if helpdeskService == nil {
+		if helpdeskPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048); err == nil {
+			helpdeskService = auth.NewHelpdeskTokenServiceWithKey(helpdeskPrivateKey, "scandrix-server", "scandrix-helpdesk")
+		}
+	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// 7. MASTER ROUTER & HTTP SERVER BINDING (API routes & port listener)
+	// ═══════════════════════════════════════════════════════════════
 	r := api.BuildRouter(api.RouterConfig{
-		Repo:           repo,
-		AuthService:    authenticator,
-		Orchestrator:   orchestrator,
-		StreamHub:      streamHub,
-		Evaluator:      evaluator,
-		SCIMService:    scimService,
-		DeviceFlow:     deviceFlow,
-		OAuthService:   oauthService,
-		Mailer:         emailSender,
-		BillingService: billingService,
-		BudgetLimiter:  budgetLimiter,
-		AppBaseURL:     cfg.AppBaseURL,
-		JWTSecret:      cfg.JWTSecret,
+		Repo:                     repo,
+		AuthService:              authenticator,
+		Orchestrator:             orchestrator,
+		StreamHub:                streamHub,
+		Evaluator:                evaluator,
+		SCIMService:              scimService,
+		DeviceFlow:               deviceFlow,
+		OAuthService:             oauthService,
+		Mailer:                   emailSender,
+		BillingService:           billingService,
+		BudgetLimiter:            budgetLimiter,
+		CacheClient:              cacheClient,
+		AppBaseURL:               cfg.AppBaseURL,
+		JWTSecret:                cfg.JWTSecret,
+		CLITokenService:          cliTokenService,
+		LoopbackManager:          loopbackManager,
+		HelpdeskService:          helpdeskService,
+		DeviceQuotaManager:       deviceQuotaManager,
+		RequireEmailVerification: cfg.RequireEmailVerification,
+		BlockedEmailDomains:      cfg.BlockedEmailDomains,
+		TurnstileSecretKey:       cfg.TurnstileSecretKey,
 	})
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.APIPort),
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.APIPort),
+		Handler:           r,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -123,7 +196,9 @@ func main() {
 		}
 	}()
 
-	// Background Maintenance Cron Scheduler (Watchdog, Seat Pruner, Session Cleanup, DORA Rollup, PR Approvals, Rule Learning, Feedback Sync, Orphaned Sessions, Spend Limit, Repo Report)
+	// ═══════════════════════════════════════════════════════════════
+	// 7. BACKGROUND CRON SCHEDULER (Watchdogs, pruners & reporting crons)
+	// ═══════════════════════════════════════════════════════════════
 	cronScheduler := cron.NewScheduler()
 	cronScheduler.Register(cron.NewStaleReviewWatchdog(repo, 15*time.Minute, 30))
 	cronScheduler.Register(cron.NewLicenseSeatPruner(repo, 24*time.Hour, 30))
@@ -135,16 +210,21 @@ func main() {
 	cronScheduler.Register(cron.NewClassifyOrphanedSessionsCron(repo, 15*time.Minute, 30, 25))
 	cronScheduler.Register(cron.NewSpendLimitAlertCron(repo, 1*time.Hour))
 	cronScheduler.Register(cron.NewRepoReportCron(repo, 24*time.Hour, 15))
+	// Background sandbox lease sweeper & idle-kill daemons
+	cronScheduler.Register(lease.NewReaperCronJob(sandboxReaper))
+	cronScheduler.Register(lease.NewIdleKillCronJob(sandboxReaper))
 	cronScheduler.Start(ctx)
 
+	// ═══════════════════════════════════════════════════════════════
+	// 8. GRACEFUL TERMINATION & TEARDOWN (Signal interceptor & clean stop)
+	// ═══════════════════════════════════════════════════════════════
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	slog.Info("Shutting down API server gracefully...")
 	cronScheduler.Stop()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
 }
-

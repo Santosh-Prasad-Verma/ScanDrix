@@ -9,14 +9,14 @@ import (
 
 // HeartbeatRunner sends periodic health signals to BetterStack / external uptime monitors.
 type HeartbeatRunner struct {
-	mu          sync.RWMutex
-	cfg         HeartbeatConfig
-	httpClient  *http.Client
-	stopChan    chan struct{}
-	running     bool
-	lastPing    *time.Time
+	mu           sync.RWMutex
+	cfg          HeartbeatConfig
+	httpClient   *http.Client
+	stopChan     chan struct{}
+	running      bool
+	lastPing     *time.Time
 	successCount int64
-	failCount   int64
+	failCount    int64
 }
 
 // NewHeartbeatRunner initializes the heartbeat daemon.

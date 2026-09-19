@@ -105,3 +105,39 @@ func TestKMSEnvelopeEncryptionAndRotation(t *testing.T) {
 		t.Fatal("tamper resistance failure: expected decryption error on tampered ciphertext")
 	}
 }
+
+func TestStaticKMSAndEnvelopeString(t *testing.T) {
+	ctx := context.Background()
+	rawKey := make([]byte, 32)
+	for i := range rawKey {
+		rawKey[i] = byte(i + 1)
+	}
+
+	staticKMS, err := kms.NewStaticKeyKMS(rawKey, "test-static-key")
+	if err != nil {
+		t.Fatalf("failed initializing StaticKeyKMS: %v", err)
+	}
+
+	engine := kms.NewKMSEnvelopeEngine(staticKMS)
+	plainToken := "ghp_PersonalAccessToken_SecretValue12345"
+
+	// 1. Encrypt string to envelope JSON
+	envJSON, err := engine.EncryptString(ctx, "test-workspace-key", plainToken)
+	if err != nil {
+		t.Fatalf("failed EncryptString: %v", err)
+	}
+
+	if !bytes.HasPrefix([]byte(envJSON), []byte("{")) {
+		t.Fatalf("expected JSON envelope format, got: %s", envJSON)
+	}
+
+	// 2. Decrypt string from envelope JSON
+	decrypted, err := engine.DecryptString(ctx, envJSON)
+	if err != nil {
+		t.Fatalf("failed DecryptString: %v", err)
+	}
+
+	if decrypted != plainToken {
+		t.Fatalf("decrypted string mismatch: got %q, want %q", decrypted, plainToken)
+	}
+}

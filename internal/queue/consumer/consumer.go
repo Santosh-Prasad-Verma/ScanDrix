@@ -11,6 +11,10 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. CONSUMER SCHEMA & EXECUTOR CALLBACK (Worker state & retry thresholds)
+// ═══════════════════════════════════════════════════════════════
+
 // ReviewExecutor defines the callback invoked when a review job executes.
 type ReviewExecutor func(ctx context.Context, task ReviewTaskPayload) ([]models.CodeFinding, error)
 
@@ -23,6 +27,10 @@ type ReviewConsumer struct {
 	workerID    string
 	deadLetters []ReviewTaskPayload
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 2. CONSUMER FACTORY & WORKER INITIALIZATION (Worker ID & inbox binding)
+// ═══════════════════════════════════════════════════════════════
 
 // NewReviewConsumer initializes the consumer.
 func NewReviewConsumer(cfg ConsumerConfig, inbox *relay.InboxDeduplicator, executor ReviewExecutor) *ReviewConsumer {
@@ -37,6 +45,10 @@ func NewReviewConsumer(cfg ConsumerConfig, inbox *relay.InboxDeduplicator, execu
 		deadLetters: make([]ReviewTaskPayload, 0),
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 3. IDEMPOTENT TASK PROCESSING ENGINE (Inbox claim, execution & exponential backoff)
+// ═══════════════════════════════════════════════════════════════
 
 // ProcessTask handles an incoming queue task enforcing exactly-once semantics.
 func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload) TaskExecutionResult {
@@ -121,6 +133,10 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 		Timestamp:    time.Now().UTC(),
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 4. DEAD-LETTER AUDIT & REDRIVE REPOSITORY (DLQ payload inspection)
+// ═══════════════════════════════════════════════════════════════
 
 // GetDeadLetters returns messages routed to DLQ for redrive or audit inspection.
 func (c *ReviewConsumer) GetDeadLetters() []ReviewTaskPayload {

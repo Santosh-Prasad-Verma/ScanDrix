@@ -146,4 +146,3 @@ func TestReviewerAssignerWithTeamResolver(t *testing.T) {
 		t.Fatal("expected assigned reviewers")
 	}
 }
-

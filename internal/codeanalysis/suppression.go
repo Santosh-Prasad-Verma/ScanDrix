@@ -13,7 +13,7 @@ type SuppressionFilter struct {
 }
 
 var (
-	ignoreAllRegex  = regexp.MustCompile(`(?i)(?:@scandrix-ignore-all|@scandrix-disable-file|kodus-disable-file)`)
+	ignoreAllRegex  = regexp.MustCompile(`(?i)(?:@scandrix-ignore-all|@scandrix-disable-file)`)
 	ignoreLineRegex = regexp.MustCompile(`(?i)(?:@scandrix-ignore|@scandrix-disable|nolint|noqa)(?:\((.*?)\)|\s+([a-zA-Z0-9_-]+))?`)
 )
 

@@ -1,8 +1,3 @@
-# ==============================================================================
-# ScanDrix Enterprise Production Multi-Stage Dockerfile
-# Security Hardened: Non-Root Execution, Distroless/Static Alpine Base, CGO=0
-# ==============================================================================
-
 # Stage 1: Build Binaries
 FROM golang:alpine AS builder
 ENV GOTOOLCHAIN=auto
@@ -18,8 +13,10 @@ RUN go mod download
 # Copy source tree
 COPY . .
 
-# Build statically linked, stripped binaries
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+# Build statically linked, stripped binaries with multi-arch support
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 RUN go build -ldflags="-s -w" -o /build/bin/scandrix-api ./cmd/api && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-server ./cmd/server && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-webhooks ./cmd/webhooks && \
@@ -34,7 +31,7 @@ RUN go build -ldflags="-s -w" -o /build/bin/scandrix-api ./cmd/api && \
 # Stage 2: Minimal Production Image
 FROM alpine:3.21 AS runner
 
-RUN apk add --no-cache ca-certificates tzdata git && \
+RUN apk add --no-cache ca-certificates tzdata git wget && \
     addgroup -g 10001 -S scandrix && \
     adduser -u 10001 -S scandrix -G scandrix -h /home/scandrix
 
@@ -51,5 +48,8 @@ RUN mkdir -p /app/data /app/sandboxes /app/logs && \
 USER scandrix:scandrix
 
 EXPOSE 8080 8081 9090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
 
 ENTRYPOINT ["/app/bin/scandrix-server"]

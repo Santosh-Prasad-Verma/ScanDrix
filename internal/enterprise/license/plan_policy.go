@@ -17,11 +17,11 @@ type PlanQuota struct {
 	AdvancedRulesAllowed bool  `json:"advanced_rules_allowed"`
 }
 
-// PlanQuota presets matching enterprise standards and Kodus parity.
+// PlanQuota presets matching enterprise standards.
 var (
 	QuotaCommunity = PlanQuota{
-		MonthlyTokens:        500_000,   // 500K tokens / month
-		BurstLimitPerMin:     50_000,    // 50K tokens / minute
+		MonthlyTokens:        1_000_000, // 1M tokens / month (Free tier)
+		BurstLimitPerMin:     100_000,   // 100K tokens / minute
 		MaxSeats:             5,
 		MaxRepositories:      5,
 		MaxConcurrentReviews: 1,
@@ -30,12 +30,23 @@ var (
 		AdvancedRulesAllowed: false,
 	}
 
+	QuotaDeveloper = PlanQuota{
+		MonthlyTokens:        6_000_000, // 6M tokens / month (Developer tier)
+		BurstLimitPerMin:     300_000,   // 300K tokens / minute
+		MaxSeats:             10,
+		MaxRepositories:      0,         // 0 = unlimited
+		MaxConcurrentReviews: 5,
+		BYOKAllowed:          true,
+		PriorityQueueing:     false,
+		AdvancedRulesAllowed: true,
+	}
+
 	QuotaTeam = PlanQuota{
-		MonthlyTokens:        10_000_000, // 10M tokens / month
-		BurstLimitPerMin:     500_000,    // 500K tokens / minute
+		MonthlyTokens:        14_000_000, // 14M tokens / month (Team tier)
+		BurstLimitPerMin:     700_000,    // 700K tokens / minute
 		MaxSeats:             25,
 		MaxRepositories:      0,          // 0 = unlimited
-		MaxConcurrentReviews: 10,
+		MaxConcurrentReviews: 15,
 		BYOKAllowed:          true,
 		PriorityQueueing:     true,
 		AdvancedRulesAllowed: true,
@@ -56,6 +67,8 @@ var (
 // GetPlanQuota returns the resource quota assigned to a license tier.
 func GetPlanQuota(tier LicenseTier) PlanQuota {
 	switch NormalizeTier(tier) {
+	case TierDeveloper:
+		return QuotaDeveloper
 	case TierTeam:
 		return QuotaTeam
 	case TierEnterprise:
@@ -65,13 +78,15 @@ func GetPlanQuota(tier LicenseTier) PlanQuota {
 	}
 }
 
-// NormalizeTier standardizes tier string representations (e.g. "PRO" -> "TEAM").
+// NormalizeTier standardizes tier string representations (e.g. "PRO" -> "TEAM", "DEV" -> "DEVELOPER").
 func NormalizeTier(tier LicenseTier) LicenseTier {
 	upper := strings.ToUpper(strings.TrimSpace(string(tier)))
 	switch upper {
-	case "PRO", "TEAM", "TEAMS":
+	case "DEVELOPER", "DEV", "STARTER", "PLUS", "SPRINT":
+		return TierDeveloper
+	case "PRO", "TEAM", "TEAMS", "VELOCITY":
 		return TierTeam
-	case "ENTERPRISE", "ENT":
+	case "ENTERPRISE", "ENT", "SCALE":
 		return TierEnterprise
 	default:
 		return TierCommunity
@@ -84,7 +99,8 @@ var communityAllowedModels = map[string]bool{
 	"gemini-3.1-flash-lite":                  true,
 	"gemini-2.5-flash":                       true,
 	"minimax/minimax-m3:free":                true,
-	"stealth/ox-alpha":                       true,
+	"glm-5.3-flash":                          true,
+	"zai/glm-5.3-flash":                      true,
 	"thinkingmachines/inkling:free":          true,
 	"nvidia/nemotron-3-ultra-550b-a55b:free": true,
 	"free/deepseek-v4-pro-0813":              true,
@@ -94,6 +110,13 @@ var communityAllowedModels = map[string]bool{
 	"free/deepseek-v4-flash-0731":            true,
 	"free/glm-5.3-flash":                     true,
 	"free/muse-spark-1.2":                    true,
+}
+
+// Frontier heavyweight models reserved for Team and Enterprise tiers (or BYOK).
+var teamOnlyModels = map[string]bool{
+	"claude-sonnet-5": true,
+	"gpt-5.6-terra":   true,
+	"grok-3":          true,
 }
 
 // Ultra-heavyweight models reserved exclusively for Enterprise tier (or BYOK).
@@ -112,9 +135,9 @@ var enterpriseOnlyModels = map[string]bool{
 // 1. BYOK Exception: If the customer provides their own provider API key (hasBYOK=true),
 //    they fund the inference directly and can access ANY model supported by that provider.
 // 2. Free / Community: Allowed only approved low-cost / trial models.
-// 3. Pro / Team: Allowed all standard frontier workhorses (Claude Sonnet 5, GPT-5.6 Terra,
-//    Gemini 3.7 Flash, Qwen 3.8 Max, Kimi K3, DeepSeek, etc.).
-// 4. Enterprise: Full access to all models including ultra-flagships and private endpoints.
+// 3. Developer: Allowed high-performance workhorse models (Gemini Flash, DeepSeek, GLM, Qwen, Kimi, Luna).
+// 4. Team: Allowed all standard frontier workhorses (Claude Sonnet 5, GPT-5.6 Terra, Grok-3).
+// 5. Enterprise: Full access to all models including ultra-flagships and private endpoints.
 func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, string) {
 	cleanModel := strings.ToLower(strings.TrimSpace(modelID))
 
@@ -131,24 +154,35 @@ func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, strin
 			return true, ""
 		}
 		return false, fmt.Sprintf(
-			"model '%s' is not available on the Free plan. Upgrade to Pro/Team to access frontier models, or configure a BYOK API key in workspace settings.",
+			"model '%s' is not available on the Free Community plan. Upgrade to Developer or Team to access advanced models, or configure a BYOK API key in workspace settings.",
 			modelID,
 		)
 	}
 
-	// 3. Team / Pro tier
-	if normTier == TierTeam {
-		// Block ultra-expensive models on standard managed Pro subscription
-		if enterpriseOnlyModels[cleanModel] {
+	// 3. Developer tier
+	if normTier == TierDeveloper {
+		if teamOnlyModels[cleanModel] || enterpriseOnlyModels[cleanModel] {
 			return false, fmt.Sprintf(
-				"model '%s' requires an Enterprise subscription or custom BYOK credentials. Current plan: Pro/Team.",
+				"model '%s' requires a Team or Enterprise subscription (or custom BYOK credentials). Current plan: Developer.",
 				modelID,
 			)
 		}
 		return true, ""
 	}
 
-	// 4. Enterprise tier: all models allowed
+	// 4. Team tier
+	if normTier == TierTeam {
+		// Block ultra-expensive models on standard managed Team subscription
+		if enterpriseOnlyModels[cleanModel] {
+			return false, fmt.Sprintf(
+				"model '%s' requires an Enterprise subscription or custom BYOK credentials. Current plan: Team.",
+				modelID,
+			)
+		}
+		return true, ""
+	}
+
+	// 5. Enterprise tier: all models allowed
 	return true, ""
 }
 
@@ -171,13 +205,21 @@ func GetAllocatedModelsList(tier LicenseTier) []string {
 			"qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3",
 			"gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
 		}
+	case TierDeveloper:
+		return []string{
+			"gpt-5.6-luna",
+			"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+			"qwen3.8-max", "kimi-k3", "deepseek-chat", "mistral-large-3",
+			"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
+			"glm-5.3-flash", "minimax/minimax-m3:free",
+		}
 	default:
 		return []string{
 			"gemini-2.5-flash-lite",
 			"gemini-3.1-flash-lite",
 			"gemini-2.5-flash",
 			"minimax/minimax-m3:free",
-			"stealth/ox-alpha",
+			"glm-5.3-flash",
 			"thinkingmachines/inkling:free",
 		}
 	}

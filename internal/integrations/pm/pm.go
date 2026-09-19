@@ -210,14 +210,14 @@ func (m *AutoTicketManager) ProcessFindingsForAutoTicket(
 
 		// Emit outbox event
 		payload, _ := json.Marshal(map[string]any{
-			"workspace_id": wsID.String(),
+			"workspace_id":  wsID.String(),
 			"repository_id": repoID.String(),
-			"finding_id":   f.ID.String(),
-			"platform":     string(targetPlatform),
-			"ticket_key":   issue.Key,
-			"ticket_url":   issue.URL,
-			"severity":     string(f.Severity),
-			"created_at":   time.Now().UTC().Format(time.RFC3339),
+			"finding_id":    f.ID.String(),
+			"platform":      string(targetPlatform),
+			"ticket_key":    issue.Key,
+			"ticket_url":    issue.URL,
+			"severity":      string(f.Severity),
+			"created_at":    time.Now().UTC().Format(time.RFC3339),
 		})
 		outbox := &models.OutboxRecord{
 			ID:          uuid.New(),

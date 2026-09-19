@@ -143,4 +143,3 @@ func TestSCMAdaptersEndToEnd(t *testing.T) {
 		t.Fatalf("expected error on missing token, got nil")
 	}
 }
-

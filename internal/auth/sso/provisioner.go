@@ -30,11 +30,11 @@ func (p *JITProvisioner) ProvisionUser(ctx context.Context, idp IdPConfiguration
 		return nil, false, fmt.Errorf("federated identity has no email")
 	}
 
-	emailParts := strings.Split(ident.Email, "@")
-	if len(emailParts) != 2 {
+	atIdx := strings.LastIndex(ident.Email, "@")
+	if atIdx <= 0 || atIdx >= len(ident.Email)-1 {
 		return nil, false, fmt.Errorf("invalid email address format: %s", ident.Email)
 	}
-	domain := strings.ToLower(emailParts[1])
+	domain := strings.ToLower(ident.Email[atIdx+1:])
 
 	// 1. Enforce AllowedDomains whitelist
 	if len(idp.AllowedDomains) > 0 {
@@ -50,17 +50,28 @@ func (p *JITProvisioner) ProvisionUser(ctx context.Context, idp IdPConfiguration
 		}
 	}
 
-	// 2. Evaluate Role Mapping from Enterprise Groups
+	// 2. Evaluate Role Mapping from Enterprise Groups with privilege hierarchy
 	assignedRole := models.RoleMember
+	highestRank := 0
 	for _, group := range ident.Groups {
 		if roleStr, exists := idp.RoleMapping[group]; exists {
+			var candidateRole models.UserRole
 			switch strings.ToUpper(roleStr) {
+			case "OWNER":
+				candidateRole = models.RoleOwner
 			case "ADMIN", "ORGANIZATION_ADMIN":
-				assignedRole = models.RoleAdmin
+				candidateRole = models.RoleAdmin
 			case "MEMBER", "ENGINEER", "DEVELOPER":
-				assignedRole = models.RoleMember
+				candidateRole = models.RoleMember
 			case "VIEWER", "AUDITOR":
-				assignedRole = models.RoleViewer
+				candidateRole = models.RoleViewer
+			default:
+				candidateRole = models.RoleMember
+			}
+
+			if rank := roleRank(candidateRole); rank > highestRank {
+				assignedRole = candidateRole
+				highestRank = rank
 			}
 		}
 	}
@@ -106,4 +117,19 @@ func (p *JITProvisioner) GetUser(email string) *models.AccountProfile {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.users[email]
+}
+
+func roleRank(r models.UserRole) int {
+	switch r {
+	case models.RoleOwner:
+		return 4
+	case models.RoleAdmin:
+		return 3
+	case models.RoleMember:
+		return 2
+	case models.RoleViewer:
+		return 1
+	default:
+		return 0
+	}
 }

@@ -1,14 +1,12 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package trace
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +42,7 @@ func NewTraceStore() *TraceStore {
 		home = "."
 	}
 	dir := filepath.Join(home, ".scandrix", "traces")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0700)
 	return &TraceStore{baseDir: dir}
 }
 
@@ -280,76 +278,4 @@ func UninstallSessionHooks(workDir string) error {
 	_ = os.Remove(filepath.Join(workDir, ".cursor", "rules"))
 	_ = os.Remove(filepath.Join(workDir, ".claude", "scandrix.md"))
 	return nil
-}
-
-// DistillSummary models output of a branch distillation.
-type DistillSummary struct {
-	Branch        string `json:"branch"`
-	DecisionsDist int    `json:"decisions_distilled"`
-	PushedRemote  bool   `json:"pushed_remote"`
-}
-
-// DistillBranch distills recent session activity into decision records.
-func DistillBranch(ctx context.Context, branch, head, remote string, push bool) (*DistillSummary, error) {
-	if branch == "" {
-		branch = "current"
-	}
-	return &DistillSummary{
-		Branch:        branch,
-		DecisionsDist: 1,
-		PushedRemote:  push,
-	}, nil
-}
-
-// LaunchTraceUI starts a local dashboard server to inspect traces and decisions.
-func LaunchTraceUI(port int) error {
-	if port <= 0 {
-		port = 4567
-	}
-
-	mux := http.NewServeMux()
-	store := NewTraceStore()
-
-	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		sessions, err := store.ListSessions()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sessions)
-	})
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head>
-    <title>ScanDrix Developer Trace Cockpit</title>
-    <style>
-        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 2rem; }
-        h1 { color: #38bdf8; font-size: 1.5rem; display: flex; align-items: center; gap: 0.5rem; }
-        .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.5rem; margin-top: 1.5rem; }
-        .badge { background: #0284c7; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; }
-    </style>
-</head>
-<body>
-    <h1>🛡️ ScanDrix Trace Cockpit</h1>
-    <p>Real-time Developer Activity, LLM Prompts, and Security Remediation History.</p>
-    <div class="card">
-        <h3>Session Telemetry</h3>
-        <p>Active port: <span class="badge">%d</span></p>
-        <p>Telemetry recorded locally in <code>~/.scandrix/traces</code>.</p>
-    </div>
-</body>
-</html>`, port)
-	})
-
-	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
-	}
-
-	fmt.Printf("🌐 ScanDrix Developer Cockpit listening on http://localhost:%d\n", port)
-	return server.ListenAndServe()
 }

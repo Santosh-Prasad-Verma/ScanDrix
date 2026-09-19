@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package rulescli
 
@@ -11,19 +11,23 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/scandrix/backend/internal/api/dtos"
+	"github.com/scandrix/backend/internal/cli/configcli"
 	"github.com/scandrix/backend/internal/rules"
 )
 
 // StarterRulesYAML defines the default template for local custom rules.
-const StarterRulesYAML = `# ScanDrix Custom Repository Rules
+const StarterRulesYAML = `# Drixy & ScanDrix Custom Repository Rules (.drixy/rules.yaml)
 # Edit this file to enforce team and organization security & quality policies.
-# Syntax reference: https://docs.scandrix.dev/rules
+# Syntax reference: https://docs.scandrix.dev/drixy/rules
+# Mention: @drixy · Rules directory: .drixy/rules/
 
 version: "1.0"
 rules:
@@ -68,19 +72,39 @@ type RuleModel struct {
 	RepoID      string `json:"repo_id,omitempty" yaml:"repo_id,omitempty"`
 }
 
-// Init creates a starter .scandrix/rules.yaml file in the specified directory.
+// Init creates a starter .drixy/rules.yaml file in the specified directory or git root.
 func Init(workDir string) (string, error) {
-	if workDir == "" {
-		workDir = "."
+	return InitWithForce(workDir, false)
+}
+
+// InitWithForce creates a starter .drixy/rules.yaml (or .scandrix/rules.yaml) file, optionally overwriting an existing file.
+func InitWithForce(workDir string, force bool) (string, error) {
+	if workDir == "" || workDir == "." {
+		if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil && len(out) > 0 {
+			if root := strings.TrimSpace(string(out)); root != "" {
+				workDir = root
+			}
+		}
+		if workDir == "" {
+			workDir = "."
+		}
 	}
-	dir := filepath.Join(workDir, ".scandrix")
+
+	dirName := ".drixy"
+	if _, err := os.Stat(filepath.Join(workDir, ".scandrix")); err == nil {
+		if _, errDrixy := os.Stat(filepath.Join(workDir, ".drixy")); errDrixy != nil {
+			dirName = ".scandrix"
+		}
+	}
+
+	dir := filepath.Join(workDir, dirName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("failed creating .scandrix directory: %w", err)
+		return "", fmt.Errorf("failed creating %s directory: %w", dirName, err)
 	}
 
 	targetPath := filepath.Join(dir, "rules.yaml")
-	if _, err := os.Stat(targetPath); err == nil {
-		return targetPath, fmt.Errorf("rules file already exists at %s", targetPath)
+	if _, err := os.Stat(targetPath); err == nil && !force {
+		return targetPath, fmt.Errorf("rules file already exists at %s (use --force to overwrite)", targetPath)
 	}
 
 	if err := os.WriteFile(targetPath, []byte(StarterRulesYAML), 0644); err != nil {
@@ -93,7 +117,8 @@ func Init(workDir string) (string, error) {
 // CreateRule registers a new rule on the remote ScanDrix server.
 func CreateRule(ctx context.Context, serverURL, token, title, rulePattern, repoID, severity, scope, pathPattern string) (*RuleModel, error) {
 	if serverURL == "" {
-		serverURL = "http://localhost:8080"
+		cfg := configcli.Load(".")
+		serverURL = cfg.ServerURL
 	}
 	if severity == "" {
 		severity = "MEDIUM"
@@ -148,7 +173,8 @@ func CreateRule(ctx context.Context, serverURL, token, title, rulePattern, repoI
 // ViewRules lists available rules from the server catalog or local catalog.
 func ViewRules(ctx context.Context, serverURL, token, ruleID, repoID string) ([]RuleModel, error) {
 	if serverURL == "" {
-		serverURL = "http://localhost:8080"
+		cfg := configcli.Load(".")
+		serverURL = cfg.ServerURL
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/v1/rules/catalog", nil)
@@ -204,7 +230,8 @@ func ViewRules(ctx context.Context, serverURL, token, ruleID, repoID string) ([]
 // Sync fetches the workspace's active rules from the ScanDrix server.
 func Sync(ctx context.Context, serverURL, authToken, workDir string) (int, error) {
 	if serverURL == "" {
-		serverURL = "http://localhost:8080"
+		cfg := configcli.Load(".")
+		serverURL = cfg.ServerURL
 	}
 	if authToken == "" {
 		return 0, fmt.Errorf("authentication required to sync rules from workspace")
@@ -236,14 +263,20 @@ func Sync(ctx context.Context, serverURL, authToken, workDir string) (int, error
 	if workDir == "" {
 		workDir = "."
 	}
-	dir := filepath.Join(workDir, ".scandrix")
+	dirName := ".drixy"
+	if _, err := os.Stat(filepath.Join(workDir, ".scandrix")); err == nil {
+		if _, errDrixy := os.Stat(filepath.Join(workDir, ".drixy")); errDrixy != nil {
+			dirName = ".scandrix"
+		}
+	}
+	dir := filepath.Join(workDir, dirName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return 0, fmt.Errorf("failed creating .scandrix directory: %w", err)
+		return 0, fmt.Errorf("failed creating %s directory: %w", dirName, err)
 	}
 
 	// Format synced rules as YAML
 	var yamlBuf bytes.Buffer
-	yamlBuf.WriteString("# ScanDrix Synchronized Organization Rules\n")
+	yamlBuf.WriteString("# Drixy Synchronized Organization Rules\n")
 	yamlBuf.WriteString(fmt.Sprintf("# Synced at: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
 	yamlBuf.WriteString("version: \"1.0\"\nrules:\n")
 
@@ -268,15 +301,20 @@ func Sync(ctx context.Context, serverURL, authToken, workDir string) (int, error
 	return len(rulesList), nil
 }
 
-// Validate checks the syntax and regex patterns of the local .scandrix/rules.yaml file.
+// Validate checks the syntax and regex patterns of the local .drixy/rules.yaml or .scandrix/rules.yaml file.
 func Validate(workDir string) (int, error) {
 	if workDir == "" {
 		workDir = "."
 	}
-	rulesFile := filepath.Join(workDir, ".scandrix", "rules.yaml")
+	rulesFile := filepath.Join(workDir, ".drixy", "rules.yaml")
 	data, err := os.ReadFile(rulesFile)
 	if err != nil {
-		return 0, fmt.Errorf("could not read %s: %w", rulesFile, err)
+		// Fallback to .scandrix/rules.yaml
+		rulesFile = filepath.Join(workDir, ".scandrix", "rules.yaml")
+		data, err = os.ReadFile(rulesFile)
+		if err != nil {
+			return 0, fmt.Errorf("could not find rules file in .drixy/rules.yaml or .scandrix/rules.yaml: %w", err)
+		}
 	}
 
 	if len(data) == 0 {
@@ -312,3 +350,67 @@ func Validate(workDir string) (int, error) {
 
 	return validCount, nil
 }
+
+// ActiveRulesPath returns the active rules file path (.drixy/rules.yaml or fallback .scandrix/rules.yaml).
+func ActiveRulesPath(workDir string) string {
+	if workDir == "" {
+		workDir = "."
+	}
+	drixyPath := filepath.Join(workDir, ".drixy", "rules.yaml")
+	if _, err := os.Stat(drixyPath); err == nil {
+		return drixyPath
+	}
+	scandrixPath := filepath.Join(workDir, ".scandrix", "rules.yaml")
+	if _, err := os.Stat(scandrixPath); err == nil {
+		return scandrixPath
+	}
+	return drixyPath
+}
+
+// GenerateRule requests Drixy AI to synthesize a static rule specification.
+func GenerateRule(ctx context.Context, serverURL, token, prompt string) (*dtos.GenerateRuleResponse, error) {
+	if serverURL == "" {
+		cfg := configcli.Load(".")
+		serverURL = cfg.ServerURL
+	}
+	if serverURL == "" {
+		serverURL = "http://localhost:8080"
+	}
+
+	payload := dtos.GenerateRuleRequest{
+		Prompt: prompt,
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed encoding request payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/rules/generate", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed connecting to ScanDrix API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var res dtos.GenerateRuleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("failed decoding rule response: %w", err)
+	}
+
+	return &res, nil
+}
+

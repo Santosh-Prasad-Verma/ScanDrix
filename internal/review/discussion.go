@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/drixy"
 	"github.com/scandrix/backend/internal/llm"
 )
 
@@ -42,10 +43,10 @@ func NewDiscussionOrchestrator(llmGateway *llm.Gateway, scmPublisher CommentRepl
 	}
 }
 
-// IsBotMentioned checks whether the comment contains @scandrix or @kodus invocation.
+// IsBotMentioned checks whether the comment contains @drixy or @scandrix invocation.
 func IsBotMentioned(comment string) bool {
 	lower := strings.ToLower(comment)
-	return strings.Contains(lower, "@scandrix") || strings.Contains(lower, "@kodus")
+	return strings.Contains(lower, drixy.BotMention) || strings.Contains(lower, "@scandrix")
 }
 
 // HandleComment processes a discussion comment and posts an inline reply if the bot is mentioned.
@@ -63,19 +64,21 @@ func (d *DiscussionOrchestrator) HandleComment(ctx context.Context, event PRComm
 
 	// Clean prompt query
 	cleanQuery := event.CommentBody
+	cleanQuery = strings.ReplaceAll(cleanQuery, drixy.BotMention, "")
 	cleanQuery = strings.ReplaceAll(cleanQuery, "@scandrix", "")
-	cleanQuery = strings.ReplaceAll(cleanQuery, "@kodus", "")
 	cleanQuery = strings.TrimSpace(cleanQuery)
 
 	// Construct contextual prompt for the LLM
-	prompt := fmt.Sprintf(`Developer %s asked about code at %s:
+	prompt := fmt.Sprintf(`%s
+
+Developer @%s asked about code at %s:
 "%s"
 
 Diff context:
 %s
 
 Provide an expert, concise, and technically accurate reply. Include exact code snippets if demonstrating a fix.`,
-		event.Author, event.FilePath, cleanQuery, event.DiffHunk,
+		drixy.DrixySystemPrompt, event.Author, event.FilePath, cleanQuery, event.DiffHunk,
 	)
 
 	replyText := ""
@@ -92,10 +95,11 @@ Provide an expert, concise, and technically accurate reply. Include exact code s
 	}
 
 	if replyText == "" {
-		replyText = fmt.Sprintf("👋 Hello @%s! I evaluated your inquiry regarding `%s`. Based on security and architectural best practices, ensure all external inputs are strictly parameterized and validated against domain schemas.", event.Author, event.FilePath)
+		replyText = fmt.Sprintf("%s\n\nBased on security and architectural best practices, ensure all external inputs are strictly parameterized and validated against domain schemas.", drixy.FormatDrixyGreeting(event.Author))
 	}
 
-	formattedReply := fmt.Sprintf("🤖 **ScanDrix Assistant**\n\n%s", replyText)
+	greeting := drixy.FormatDrixyGreeting(event.Author)
+	formattedReply := fmt.Sprintf("⚡ **%s** (ScanDrix Assistant)\n\n%s\n\n%s%s", drixy.Name, greeting, replyText, drixy.PRCommentFooter())
 
 	// Publish reply back to GitHub/GitLab
 	if d.scmPublisher != nil && event.RepoNamespace != "" && event.PullNumber > 0 && event.CommentID > 0 {

@@ -7,7 +7,7 @@ import (
 	"github.com/scandrix/backend/internal/auth"
 )
 
-// RequirePolicy creates a Chi HTTP middleware enforcing Kodus CASL Action + Resource authorization.
+// RequirePolicy creates a Chi HTTP middleware enforcing CASL Action + Resource authorization.
 func RequirePolicy(engine *PolicyEngine, action Action, resource Resource) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

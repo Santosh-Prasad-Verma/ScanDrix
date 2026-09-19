@@ -151,3 +151,73 @@ func TestGitLabExchangeCodeSuccess(t *testing.T) {
 		t.Fatalf("gitlab profile mismatch: %+v", profile)
 	}
 }
+
+func TestBitbucketExchangeCode(t *testing.T) {
+	// Mock Bitbucket API server
+	confirmed := true
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/site/oauth2/access_token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"access_token": "bb_mocktoken789",
+				"token_type":   "bearer",
+			})
+		case "/2.0/user":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uuid":         "{123-abc}",
+				"username":     "bitbucket-user",
+				"display_name": "Bitbucket User",
+			})
+		case "/2.0/user/emails":
+			w.Header().Set("Content-Type", "application/json")
+			if confirmed {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"values": []map[string]any{
+						{"email": "primary@company.com", "is_primary": true, "is_confirmed": true},
+					},
+				})
+			} else {
+				// Attacker unconfirmed email
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"values": []map[string]any{
+						{"email": "unconfirmed@victim.com", "is_primary": true, "is_confirmed": false},
+					},
+				})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockServer.Close()
+
+	svc := oauth.NewOAuthService(
+		oauth.ProviderConfig{},
+		oauth.ProviderConfig{},
+		oauth.ProviderConfig{
+			ClientID:     "bb_id",
+			ClientSecret: "bb_secret",
+			TokenURL:     mockServer.URL + "/site/oauth2/access_token",
+			UserURL:      mockServer.URL + "/2.0/user",
+			EmailURL:     mockServer.URL + "/2.0/user/emails",
+		},
+	)
+	svc.SetHTTPClient(mockServer.Client())
+
+	// 1. Confirmed email succeeds
+	profile, err := svc.ExchangeCode(context.Background(), oauth.ProviderBitbucket, "valid_code")
+	if err != nil {
+		t.Fatalf("bitbucket exchange failed: %v", err)
+	}
+	if profile.Email != "primary@company.com" {
+		t.Fatalf("expected primary@company.com, got: %s", profile.Email)
+	}
+
+	// 2. Unconfirmed email must be rejected
+	confirmed = false
+	_, errUnconfirmed := svc.ExchangeCode(context.Background(), oauth.ProviderBitbucket, "valid_code")
+	if errUnconfirmed != oauth.ErrEmailNotFound {
+		t.Fatalf("expected ErrEmailNotFound for unconfirmed email, got: %v", errUnconfirmed)
+	}
+}

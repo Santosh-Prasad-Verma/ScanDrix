@@ -2,16 +2,35 @@ package intoto
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var (
+	ephemeralProvenanceSeed     string
+	ephemeralProvenanceSeedOnce sync.Once
+)
+
+func getRuntimeProvenanceSecret() string {
+	ephemeralProvenanceSeedOnce.Do(func() {
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		ephemeralProvenanceSeed = hex.EncodeToString(b)
+	})
+	return ephemeralProvenanceSeed
+}
 
 // ProvenanceAttestor produces and cryptographically verifies DSSE-wrapped in-toto & SLSA attestations.
 type ProvenanceAttestor struct {
@@ -32,7 +51,20 @@ func NewProvenanceAttestor(keyID string, privKey ed25519.PrivateKey, pubKey ed25
 // DeriveTenantKeypair generates a deterministic, cryptographically secure Ed25519 keypair for a workspace.
 func DeriveTenantKeypair(wsID uuid.UUID, masterSecret string) (ed25519.PrivateKey, ed25519.PublicKey, string) {
 	if masterSecret == "" {
-		masterSecret = "scandrix_master_provenance_signing_secret_v1"
+		masterSecret = os.Getenv("PROVENANCE_SIGNING_KEY")
+		if masterSecret == "" {
+			masterSecret = os.Getenv("SCANDRIX_MASTER_ENCRYPTION_KEY")
+			if masterSecret == "" {
+				masterSecret = os.Getenv("SCANDRIX_ENCRYPTION_KEY")
+				if masterSecret == "" {
+					masterSecret = os.Getenv("KMS_MASTER_KEY")
+				}
+			}
+		}
+	}
+	if masterSecret == "" {
+		slog.Warn("PROVENANCE_SIGNING_KEY not configured, using cryptographically generated ephemeral runtime secret (Master Rule 1.1)")
+		masterSecret = getRuntimeProvenanceSecret()
 	}
 	seedData := fmt.Sprintf("scandrix:tenant-ed25519-signer:v1:%s:%s", wsID.String(), masterSecret)
 	hash := sha512.Sum512([]byte(seedData))

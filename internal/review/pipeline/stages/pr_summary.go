@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/scandrix/backend/internal/drixy"
+	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review/pipeline"
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -38,7 +40,7 @@ func (s *PRSummaryStage) Execute(ctx context.Context, pCtx *pipeline.PipelineCon
 	pCtx.PassedReview = criticalCount == 0 && highCount == 0
 
 	var sb strings.Builder
-	sb.WriteString("## 🛡️ ScanDrix Code Review Summary\n\n")
+	sb.WriteString("## ⚡ Drixy Code Review Summary\n\n")
 
 	if pCtx.PassedReview {
 		sb.WriteString("✅ **All Security & Quality Gates Passed** — No blocking issues found.\n\n")
@@ -61,9 +63,24 @@ func (s *PRSummaryStage) Execute(ctx context.Context, pCtx *pipeline.PipelineCon
 		sb.WriteString("\n")
 	}
 
+	if pCtx.LastReviewError != nil {
+		diag := llm.ReviewErrorDiagnostics{
+			FriendlyMessage: pCtx.LastReviewError.FriendlyMessage,
+			Provider:        pCtx.LastReviewError.Provider,
+			Model:           pCtx.LastReviewError.Model,
+			HTTPStatus:      pCtx.LastReviewError.HTTPStatus,
+			ProviderMessage: pCtx.LastReviewError.ProviderMessage,
+			AgentName:       pCtx.LastReviewError.AgentName,
+		}
+		sb.WriteString("### ⚠️ Review Diagnostics\n\n")
+		sb.WriteString(llm.BuildReviewErrorMessage(diag) + "\n\n")
+	}
+
 	if pCtx.ExternalContext != nil {
 		sb.WriteString(fmt.Sprintf("*Linked Issue: [%s]*\n", pCtx.ExternalContext.IssueKey))
 	}
+
+	sb.WriteString(drixy.PRCommentFooter())
 
 	pCtx.PRSummaryBody = sb.String()
 	return nil

@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 
 func TestPasswordResetTokenLifecycle(t *testing.T) {
 	userID := uuid.New()
-	email := "operator@scandrix.dev"
+	email := "operator:tag@scandrix.dev" // Test email containing colon
 	oldHash := "$2a$10$oldpasswordhash12345678901234567890"
 	jwtSecret := "super-secure-jwt-secret-for-testing"
 
@@ -36,20 +37,34 @@ func TestPasswordResetTokenLifecycle(t *testing.T) {
 		t.Fatal("expected token to be rejected after password hash change")
 	}
 
-	// 4. Reject expired token
-	expiredToken, err := auth.CreatePasswordResetToken(userID, email, oldHash, jwtSecret, -1*time.Minute)
-	if err != nil {
-		t.Fatalf("failed creating expired token: %v", err)
+	// 4. Reject non-positive TTL at creation
+	_, err = auth.CreatePasswordResetToken(userID, email, oldHash, jwtSecret, -1*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for non-positive TTL at creation, got nil")
 	}
-	_, err = auth.VerifyPasswordResetToken(expiredToken, oldHash, jwtSecret)
+
+	// 5. Expired token verification failure
+	shortToken, err := auth.CreatePasswordResetToken(userID, email, oldHash, jwtSecret, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed creating short-lived token: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	_, err = auth.VerifyPasswordResetToken(shortToken, oldHash, jwtSecret)
 	if err != auth.ErrResetTokenExpired {
 		t.Fatalf("expected ErrResetTokenExpired, got: %v", err)
 	}
 
-	// 5. Reject tampered token
+	// 6. Reject tampered token
 	tamperedToken := token + "evil"
 	_, err = auth.VerifyPasswordResetToken(tamperedToken, oldHash, jwtSecret)
 	if err == nil {
 		t.Fatal("expected tampered token to fail verification")
+	}
+
+	// 7. Reject oversized token (> 1024 bytes)
+	hugeToken := strings.Repeat("x", 2048)
+	_, err = auth.VerifyPasswordResetToken(hugeToken, oldHash, jwtSecret)
+	if err != auth.ErrResetTokenInvalid {
+		t.Fatalf("expected ErrResetTokenInvalid for oversized token, got: %v", err)
 	}
 }

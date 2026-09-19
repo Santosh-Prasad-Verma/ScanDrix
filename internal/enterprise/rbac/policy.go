@@ -6,7 +6,7 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// Action represents operations matching Kodus CASL Action enum.
+// Action represents operations in the CASL Action enum.
 type Action string
 
 const (
@@ -17,7 +17,7 @@ const (
 	ActionDelete Action = "delete"
 )
 
-// Resource represents target securable domain entities matching Kodus.
+// Resource represents target securable domain entities.
 type Resource string
 
 const (
@@ -51,7 +51,7 @@ const (
 	PermBillingManage    Permission = "billing:manage"
 )
 
-// PolicyRule matches Kodus's role-policies.ts definition.
+// PolicyRule defines an allowed action on a domain resource.
 type PolicyRule struct {
 	Action   Action
 	Resource Resource
@@ -130,7 +130,7 @@ var rolePermissions = map[models.UserRole]map[Permission]bool{
 	},
 }
 
-// PolicyEngine enforces role permissions and Kodus CASL attribute checks.
+// PolicyEngine enforces role permissions and CASL attribute checks.
 type PolicyEngine struct{}
 
 // NewPolicyEngine initializes the RBAC authorization engine.

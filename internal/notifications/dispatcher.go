@@ -16,11 +16,11 @@ type ChannelSender interface {
 
 // NotificationDispatcher orchestrates end-to-end alert delivery with deduplication and auditing.
 type NotificationDispatcher struct {
-	mu          sync.RWMutex
-	router      *RoutingRuleService
-	limiter     *NotificationRateLimiter
-	senders     map[ChannelType]ChannelSender
-	auditLog    []DeliveryRecord
+	mu       sync.RWMutex
+	router   *RoutingRuleService
+	limiter  *NotificationRateLimiter
+	senders  map[ChannelType]ChannelSender
+	auditLog []DeliveryRecord
 }
 
 func NewNotificationDispatcher(router *RoutingRuleService, limiter *NotificationRateLimiter) *NotificationDispatcher {

@@ -97,8 +97,19 @@ func TestBuiltInWatchdogJobsWithNilRepo(t *testing.T) {
 	if ssoCleaner.Name() != "SSOSessionCleanup" {
 		t.Fatalf("expected SSOSessionCleanup name, got %s", ssoCleaner.Name())
 	}
+	mockCleanerCalled := false
+	mockCleaner := &testWorkbenchCleanerMock{
+		cleanupFn: func() int {
+			mockCleanerCalled = true
+			return 2
+		},
+	}
+	ssoCleaner.SetWorkbenchCleaner(mockCleaner)
 	if err := ssoCleaner.Run(ctx); err != nil {
 		t.Fatalf("expected nil error on nil repo, got %v", err)
+	}
+	if !mockCleanerCalled {
+		t.Fatalf("expected mockCleaner to be called")
 	}
 
 	doraCron := cron.NewDORAAggregatorCron(nil, time.Hour)
@@ -202,4 +213,15 @@ func TestAllCronsRegistrationInScheduler(t *testing.T) {
 	scheduler.Start(ctx)
 	time.Sleep(30 * time.Millisecond)
 	scheduler.Stop()
+}
+
+type testWorkbenchCleanerMock struct {
+	cleanupFn func() int
+}
+
+func (m *testWorkbenchCleanerMock) CleanupExpired() int {
+	if m.cleanupFn != nil {
+		return m.cleanupFn()
+	}
+	return 0
 }

@@ -69,15 +69,15 @@ func (s *SpendLimitAlertCron) Run(ctx context.Context) error {
 			}
 
 			payload, _ := json.Marshal(map[string]any{
-				"workspace_id":       e.WorkspaceID.String(),
-				"organization_name":  e.OrganizationName,
-				"owner_email":        e.OwnerEmail,
-				"alert_level":        alertLevel,
-				"spend_limit_usd":    e.MonthlySpendLimit,
-				"current_spend_usd":  e.CurrentSpendUSD,
-				"usage_percentage":   e.UsagePercentage,
-				"total_tokens_used":  e.TotalTokensUsed,
-				"evaluated_at":       time.Now().UTC().Format(time.RFC3339),
+				"workspace_id":      e.WorkspaceID.String(),
+				"organization_name": e.OrganizationName,
+				"owner_email":       e.OwnerEmail,
+				"alert_level":       alertLevel,
+				"spend_limit_usd":   e.MonthlySpendLimit,
+				"current_spend_usd": e.CurrentSpendUSD,
+				"usage_percentage":  e.UsagePercentage,
+				"total_tokens_used": e.TotalTokensUsed,
+				"evaluated_at":      time.Now().UTC().Format(time.RFC3339),
 			})
 
 			outbox := &models.OutboxRecord{

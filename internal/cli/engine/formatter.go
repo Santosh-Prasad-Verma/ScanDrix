@@ -1,9 +1,10 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package engine
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,8 @@ func (f *OutputFormatter) RenderWithFields(w io.Writer, res *CLIResult, format O
 		return f.renderJSON(w, res, fieldsCSV)
 	case FormatSARIF:
 		return f.renderSARIF(w, res)
+	case FormatCSV:
+		return f.renderCSV(w, res)
 	case FormatMarkdown:
 		return f.renderMarkdown(w, res)
 	case FormatAgent:
@@ -200,9 +203,9 @@ func (f *OutputFormatter) renderAgent(w io.Writer, res *CLIResult, fieldsCSV str
 }
 
 func (f *OutputFormatter) renderTable(w io.Writer, res *CLIResult) error {
-	fmt.Fprintln(w, "\n"+ColorBold+"=== ScanDrix Code Review Summary ==="+ColorReset)
+	fmt.Fprintln(w, "\n"+ColorBold+"=== ScanDrix Security & Review Summary ==="+ColorReset)
 	fmt.Fprintf(w, "Files Reviewed: %d | Duration: %s\n", res.FilesReviewed, res.Duration.Round(100*time.Millisecond))
-	fmt.Fprintf(w, "Total Findings: %d (Critical: %d, High: %d, Medium: %d, Low: %d)\n\n",
+	fmt.Fprintf(w, "Total Findings: %d (🔴 Critical: %d, 🟠 High: %d, 🟡 Medium: %d, 🔵 Low: %d)\n\n",
 		res.TotalFindings, res.CriticalCount, res.HighCount, res.MediumCount, res.LowCount)
 
 	if len(res.Findings) == 0 {
@@ -220,14 +223,13 @@ func (f *OutputFormatter) renderTable(w io.Writer, res *CLIResult) error {
 			color = ColorYellow
 			badge = "🟠 HIGH"
 		} else if finding.Severity == models.SeverityLow {
-			color = ColorCyan
 			badge = "🔵 LOW"
+			color = ColorCyan
 		}
 
 		fmt.Fprintf(w, "%s[%d] %s: %s%s\n", color, i+1, badge, finding.Title, ColorReset)
 		fmt.Fprintf(w, "  File: %s:%d\n", finding.FilePath, finding.StartLine)
 		fmt.Fprintf(w, "  Category: %s\n", finding.Category)
-		fmt.Fprintf(w, "  Description: %s\n", finding.Description)
 		if finding.Remediation != "" {
 			fmt.Fprintf(w, "  Remediation: %s\n", finding.Remediation)
 		}
@@ -382,4 +384,32 @@ func filterNode(node any, currentPath string, fieldMap map[string]bool) any {
 	default:
 		return v
 	}
+}
+
+func (f *OutputFormatter) renderCSV(w io.Writer, res *CLIResult) error {
+	writer := csv.NewWriter(w)
+	defer writer.Flush()
+
+	header := []string{"ID", "Severity", "Category", "File", "StartLine", "EndLine", "Title", "Description", "Remediation"}
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+
+	for _, finding := range res.Findings {
+		row := []string{
+			finding.ID.String(),
+			string(finding.Severity),
+			finding.Category,
+			finding.FilePath,
+			fmt.Sprintf("%d", finding.StartLine),
+			fmt.Sprintf("%d", finding.EndLine),
+			finding.Title,
+			finding.Description,
+			finding.Remediation,
+		}
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }

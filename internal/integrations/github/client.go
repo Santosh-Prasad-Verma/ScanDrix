@@ -143,11 +143,11 @@ type CheckRunOutput struct {
 
 // CreateCheckRunRequest models POST /repos/{owner}/{repo}/check-runs.
 type CreateCheckRunRequest struct {
-	Name       string          `json:"name"`
-	HeadSHA    string          `json:"head_sha"`
-	Status     string          `json:"status"` // "queued", "in_progress", "completed"
-	StartedAt  *time.Time      `json:"started_at,omitempty"`
-	Output     *CheckRunOutput `json:"output,omitempty"`
+	Name      string          `json:"name"`
+	HeadSHA   string          `json:"head_sha"`
+	Status    string          `json:"status"` // "queued", "in_progress", "completed"
+	StartedAt *time.Time      `json:"started_at,omitempty"`
+	Output    *CheckRunOutput `json:"output,omitempty"`
 }
 
 // UpdateCheckRunRequest models PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}.
@@ -348,4 +348,3 @@ func (c *Client) CreateInstallationToken(ctx context.Context, installationID int
 
 	return result.Token, nil
 }
-

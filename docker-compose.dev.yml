@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -10,10 +8,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-scandrix_app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scandrix_dev_password}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - scandrix_pgdata_dev:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scandrix_app} -d ${POSTGRES_DB:-scandrix}"]
       interval: 5s

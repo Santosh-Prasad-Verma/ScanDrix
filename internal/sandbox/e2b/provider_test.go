@@ -44,3 +44,42 @@ func TestMicroVMSandboxRealExecution(t *testing.T) {
 	// Clean up
 	_ = sb.Destroy(ctx)
 }
+
+func TestMicroVMSandboxPathTraversalRejection(t *testing.T) {
+	ctx := context.Background()
+	sb := e2b.NewMicroVMSandbox("", "", 10*time.Minute)
+	defer func() { _ = sb.Destroy(ctx) }()
+
+	maliciousPaths := []string{
+		"../../evil.sh",
+		"../../../etc/cron.d/malicious",
+		"/tmp/pwn.txt",
+		"subdir/../../escape.txt",
+	}
+
+	for _, p := range maliciousPaths {
+		err := sb.WriteFile(p, []byte("echo pwned"))
+		if err == nil {
+			t.Errorf("expected WriteFile to reject traversal path %q, but got nil", p)
+		}
+	}
+}
+
+func TestMicroVMSandboxProductionFailClosed(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "production")
+	t.Setenv("ALLOW_UNSANDBOXED_COMMAND_EXECUTION", "false")
+
+	ctx := context.Background()
+	sb := e2b.NewMicroVMSandbox("", "", 10*time.Minute)
+	defer func() { _ = sb.Destroy(ctx) }()
+
+	_, err := sb.RunCommand(ctx, sandbox.CommandRequest{
+		Command: "ls",
+	})
+	if err == nil {
+		t.Fatal("expected RunCommand to fail closed in production without E2B key, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "secure execution failed") {
+		t.Fatalf("expected secure execution failure message, got: %v", err)
+	}
+}

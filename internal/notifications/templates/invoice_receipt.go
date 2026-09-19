@@ -2,12 +2,23 @@ package templates
 
 import (
 	"fmt"
+	"html"
 )
 
 // RenderInvoiceReceipt generates the itemized payment receipt and invoice email.
 func RenderInvoiceReceipt(inv InvoiceDetails) (subject, htmlBody string) {
-	subject = fmt.Sprintf("Your ScanDrix Invoice %s (%s)", inv.InvoiceNumber, inv.AmountFormatted)
-	preview := fmt.Sprintf("Thank you for your payment. ScanDrix invoice %s for %s has been processed.", inv.InvoiceNumber, inv.AmountFormatted)
+	safeInvoiceNumber := html.EscapeString(inv.InvoiceNumber)
+	safeAmount := html.EscapeString(inv.AmountFormatted)
+	safeRecipientName := html.EscapeString(inv.RecipientName)
+	safeRecipientEmail := html.EscapeString(inv.RecipientEmail)
+	safeOrgName := html.EscapeString(inv.OrganizationName)
+	safePaymentID := html.EscapeString(inv.PaymentID)
+	safePlanTier := html.EscapeString(inv.PlanTier)
+	safePaymentProvider := html.EscapeString(inv.PaymentProvider)
+	safeOrderID := html.EscapeString(inv.OrderID)
+
+	subject = fmt.Sprintf("Your ScanDrix Invoice %s (%s)", safeInvoiceNumber, safeAmount)
+	preview := fmt.Sprintf("Thank you for your payment. ScanDrix invoice %s for %s has been processed.", safeInvoiceNumber, safeAmount)
 
 	content := fmt.Sprintf(`
 		<p>Hi <strong>%s</strong>,</p>
@@ -63,18 +74,18 @@ func RenderInvoiceReceipt(inv InvoiceDetails) (subject, htmlBody string) {
 			You can manage your subscription, add seats, or download VAT/GST breakdown PDFs at any time through the ScanDrix Billing Portal.
 		</p>
 	`,
-		inv.RecipientName,
-		inv.InvoiceNumber,
+		safeRecipientName,
+		safeInvoiceNumber,
 		inv.BillingDate.Format("Jan 02, 2006"),
-		inv.RecipientEmail,
-		inv.OrganizationName,
-		inv.PaymentID,
-		inv.PlanTier,
-		inv.AmountFormatted,
-		inv.PaymentProvider,
-		inv.AmountFormatted,
-		inv.PaymentProvider,
-		inv.OrderID,
+		safeRecipientEmail,
+		safeOrgName,
+		safePaymentID,
+		safePlanTier,
+		safeAmount,
+		safePaymentProvider,
+		safeAmount,
+		safePaymentProvider,
+		safeOrderID,
 		inv.NextBillingDate.Format("Jan 02, 2006"),
 	)
 

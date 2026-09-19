@@ -12,10 +12,10 @@ import (
 
 // TeamService manages team hierarchies, repo scoping, and reviewer auto-assignment.
 type TeamService struct {
-	mu          sync.RWMutex
-	teams       map[uuid.UUID]*Team
-	members     map[uuid.UUID][]*TeamMember // teamID -> members
-	roundRobin  map[uuid.UUID]int           // teamID -> currentIndex
+	mu         sync.RWMutex
+	teams      map[uuid.UUID]*Team
+	members    map[uuid.UUID][]*TeamMember // teamID -> members
+	roundRobin map[uuid.UUID]int           // teamID -> currentIndex
 }
 
 func NewTeamService() *TeamService {

@@ -1,0 +1,322 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ScanDrix Enterprise Production Cluster Simulation (Local AWS 3-Server Architecture)
+# Server 1: Load Balancer (Caddy) + API #1 + Worker #1
+# Server 2: API #2 + Worker #2
+# Server 3: RabbitMQ + Redis + Worker #3 + Worker #4
+# LocalStack: Emulated AWS Infrastructure (KMS, S3, SQS, SecretsManager)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ============================================================================
+  # INGRESS & LOAD BALANCER (Simulating AWS Application Load Balancer / Server 1)
+  # ============================================================================
+  nginx-lb:
+    image: nginx:1.27-alpine
+    container_name: scandrix-nginx-lb
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Main Load-Balanced Ingress (Simulates AWS ALB)
+      - "3001:8080"   # Compatibility Port
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+    depends_on:
+      - scandrix-api-1
+      - scandrix-api-2
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # SERVER 1: Primary API Instance + Local Review Worker
+  # ============================================================================
+  scandrix-api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-api-1
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-api"]
+    env_file:
+      - .env
+    environment:
+      - SERVER_NODE_ID=server-1
+      - PORT=8080
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+      - AWS_ENDPOINT_URL=http://scandrix-localstack:4566
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-redis:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker-1
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-worker"]
+    env_file:
+      - .env
+    environment:
+      - WORKER_NODE_ID=worker-node-1
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+      - AWS_ENDPOINT_URL=http://scandrix-localstack:4566
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # SERVER 2: Secondary API Instance (Redundancy) + Local Review Worker
+  # ============================================================================
+  scandrix-api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-api-2
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-api"]
+    env_file:
+      - .env
+    environment:
+      - SERVER_NODE_ID=server-2
+      - PORT=8080
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+      - AWS_ENDPOINT_URL=http://scandrix-localstack:4566
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-redis:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker-2
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-worker"]
+    env_file:
+      - .env
+    environment:
+      - WORKER_NODE_ID=worker-node-2
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+      - AWS_ENDPOINT_URL=http://scandrix-localstack:4566
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # SERVER 3: Distributed State (RabbitMQ + Redis) + High-Throughput Workers
+  # ============================================================================
+  scandrix-rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: scandrix-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER must be set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be set in .env}
+    ports:
+      - "5672:5672"    # AMQP Wire Protocol
+      - "15672:15672"  # Management Dashboard GUI
+    volumes:
+      - cluster_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-redis:
+    image: redis:7.2-alpine
+    container_name: scandrix-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - cluster_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker-3
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-worker"]
+    env_file:
+      - .env
+    environment:
+      - WORKER_NODE_ID=worker-node-3
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-worker-4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker-4
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-worker"]
+    env_file:
+      - .env
+    environment:
+      - WORKER_NODE_ID=worker-node-4
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - REDIS_URL=${REDIS_URL:-redis://scandrix-redis:6379/0}
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be set in .env}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-rabbitmq:
+        condition: service_healthy
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # LOCALSTACK (Local AWS Emulation: KMS, S3, SQS, SecretsManager)
+  # ============================================================================
+  scandrix-localstack:
+    image: localstack/localstack:3.8.1
+    container_name: scandrix-localstack
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=kms,s3,sqs,secretsmanager
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - cluster_localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # DATABASE & MIGRATIONS (pgAdmin Port 5433 Accessible or Supabase Compatible)
+  # ============================================================================
+  scandrix-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: scandrix-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"  # Available for pgAdmin GUI connection!
+    volumes:
+      - cluster_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-cluster-network
+
+  scandrix-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-migrate
+    restart: "no"
+    entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+    networks:
+      - scandrix-cluster-network
+
+  # ============================================================================
+  # MCP MANAGER (Model Context Protocol Service)
+  # ============================================================================
+  scandrix-mcp-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-mcp-manager
+    restart: unless-stopped
+    entrypoint: ["/app/bin/scandrix-mcp-manager"]
+    ports:
+      - "3101:3101"
+    env_file:
+      - .env
+    environment:
+      - MCP_MANAGER_PORT=3101
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set in .env}
+      - MCP_MANAGER_SECRET=${MCP_MANAGER_SECRET:?MCP_MANAGER_SECRET must be set in .env}
+    depends_on:
+      scandrix-postgres:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-cluster-network
+
+volumes:
+  cluster_postgres_data:
+  cluster_rabbitmq_data:
+  cluster_redis_data:
+  cluster_localstack_data:
+
+networks:
+  scandrix-cluster-network:
+    driver: bridge

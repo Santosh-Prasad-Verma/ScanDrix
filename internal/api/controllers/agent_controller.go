@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Agent Controller
-// Copyright (c) 2026 ScanDrix AI. All rights reserved.
-// ═══════════════════════════════════════════════════════════════
-
 package controllers
 
 import (

@@ -99,6 +99,48 @@ func TestGitChatHandlerCommandsAndContexts(t *testing.T) {
 	if !strings.Contains(resChat.ReplyMessage, "88") {
 		t.Fatalf("expected reply to reference line 88")
 	}
+
+	// 7. Drixy specific triggers (@drixy review)
+	resDrixyReview := handler.HandleComment(operations.GitChatInput{
+		WorkspaceID:  wsID,
+		RepositoryID: repoID,
+		PRNumber:     42,
+		Author:       "eve",
+		CommentBody:  "@drixy review",
+		Context:      operations.ContextGeneralPR,
+	})
+	if resDrixyReview.CommandType != operations.CommandTriggerFullReview || !resDrixyReview.TriggerReview {
+		t.Fatalf("expected CommandTriggerFullReview for @drixy review, got %+v", resDrixyReview)
+	}
+	if !strings.Contains(resDrixyReview.ReplyMessage, "Drixy") {
+		t.Fatalf("expected reply to mention Drixy: %s", resDrixyReview.ReplyMessage)
+	}
+
+	// 8. Drixy business logic validation
+	resDrixyBiz := handler.HandleComment(operations.GitChatInput{
+		WorkspaceID:  wsID,
+		RepositoryID: repoID,
+		PRNumber:     42,
+		Author:       "eve",
+		CommentBody:  "@drixy -v business-logic",
+		Context:      operations.ContextGeneralPR,
+	})
+	if resDrixyBiz.CommandType != operations.CommandBusinessLogicValidation || !resDrixyBiz.TriggerReview {
+		t.Fatalf("expected CommandBusinessLogicValidation for @drixy -v business-logic, got %+v", resDrixyBiz)
+	}
+
+	// 9. Drixy greeting inquiry (@drixy hello)
+	resDrixyHello := handler.HandleComment(operations.GitChatInput{
+		WorkspaceID:  wsID,
+		RepositoryID: repoID,
+		PRNumber:     42,
+		Author:       "eve",
+		CommentBody:  "@drixy",
+		Context:      operations.ContextGeneralPR,
+	})
+	if resDrixyHello.CommandType != operations.CommandInteractiveChat || !strings.Contains(resDrixyHello.ReplyMessage, "Drixy") {
+		t.Fatalf("expected Drixy greeting for bare mention, got: %s", resDrixyHello.ReplyMessage)
+	}
 }
 
 func TestCodeManagerStatusAndSummary(t *testing.T) {

@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package engine
 
@@ -18,39 +18,42 @@ const (
 	FormatJSON     OutputFormat = "json"
 	FormatMarkdown OutputFormat = "markdown"
 	FormatSARIF    OutputFormat = "sarif"
+	FormatCSV      OutputFormat = "csv"
 	FormatAgent    OutputFormat = "agent"
 	FormatPrompt   OutputFormat = "prompt"
 )
 
 // CLIOptions encapsulates flags passed to the ScanDrix CLI binary.
 type CLIOptions struct {
-	Staged            bool                   `json:"staged"`
-	Branch            string                 `json:"branch"`
-	Commit            string                 `json:"commit"`
-	CommitRange       string                 `json:"commit_range"`
-	TargetDirectory   string                 `json:"target_directory"`
-	OutputFile        string                 `json:"output_file,omitempty"`
-	Offline           bool                   `json:"offline"`
-	DryRun            bool                   `json:"dry_run"`
-	Format            OutputFormat           `json:"format"`
-	AgentMode         bool                   `json:"agent_mode"`
-	Verbose           bool                   `json:"verbose"`
-	Quiet             bool                   `json:"quiet"`
-	SeverityThreshold models.FindingSeverity `json:"severity_threshold"`
-	APIKey            string                 `json:"api_key,omitempty"`
-	APIBaseURL        string                 `json:"api_base_url,omitempty"`
-	AccessToken       string                 `json:"access_token,omitempty"`
-	RulesOnly         bool                   `json:"rules_only"`
-	Fast              bool                   `json:"fast"`
-	Heavy             bool                   `json:"heavy"`
-	Focus             string                 `json:"focus,omitempty"`
-	Fix               bool                   `json:"fix"`
-	PromptOnly        bool                   `json:"prompt_only"`
-	ContextFile       string                 `json:"context_file,omitempty"`
-	FieldMask         string                 `json:"field_mask,omitempty"`
-	GitHubPAT         string                 `json:"github_pat,omitempty"`
-	CustomRulesFile   string                 `json:"custom_rules_file,omitempty"`
-	PromptOverride    string                 `json:"prompt_override,omitempty"`
+	Staged            bool                                            `json:"staged"`
+	Branch            string                                          `json:"branch"`
+	Commit            string                                          `json:"commit"`
+	CommitRange       string                                          `json:"commit_range"`
+	TargetDirectory   string                                          `json:"target_directory"`
+	OutputFile        string                                          `json:"output_file,omitempty"`
+	Offline           bool                                            `json:"offline"`
+	DryRun            bool                                            `json:"dry_run"`
+	Format            OutputFormat                                    `json:"format"`
+	AgentMode         bool                                            `json:"agent_mode"`
+	Verbose           bool                                            `json:"verbose"`
+	Quiet             bool                                            `json:"quiet"`
+	SeverityThreshold models.FindingSeverity                          `json:"severity_threshold"`
+	APIKey            string                                          `json:"api_key,omitempty"`
+	APIBaseURL        string                                          `json:"api_base_url,omitempty"`
+	AccessToken       string                                          `json:"access_token,omitempty"`
+	RulesOnly         bool                                            `json:"rules_only"`
+	Fast              bool                                            `json:"fast"`
+	Heavy             bool                                            `json:"heavy"`
+	Focus             string                                          `json:"focus,omitempty"`
+	Fix               bool                                            `json:"fix"`
+	PromptOnly        bool                                            `json:"prompt_only"`
+	ContextFile       string                                          `json:"context_file,omitempty"`
+	FieldMask         string                                          `json:"field_mask,omitempty"`
+	GitHubPAT         string                                          `json:"github_pat,omitempty"`
+	CustomRulesFile   string                                          `json:"custom_rules_file,omitempty"`
+	PromptOverride    string                                          `json:"prompt_override,omitempty"`
+	OnProgress        func(relPath string, current int, lineCount int) `json:"-"`
+	OnStatus          func(statusMsg string)                         `json:"-"`
 }
 
 // AgentEnvelope wraps command results into a deterministic machine-readable payload.
@@ -74,6 +77,7 @@ type AgentEnvelopeError struct {
 type CLIResult struct {
 	Status        string               `json:"status"`
 	FilesReviewed int                  `json:"files_reviewed"`
+	TotalLines    int                  `json:"total_lines,omitempty"`
 	TotalFindings int                  `json:"total_findings"`
 	CriticalCount int                  `json:"critical_count"`
 	HighCount     int                  `json:"high_count"`

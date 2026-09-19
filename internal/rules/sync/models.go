@@ -49,20 +49,20 @@ type SweepRequest struct {
 
 // SweepReport aggregates findings and metrics across a full codebase sweep.
 type SweepReport struct {
-	SweepID          uuid.UUID            `json:"sweep_id"`
-	WorkspaceID      uuid.UUID            `json:"workspace_id"`
-	RepoNamespace    string               `json:"repo_namespace"`
-	Branch           string               `json:"branch"`
-	FilesScanned     int                  `json:"files_scanned"`
-	LinesProcessed   int64                `json:"lines_processed"`
-	FindingsCount    int                  `json:"findings_count"`
-	CriticalCount    int                  `json:"critical_count"`
-	HighCount        int                  `json:"high_count"`
-	MediumCount      int                  `json:"medium_count"`
-	LowCount         int                  `json:"low_count"`
-	Duration         time.Duration        `json:"duration"`
-	Findings         []models.CodeFinding `json:"findings,omitempty"`
-	CompletedAt      time.Time            `json:"completed_at"`
+	SweepID        uuid.UUID            `json:"sweep_id"`
+	WorkspaceID    uuid.UUID            `json:"workspace_id"`
+	RepoNamespace  string               `json:"repo_namespace"`
+	Branch         string               `json:"branch"`
+	FilesScanned   int                  `json:"files_scanned"`
+	LinesProcessed int64                `json:"lines_processed"`
+	FindingsCount  int                  `json:"findings_count"`
+	CriticalCount  int                  `json:"critical_count"`
+	HighCount      int                  `json:"high_count"`
+	MediumCount    int                  `json:"medium_count"`
+	LowCount       int                  `json:"low_count"`
+	Duration       time.Duration        `json:"duration"`
+	Findings       []models.CodeFinding `json:"findings,omitempty"`
+	CompletedAt    time.Time            `json:"completed_at"`
 }
 
 // RulePerformance tracks the effectiveness and false-positive rate of an individual rule.

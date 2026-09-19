@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 )
 
@@ -67,11 +70,19 @@ func (s *MCPServer) RegisterTool(tool Tool, handler ToolHandler) {
 
 type contextKey string
 
-const ContextKeyRole contextKey = "mcp_caller_role"
+const (
+	ContextKeyRole  contextKey = "mcp_caller_role"
+	ContextKeyToken contextKey = "mcp_caller_token"
+)
 
 // WithCallerRole attaches an agent authorization role to the context for MCP requests.
 func WithCallerRole(ctx context.Context, role AgentRole) context.Context {
 	return context.WithValue(ctx, ContextKeyRole, role)
+}
+
+// WithCallerToken attaches an authentication access token to the context for MCP requests.
+func WithCallerToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, ContextKeyToken, token)
 }
 
 // HandleRequest processes an incoming JSON-RPC 2.0 message and returns the response.
@@ -119,6 +130,7 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 		var params struct {
 			Name      string         `json:"name"`
 			Role      AgentRole      `json:"role,omitempty"`
+			Token     string         `json:"token,omitempty"`
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -127,6 +139,10 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 				ID:      req.ID,
 				Error:   &JSONRPCError{Code: CodeInvalidParams, Message: "failed parsing tool call parameters"},
 			}
+		}
+
+		if params.Token != "" {
+			ctx = WithCallerToken(ctx, params.Token)
 		}
 
 		s.mu.RLock()
@@ -149,7 +165,7 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 			}
 		}
 
-		// Enforce role-based access control
+		// Enforce role-based access control (fail-closed)
 		callerRole := params.Role
 		if callerRole == "" {
 			if ctxRole, ok := ctx.Value(ContextKeyRole).(AgentRole); ok {
@@ -157,7 +173,18 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 			}
 		}
 
-		if callerRole != "" && len(targetTool.AllowedRoles) > 0 {
+		if len(targetTool.AllowedRoles) > 0 {
+			if callerRole == "" {
+				return &JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &JSONRPCError{
+						Code:    CodeForbidden,
+						Message: fmt.Sprintf("anonymous tool execution rejected: role required to execute tool '%s'", params.Name),
+					},
+				}
+			}
+
 			authorized := false
 			for _, allowed := range targetTool.AllowedRoles {
 				if allowed == callerRole || callerRole == RoleAdmin {
@@ -258,3 +285,53 @@ func (s *MCPServer) HandleRequest(ctx context.Context, req JSONRPCRequest) *JSON
 		}
 	}
 }
+
+// ServeStdio starts a JSON-RPC 2.0 transport loop over standard input and output.
+func (s *MCPServer) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
+	scanner := bufio.NewScanner(in)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Bytes()
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		var req JSONRPCRequest
+		if err := json.Unmarshal(trimmed, &req); err != nil {
+			errResp := &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      nil,
+				Error:   &JSONRPCError{Code: CodeParseError, Message: fmt.Sprintf("invalid JSON-RPC: %v", err)},
+			}
+			respBytes, _ := json.Marshal(errResp)
+			_, _ = out.Write(append(respBytes, '\n'))
+			continue
+		}
+
+		resp := s.HandleRequest(ctx, req)
+		if resp != nil {
+			respBytes, err := json.Marshal(resp)
+			if err != nil {
+				errResp := &JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error:   &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("failed marshaling response: %v", err)},
+				}
+				respBytes, _ = json.Marshal(errResp)
+			}
+			_, _ = out.Write(append(respBytes, '\n'))
+		}
+	}
+
+	return scanner.Err()
+}
+

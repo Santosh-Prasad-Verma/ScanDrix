@@ -13,9 +13,11 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// Standard rule file detection patterns matching Kodus & industry conventions
+// Standard rule file detection patterns matching industry conventions
 var RuleFilePatterns = []string{
-	".kody/rules/**/*.md",
+	".drixy/rules/**/*.md",
+	".drixy/rules/*.md",
+	".drixy/rules.md",
 	".scandrix/rules/**/*.md",
 	"rules/**/*.md",
 	"AGENTS.md",

@@ -33,6 +33,7 @@ type OAuthUserProfile struct {
 	DisplayName string        `json:"display_name"`
 	Username    string        `json:"username"`
 	AvatarURL   string        `json:"avatar_url"`
+	AccessToken string        `json:"access_token,omitempty"`
 }
 
 // ProviderConfig specifies OAuth 2.0 credentials and endpoints.
@@ -139,13 +140,63 @@ func (s *OAuthService) GetAuthorizationURL(provider OAuthProvider, state string)
 
 	q := u.Query()
 	q.Set("client_id", cfg.ClientID)
-	q.Set("redirect_uri", cfg.RedirectURI)
+	if cfg.RedirectURI != "" {
+		q.Set("redirect_uri", cfg.RedirectURI)
+	}
 	q.Set("scope", cfg.Scope)
 	q.Set("state", state)
 	q.Set("response_type", "code")
 	u.RawQuery = q.Encode()
 
 	return u.String(), nil
+}
+
+// ExchangeAccessToken exchanges an authorization code directly for the provider's OAuth access token.
+func (s *OAuthService) ExchangeAccessToken(ctx context.Context, provider OAuthProvider, code string) (string, error) {
+	cfg, ok := s.providers[provider]
+	if !ok {
+		return "", ErrUnsupportedProvider
+	}
+
+	tokenValues := url.Values{
+		"client_id":     {cfg.ClientID},
+		"client_secret": {cfg.ClientSecret},
+		"code":          {code},
+	}
+	if cfg.RedirectURI != "" {
+		tokenValues.Set("redirect_uri", cfg.RedirectURI)
+	}
+	if provider == ProviderGitLab {
+		tokenValues.Set("grant_type", "authorization_code")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", cfg.TokenURL, strings.NewReader(tokenValues.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token exchange failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", ErrInvalidOAuthCode
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		Error       string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil || tokenResp.AccessToken == "" {
+		return "", ErrInvalidOAuthCode
+	}
+
+	return tokenResp.AccessToken, nil
 }
 
 // ExchangeCode exchanges an authorization code for user profile details.
@@ -160,7 +211,9 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
 		"code":          {code},
-		"redirect_uri":  {cfg.RedirectURI},
+	}
+	if cfg.RedirectURI != "" {
+		tokenValues.Set("redirect_uri", cfg.RedirectURI)
 	}
 	if provider == ProviderGitLab {
 		tokenValues.Set("grant_type", "authorization_code")
@@ -216,7 +269,8 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 	}
 
 	profile := &OAuthUserProfile{
-		Provider: provider,
+		Provider:    provider,
+		AccessToken: tokenResp.AccessToken,
 	}
 
 	if provider == ProviderGitHub {
@@ -318,8 +372,11 @@ func (s *OAuthService) fetchBitbucketPrimaryEmail(ctx context.Context, token, em
 			return e.Email
 		}
 	}
-	if len(res.Values) > 0 {
-		return res.Values[0].Email
+	// Fallback to any confirmed email if primary flag is missing
+	for _, e := range res.Values {
+		if e.IsConfirmed && strings.TrimSpace(e.Email) != "" {
+			return strings.TrimSpace(e.Email)
+		}
 	}
 	return ""
 }

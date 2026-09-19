@@ -19,7 +19,7 @@ type RepoReviewConfig struct {
 
 // RepoRulesConfig defines rule engine behavior per repository.
 type RepoRulesConfig struct {
-	CustomRulesDir    string   `yaml:"custom_rules_dir" json:"custom_rules_dir"` // e.g. ".kody/rules" or ".scandrix/rules"
+	CustomRulesDir    string   `yaml:"custom_rules_dir" json:"custom_rules_dir"` // e.g. ".drixy/rules" or ".scandrix/rules"
 	DisabledRules     []string `yaml:"disabled_rules" json:"disabled_rules"`
 	SeverityThreshold string   `yaml:"severity_threshold" json:"severity_threshold"` // "LOW", "MEDIUM", "HIGH", "CRITICAL"
 }
@@ -37,7 +37,7 @@ type RepoPMConfig struct {
 	AutoTicketSeverities []string `yaml:"auto_ticket_severities" json:"auto_ticket_severities"`
 }
 
-// RepositoryConfiguration represents the complete .scandrix.yml / .kodus.yml definition.
+// RepositoryConfiguration represents the complete .scandrix.yml repository definition.
 type RepositoryConfiguration struct {
 	Version       string                  `yaml:"version" json:"version"`
 	Review        RepoReviewConfig        `yaml:"review" json:"review"`
@@ -53,13 +53,13 @@ func DefaultRepoConfig() *RepositoryConfiguration {
 		Review: RepoReviewConfig{
 			Enabled:        true,
 			Mode:           "standard",
-			BotName:        "kody[bot]",
+			BotName:        "drixy[bot]",
 			IgnorePatterns: []string{"vendor/**", "node_modules/**", "*.min.js", "dist/**", "build/**", "*.lock"},
 			MaxComments:    20,
 			AutoApprove:    false,
 		},
 		Rules: RepoRulesConfig{
-			CustomRulesDir:    ".kody/rules",
+			CustomRulesDir:    ".drixy/rules",
 			DisabledRules:     []string{},
 			SeverityThreshold: "LOW",
 		},
@@ -93,7 +93,7 @@ func ParseRepoConfig(rawYAML []byte) (*RepositoryConfiguration, error) {
 		cfg.Review.MaxComments = 20
 	}
 	if cfg.Rules.CustomRulesDir == "" {
-		cfg.Rules.CustomRulesDir = ".kody/rules"
+		cfg.Rules.CustomRulesDir = ".drixy/rules"
 	}
 
 	return cfg, nil

@@ -77,6 +77,7 @@ func NewIgnoreEngine(workDir string) *IgnoreEngine {
 				patterns = append(patterns, line)
 			}
 		}
+		_ = scanner.Err()
 	}
 
 	return &IgnoreEngine{patterns: patterns}

@@ -22,13 +22,13 @@ func TestGatewayOpenRouterFallbackChain(t *testing.T) {
 		count := atomic.AddInt64(&attempts, 1)
 
 		if count == 1 {
-			// First model (stealth/ox-alpha) fails with 503 Service Unavailable / Rate Limit
+			// First model fails with 503 Service Unavailable / Rate Limit
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error": "model currently unavailable"}`))
 			return
 		}
 
-		// Second model (nvidia/nemotron-3-ultra-550b-a55b:free) succeeds
+		// Second model succeeds
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"choices": [
@@ -47,9 +47,9 @@ func TestGatewayOpenRouterFallbackChain(t *testing.T) {
 		"", "", "", "",
 		llm.WithOpenRouter("sk-or-test-key"),
 		llm.WithOpenRouterModels(
-			"stealth/ox-alpha",
-			"nvidia/nemotron-3-ultra-550b-a55b:free",
-			"minimax/minimax-m3:free",
+			"test/primary-model",
+			"test/secondary-model",
+			"test/fallback-model",
 		),
 	)
 

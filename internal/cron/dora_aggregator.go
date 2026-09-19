@@ -46,4 +46,3 @@ func (d *DORAAggregatorCron) Run(ctx context.Context) error {
 	slog.Debug("DORA metrics rollup calculation executed successfully")
 	return nil
 }
-

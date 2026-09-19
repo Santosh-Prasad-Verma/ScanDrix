@@ -14,9 +14,9 @@ func TestParseRemoteURL(t *testing.T) {
 		wantPath     string
 	}{
 		{
-			url:          "git@github.com:kodustech/kodus-ai.git",
+			url:          "git@github.com:scandrix/scandrix-core.git",
 			wantProvider: models.ProviderGitHub,
-			wantPath:     "kodustech/kodus-ai",
+			wantPath:     "scandrix/scandrix-core",
 		},
 		{
 			url:          "https://github.com/scandrix/backend.git",

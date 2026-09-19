@@ -3,17 +3,19 @@ package consumer
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // WorkerPool manages parallel worker goroutines processing review queue tasks.
 type WorkerPool struct {
-	concurrency int
-	consumer    *ReviewConsumer
-	jobChan     chan WorkerJob
-	results     chan TaskExecutionResult
-	wg          sync.WaitGroup
-	mu          sync.RWMutex
-	isClosing   bool
+	concurrency      int
+	consumer         *ReviewConsumer
+	jobChan          chan WorkerJob
+	results          chan TaskExecutionResult
+	hasResultsReader atomic.Bool
+	wg               sync.WaitGroup
+	mu               sync.RWMutex
+	isClosing        bool
 }
 
 // NewWorkerPool initializes the concurrent worker pool.
@@ -42,7 +44,7 @@ func (p *WorkerPool) Submit(task ReviewTaskPayload) bool {
 	return p.SubmitJob(WorkerJob{Task: task})
 }
 
-// SubmitJob queues a task with an optional completion callback. Returns false if the pool is stopping.
+// SubmitJob queues a task with an optional completion callback. Returns false if the pool is stopping or buffer is full.
 func (p *WorkerPool) SubmitJob(job WorkerJob) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -51,8 +53,12 @@ func (p *WorkerPool) SubmitJob(job WorkerJob) bool {
 		return false
 	}
 
-	p.jobChan <- job
-	return true
+	select {
+	case p.jobChan <- job:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stop gracefully terminates workers after draining and completing all queued tasks.
@@ -70,7 +76,6 @@ func (p *WorkerPool) Stop() {
 	close(p.results)
 }
 
-
 func (p *WorkerPool) worker(ctx context.Context) {
 	defer p.wg.Done()
 
@@ -78,14 +83,23 @@ func (p *WorkerPool) worker(ctx context.Context) {
 		res := p.consumer.ProcessTask(ctx, job.Task)
 		if job.OnComplete != nil {
 			job.OnComplete(res)
+		} else if p.hasResultsReader.Load() {
+			select {
+			case p.results <- res:
+			case <-ctx.Done():
+				return
+			}
 		} else {
-			p.results <- res
+			select {
+			case p.results <- res:
+			default:
+			}
 		}
 	}
 }
 
 // ResultsChannel returns the stream of execution results.
 func (p *WorkerPool) ResultsChannel() <-chan TaskExecutionResult {
+	p.hasResultsReader.Store(true)
 	return p.results
 }
-

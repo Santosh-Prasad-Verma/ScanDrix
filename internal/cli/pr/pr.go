@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package pr
 
@@ -11,11 +11,15 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/scandrix/backend/internal/cli/configcli"
 	"github.com/scandrix/backend/pkg/models"
 )
+
+var validBranchRegex = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 // PRClient handles fetching remote pull request diffs, querying suggestions, and posting review comments.
 type PRClient struct {
@@ -27,7 +31,8 @@ type PRClient struct {
 // NewPRClient creates a PR workflow client.
 func NewPRClient(serverURL, authToken string) *PRClient {
 	if serverURL == "" {
-		serverURL = "http://localhost:8080"
+		cfg := configcli.Load(".")
+		serverURL = cfg.ServerURL
 	}
 	return &PRClient{
 		serverURL:  serverURL,
@@ -36,36 +41,100 @@ func NewPRClient(serverURL, authToken string) *PRClient {
 	}
 }
 
+// FetchDiffFromGitHubAPI fetches unified diff for a pull request directly from the GitHub REST API.
+func FetchDiffFromGitHubAPI(ctx context.Context, namespace string, prNumber int, token string) (string, error) {
+	if namespace == "" || prNumber <= 0 {
+		return "", fmt.Errorf("invalid namespace or pull request number")
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", namespace, prNumber)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed creating pr diff request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github api request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("github api returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	diffBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed reading diff response: %w", err)
+	}
+
+	return string(diffBytes), nil
+}
+
 // FetchDiffFromGit attempts to fetch and extract the PR diff locally using Git refs.
 func FetchDiffFromGit(ctx context.Context, prNumber int, baseBranch string) (string, error) {
+	if prNumber <= 0 {
+		return "", fmt.Errorf("invalid PR number: %d (must be positive)", prNumber)
+	}
+
 	if baseBranch == "" {
 		baseBranch = "main"
+	}
+
+	// Prevent command / argument injection via crafted branch names or flags (Master Rule 5.3)
+	if strings.HasPrefix(baseBranch, "-") || strings.Contains(baseBranch, "..") || !validBranchRegex.MatchString(baseBranch) {
+		return "", fmt.Errorf("invalid base branch name %q: contains illegal characters or flags", baseBranch)
 	}
 
 	// 1. Fetch PR ref from origin (GitHub format)
 	refSpec := fmt.Sprintf("pull/%d/head:pr-%d", prNumber, prNumber)
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", refSpec)
-	_ = fetchCmd.Run() // Best effort
+	var fetchErrBuf bytes.Buffer
+	fetchCmd.Stderr = &fetchErrBuf
+	_ = fetchCmd.Run() // Best effort; may fail if origin is GitLab or local ref exists
 
-	// 2. Diff against base branch
-	diffCmd := exec.CommandContext(ctx, "git", "diff", fmt.Sprintf("origin/%s...pr-%d", baseBranch, prNumber))
-	var out bytes.Buffer
+	// 2. Diff against base branch with explicit revision terminator '--'
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--no-color", fmt.Sprintf("origin/%s...pr-%d", baseBranch, prNumber), "--")
+	var out, diffErrBuf bytes.Buffer
 	diffCmd.Stdout = &out
+	diffCmd.Stderr = &diffErrBuf
 	if err := diffCmd.Run(); err == nil && out.Len() > 0 {
 		return out.String(), nil
 	}
 
 	// Fallback to GitLab merge request ref syntax
 	refSpecGL := fmt.Sprintf("merge-requests/%d/head:mr-%d", prNumber, prNumber)
-	_ = exec.CommandContext(ctx, "git", "fetch", "origin", refSpecGL).Run()
-	diffCmdGL := exec.CommandContext(ctx, "git", "diff", fmt.Sprintf("origin/%s...mr-%d", baseBranch, prNumber))
-	var outGL bytes.Buffer
+	fetchGLCmd := exec.CommandContext(ctx, "git", "fetch", "origin", refSpecGL)
+	var fetchGLErrBuf bytes.Buffer
+	fetchGLCmd.Stderr = &fetchGLErrBuf
+	_ = fetchGLCmd.Run()
+
+	diffCmdGL := exec.CommandContext(ctx, "git", "diff", "--no-color", fmt.Sprintf("origin/%s...mr-%d", baseBranch, prNumber), "--")
+	var outGL, diffGLErrBuf bytes.Buffer
 	diffCmdGL.Stdout = &outGL
+	diffCmdGL.Stderr = &diffGLErrBuf
 	if err := diffCmdGL.Run(); err == nil && outGL.Len() > 0 {
 		return outGL.String(), nil
 	}
 
-	return "", fmt.Errorf("unable to fetch diff for PR #%d locally via git (verify remotes)", prNumber)
+	lastErr := strings.TrimSpace(diffGLErrBuf.String())
+	if lastErr == "" {
+		lastErr = strings.TrimSpace(diffErrBuf.String())
+	}
+	if lastErr == "" {
+		lastErr = strings.TrimSpace(fetchErrBuf.String())
+	}
+	if lastErr != "" {
+		return "", fmt.Errorf("unable to fetch diff for PR #%d locally via git: %s", prNumber, lastErr)
+	}
+	return "", fmt.Errorf("unable to fetch diff for PR #%d locally via git (verify remotes and network)", prNumber)
 }
 
 // PostReviewComment posts a markdown review summary comment to the remote PR via the ScanDrix API gateway.

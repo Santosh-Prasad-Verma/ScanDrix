@@ -7,21 +7,28 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// WebhookAction categorizes normalized pull request actions.
+// WebhookAction categorizes normalized pull request and installation lifecycle actions.
 type WebhookAction string
 
 const (
-	ActionOpened         WebhookAction = "OPENED"
-	ActionSynchronize    WebhookAction = "SYNCHRONIZE"
-	ActionReopened       WebhookAction = "REOPENED"
-	ActionClosed         WebhookAction = "CLOSED"
-	ActionCommentCreated WebhookAction = "COMMENT_CREATED"
-	ActionIgnored        WebhookAction = "IGNORED"
+	ActionOpened              WebhookAction = "OPENED"
+	ActionSynchronize         WebhookAction = "SYNCHRONIZE"
+	ActionReopened            WebhookAction = "REOPENED"
+	ActionClosed              WebhookAction = "CLOSED"
+	ActionCommentCreated      WebhookAction = "COMMENT_CREATED"
+	ActionInstallationCreated WebhookAction = "INSTALLATION_CREATED"
+	ActionInstallationDeleted WebhookAction = "INSTALLATION_DELETED"
+	ActionReposAdded          WebhookAction = "REPOS_ADDED"
+	ActionReposRemoved        WebhookAction = "REPOS_REMOVED"
+	ActionFeedbackDismissed   WebhookAction = "FEEDBACK_DISMISSED"
+	ActionIgnored             WebhookAction = "IGNORED"
 )
 
 // NormalizedWebhookEvent translates vendor-specific webhook payloads into a unified format.
 type NormalizedWebhookEvent struct {
 	ID                uuid.UUID          `json:"id"`
+	TaskID            uuid.UUID          `json:"task_id,omitempty"`
+	EventID           uuid.UUID          `json:"event_id,omitempty"`
 	WorkspaceID       uuid.UUID          `json:"workspace_id"`
 	Provider          models.SCMProvider `json:"provider"`
 	Action            WebhookAction      `json:"action"`
@@ -35,6 +42,9 @@ type NormalizedWebhookEvent struct {
 	CommentBody       string             `json:"comment_body,omitempty"`
 	CommentFilePath   string             `json:"comment_file_path,omitempty"`
 	DiffHunk          string             `json:"diff_hunk,omitempty"`
+	DismissalReason   string             `json:"dismissal_reason,omitempty"`
+	InstallationID    int64              `json:"installation_id,omitempty"`
+	Repositories      []string           `json:"repositories,omitempty"`
 	RawPayload        []byte             `json:"raw_payload"`
 	ReceivedAt        time.Time          `json:"received_at"`
 }

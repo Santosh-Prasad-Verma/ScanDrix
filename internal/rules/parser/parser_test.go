@@ -34,7 +34,7 @@ jwtKey := "my-super-secret-key-1234"
 Use internal/config package or environment variable loader.
 `
 
-	rule, err := parser.ParseMarkdownRule(".kody/rules/no-hardcoded-jwt.md", []byte(doc))
+	rule, err := parser.ParseMarkdownRule(".drixy/rules/no-hardcoded-jwt.md", []byte(doc))
 	if err != nil {
 		t.Fatalf("unexpected parse error: %v", err)
 	}

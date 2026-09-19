@@ -55,11 +55,11 @@ type HeartbeatConfig struct {
 
 // ErrorReport captures sanitised exception telemetry.
 type ErrorReport struct {
-	EventID    uuid.UUID      `json:"event_id"`
-	Timestamp  time.Time      `json:"timestamp"`
-	Level      string         `json:"level"` // "error", "fatal", "warning"
-	Message    string         `json:"message"`
-	StackTrace []string       `json:"stack_trace"`
+	EventID    uuid.UUID         `json:"event_id"`
+	Timestamp  time.Time         `json:"timestamp"`
+	Level      string            `json:"level"` // "error", "fatal", "warning"
+	Message    string            `json:"message"`
+	StackTrace []string          `json:"stack_trace"`
 	Tags       map[string]string `json:"tags"`
-	Extra      map[string]any `json:"extra"`
+	Extra      map[string]any    `json:"extra"`
 }

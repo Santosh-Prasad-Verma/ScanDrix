@@ -67,19 +67,19 @@ func (r *RepoReportCron) Run(ctx context.Context) error {
 		}
 
 		payload, _ := json.Marshal(map[string]any{
-			"workspace_id":         rd.WorkspaceID.String(),
-			"repository_id":        rd.RepositoryID.String(),
-			"namespace":            rd.NamespacePath,
-			"window_days":          r.windowDays,
-			"window_since":         since.Format(time.RFC3339),
-			"total_reviews":        rd.TotalReviews,
-			"clean_reviews_count":  rd.CleanReviewsCount,
-			"pass_rate":            rd.PassRate,
-			"total_findings":       rd.TotalFindings,
-			"critical_findings":    rd.CriticalFindings,
-			"high_findings":        rd.HighFindings,
-			"active_contributors":  rd.ActiveContributors,
-			"generated_at":         time.Now().UTC().Format(time.RFC3339),
+			"workspace_id":        rd.WorkspaceID.String(),
+			"repository_id":       rd.RepositoryID.String(),
+			"namespace":           rd.NamespacePath,
+			"window_days":         r.windowDays,
+			"window_since":        since.Format(time.RFC3339),
+			"total_reviews":       rd.TotalReviews,
+			"clean_reviews_count": rd.CleanReviewsCount,
+			"pass_rate":           rd.PassRate,
+			"total_findings":      rd.TotalFindings,
+			"critical_findings":   rd.CriticalFindings,
+			"high_findings":       rd.HighFindings,
+			"active_contributors": rd.ActiveContributors,
+			"generated_at":        time.Now().UTC().Format(time.RFC3339),
 		})
 
 		outbox := &models.OutboxRecord{

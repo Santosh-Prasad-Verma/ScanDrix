@@ -11,10 +11,10 @@ import (
 // ClassifyOrphanedSessionsCron sweeps abandoned or interrupted CLI and agent trace sessions,
 // classifying them and releasing locked session resources.
 type ClassifyOrphanedSessionsCron struct {
-	repo               *database.Repository
-	interval           time.Duration
-	inactivityMinutes  int
-	batchLimit         int
+	repo              *database.Repository
+	interval          time.Duration
+	inactivityMinutes int
+	batchLimit        int
 }
 
 // NewClassifyOrphanedSessionsCron creates a new orphaned session classifier cron job.

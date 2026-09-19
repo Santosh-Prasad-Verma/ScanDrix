@@ -116,3 +116,19 @@ func TestTokenBudgetLimiter(t *testing.T) {
 		t.Fatal("expected monthly quota exhausted error")
 	}
 }
+
+func TestIsContextOverflowError(t *testing.T) {
+	if llm.IsContextOverflowError(nil) {
+		t.Errorf("expected false for nil error")
+	}
+
+	overflowErr := errors.New("maximum context length is 128000 tokens, but prompt was 150000")
+	if !llm.IsContextOverflowError(overflowErr) {
+		t.Errorf("expected true for context length error")
+	}
+
+	authErr := errors.New("invalid api key 401")
+	if llm.IsContextOverflowError(authErr) {
+		t.Errorf("expected false for auth error")
+	}
+}

@@ -7,7 +7,7 @@ ALTER TABLE review_attestations FORCE ROW LEVEL SECURITY;
 ALTER TABLE finding_tickets FORCE ROW LEVEL SECURITY;
 ALTER TABLE pm_auto_ticket_configs FORCE ROW LEVEL SECURITY;
 
--- 2. Ensure RLS on users table (Kodus / NestJS Parity)
+-- 2. Ensure RLS on users table (Tenant Boundary Hardening)
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN

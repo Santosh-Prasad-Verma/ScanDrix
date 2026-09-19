@@ -1,15 +1,21 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"html"
+)
 
 // RenderSpendLimitAlert alerts workspace admins when monthly token consumption hits thresholds (e.g. 80% or 100%).
 func RenderSpendLimitAlert(subscriberName, orgName string, percent int, usedTokens, limitTokens int64, upgradeURL string) (subject, htmlBody string) {
+	safeSubscriber := html.EscapeString(subscriberName)
+	safeOrg := html.EscapeString(orgName)
+
 	status := "approaching"
 	if percent >= 100 {
 		status = "exceeded"
 	}
-	subject = fmt.Sprintf("Alert: Workspace %s has %s its monthly token quota (%d%%)", orgName, status, percent)
-	preview := fmt.Sprintf("Workspace %s has consumed %s of %s tokens for this billing period.", orgName, formatNumber(usedTokens), formatNumber(limitTokens))
+	subject = fmt.Sprintf("Alert: Workspace %s has %s its monthly token quota (%d%%)", safeOrg, status, percent)
+	preview := fmt.Sprintf("Workspace %s has consumed %s of %s tokens for this billing period.", safeOrg, formatNumber(usedTokens), formatNumber(limitTokens))
 
 	content := fmt.Sprintf(`
 		<p>Hi <strong>%s</strong>,</p>
@@ -35,7 +41,7 @@ func RenderSpendLimitAlert(subscriberName, orgName string, percent int, usedToke
 		<p style="color: #4b5563;">
 			When the monthly token cap is reached, automated code reviews may be paused unless you upgrade to an Enterprise plan or supply a Bring-Your-Own-Key (BYOK) API key.
 		</p>
-	`, subscriberName, orgName, percent, formatNumber(usedTokens), formatNumber(limitTokens), percent)
+	`, safeSubscriber, safeOrg, percent, formatNumber(usedTokens), formatNumber(limitTokens), percent)
 
 	htmlBody = RenderBrandLayout(preview, "Token Quota Alert", content, "Manage Quotas & Top Up", upgradeURL)
 	return subject, htmlBody

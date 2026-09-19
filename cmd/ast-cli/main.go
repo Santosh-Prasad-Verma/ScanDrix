@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package main
 
@@ -112,6 +112,9 @@ func main() {
 	fmt.Printf("   Dry-Run: %v | Force: %v | Limit: %d\n", dryRun, force, limit)
 
 	var targetWS uuid.UUID
+	if workspaceID == "" {
+		workspaceID = os.Getenv("SCANDRIX_WORKSPACE_ID")
+	}
 	if workspaceID != "" {
 		parsedWS, err := uuid.Parse(workspaceID)
 		if err != nil {
@@ -120,7 +123,7 @@ func main() {
 		}
 		targetWS = parsedWS
 	} else {
-		targetWS = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+		targetWS = uuid.New()
 	}
 
 	if dryRun {

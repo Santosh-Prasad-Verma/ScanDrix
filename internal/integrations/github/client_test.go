@@ -181,5 +181,3 @@ func TestGitHubAppRS256JWTAndInstallationToken(t *testing.T) {
 		t.Errorf("unexpected installation token: %s", instToken)
 	}
 }
-
-

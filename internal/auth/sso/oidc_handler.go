@@ -1,33 +1,162 @@
 package sso
 
 import (
+	"context"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
+	"math/big"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// OIDCHandler handles OpenID Connect ID token decoding, cryptographic signature validation, and claim assertions.
-type OIDCHandler struct {
-	signingKey any // *rsa.PublicKey or []byte
+var (
+	ErrAlgorithmMismatch = errors.New("algorithm mismatch between token header and verification key")
+	ErrUnsignedToken     = errors.New("unverified token rejected: signing key not configured")
+	ErrAlgorithmNone     = errors.New("insecure algorithm 'none' rejected by enterprise security baseline (CWE-327)")
+)
+
+// OIDCProviderMetadata represents OpenID Connect discovery document (.well-known/openid-configuration).
+type OIDCProviderMetadata struct {
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+	JwksURI               string `json:"jwks_uri"`
 }
 
-// NewOIDCHandler initializes the OIDC handler.
+// JSONWebKey represents a public key in a JWKS key set.
+type JSONWebKey struct {
+	Kty string `json:"kty"`
+	Kid string `json:"kid"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+// JSONWebKeySet represents a standard JWKS response from an identity provider.
+type JSONWebKeySet struct {
+	Keys []JSONWebKey `json:"keys"`
+}
+
+// OIDCHandler handles OpenID Connect ID token decoding, cryptographic signature validation, and claim assertions.
+type OIDCHandler struct {
+	mu         sync.RWMutex
+	signingKey any                       // *rsa.PublicKey or []byte (fallback default)
+	jwksCache  map[string]*rsa.PublicKey // kid -> *rsa.PublicKey
+	httpClient *http.Client
+}
+
+// NewOIDCHandler initializes the OIDC handler with JWKS caching and timeout controls.
 func NewOIDCHandler() *OIDCHandler {
-	return &OIDCHandler{}
+	return &OIDCHandler{
+		jwksCache: make(map[string]*rsa.PublicKey),
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
 }
 
 // SetSigningKey configures an RSA public key or HMAC secret for token signature verification.
 func (h *OIDCHandler) SetSigningKey(key any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.signingKey = key
+}
+
+// SetHTTPClient configures a custom HTTP client for remote JWKS operations.
+func (h *OIDCHandler) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		h.httpClient = client
+	}
+}
+
+// FetchAndCacheJWKS retrieves and caches remote RSA public keys from a JWKS URI for automated key rotation.
+func (h *OIDCHandler) FetchAndCacheJWKS(ctx context.Context, jwksURI string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
+	if err != nil {
+		return fmt.Errorf("failed creating JWKS request: %w", err)
+	}
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed fetching JWKS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected JWKS HTTP response status: %d", resp.StatusCode)
+	}
+
+	var jwks JSONWebKeySet
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return fmt.Errorf("failed decoding JWKS response: %w", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, k := range jwks.Keys {
+		if strings.ToUpper(k.Kty) != "RSA" || k.Kid == "" || k.N == "" || k.E == "" {
+			continue
+		}
+		pubKey, err := parseRSAPublicKeyFromJWK(k)
+		if err == nil && pubKey != nil {
+			h.jwksCache[k.Kid] = pubKey
+		}
+	}
+	return nil
+}
+
+// DiscoverProvider queries /.well-known/openid-configuration to obtain provider metadata.
+func (h *OIDCHandler) DiscoverProvider(ctx context.Context, issuerURL string) (*OIDCProviderMetadata, error) {
+	wellKnownURL := strings.TrimRight(issuerURL, "/") + "/.well-known/openid-configuration"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating discovery request: %w", err)
+	}
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed fetching discovery document: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected discovery HTTP response status: %d", resp.StatusCode)
+	}
+
+	var meta OIDCProviderMetadata
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return nil, fmt.Errorf("failed parsing discovery document: %w", err)
+	}
+	return &meta, nil
+}
+
+func parseRSAPublicKeyFromJWK(k JSONWebKey) (*rsa.PublicKey, error) {
+	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding modulus: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding exponent: %w", err)
+	}
+
+	n := new(big.Int).SetBytes(nBytes)
+	e := int(new(big.Int).SetBytes(eBytes).Int64())
+	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
 // OIDCHeader represents standard JWT JOSE header.
@@ -53,7 +182,8 @@ type OIDCClaims struct {
 	HD            string   `json:"hd"` // Hosted domain for Google Workspace
 }
 
-// VerifySignature cryptographically validates the JWT signature against a public key or shared secret.
+// VerifySignature cryptographically validates the JWT signature against a public key or shared secret,
+// strictly enforcing algorithm pinning (CWE-327 prevention).
 func (h *OIDCHandler) VerifySignature(rawJWT string, key any) error {
 	parts := strings.Split(rawJWT, ".")
 	if len(parts) != 3 {
@@ -70,9 +200,22 @@ func (h *OIDCHandler) VerifySignature(rawJWT string, key any) error {
 		return fmt.Errorf("malformed header JSON: %w", err)
 	}
 
-	// Master Rule 5.1: alg: none never accepted when verification key is configured
-	if strings.ToLower(header.Alg) == "none" {
-		return errors.New("insecure algorithm 'none' rejected by enterprise security baseline")
+	alg := strings.ToUpper(strings.TrimSpace(header.Alg))
+	if alg == "NONE" || strings.ToLower(header.Alg) == "none" {
+		return ErrAlgorithmNone
+	}
+
+	switch key.(type) {
+	case *rsa.PublicKey:
+		if alg != "RS256" && alg != "RS384" && alg != "RS512" {
+			return fmt.Errorf("%w: header specifies '%s' but key is RSA (expected RS256/384/512)", ErrAlgorithmMismatch, header.Alg)
+		}
+	case []byte:
+		if alg != "HS256" && alg != "HS384" && alg != "HS512" {
+			return fmt.Errorf("%w: header specifies '%s' but key is HMAC shared secret (expected HS256/384/512)", ErrAlgorithmMismatch, header.Alg)
+		}
+	default:
+		return fmt.Errorf("unsupported key type: %T", key)
 	}
 
 	signedContent := parts[0] + "." + parts[1]
@@ -83,36 +226,78 @@ func (h *OIDCHandler) VerifySignature(rawJWT string, key any) error {
 
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		hashed := sha256.Sum256([]byte(signedContent))
-		if err := rsa.VerifyPKCS1v15(k, crypto.SHA256, hashed[:], sigBytes); err != nil {
+		var hash crypto.Hash
+		switch alg {
+		case "RS256":
+			hash = crypto.SHA256
+		case "RS384":
+			hash = crypto.SHA384
+		case "RS512":
+			hash = crypto.SHA512
+		}
+		hasher := hash.New()
+		hasher.Write([]byte(signedContent))
+		hashed := hasher.Sum(nil)
+		if err := rsa.VerifyPKCS1v15(k, hash, hashed, sigBytes); err != nil {
 			return fmt.Errorf("RSA signature verification failed: %w", err)
 		}
 		return nil
+
 	case []byte:
-		mac := hmac.New(sha256.New, k)
+		if alg != "HS256" && alg != "HS384" && alg != "HS512" {
+			return fmt.Errorf("%w: header specifies '%s' but key is HMAC shared secret (expected HS256/384/512)", ErrAlgorithmMismatch, header.Alg)
+		}
+		var mac hash.Hash
+		switch alg {
+		case "HS256":
+			mac = hmac.New(sha256.New, k)
+		case "HS384":
+			mac = hmac.New(sha512.New384, k)
+		case "HS512":
+			mac = hmac.New(sha512.New, k)
+		}
 		mac.Write([]byte(signedContent))
 		expectedSig := mac.Sum(nil)
 		if !hmac.Equal(sigBytes, expectedSig) {
 			return errors.New("HMAC signature verification failed")
 		}
 		return nil
+
 	default:
 		return fmt.Errorf("unsupported key type: %T", key)
 	}
 }
 
 // ParseAndVerifyIDToken decodes the JWT and validates standard claims (iss, aud, exp, email_verified).
+// Fails closed if no verification key is configured.
 func (h *OIDCHandler) ParseAndVerifyIDToken(rawJWT string, expectedIssuer string, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
 	parts := strings.Split(rawJWT, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT structure: expected 3 segments, got %d", len(parts))
 	}
 
-	// 0. Verify Signature if key is configured
-	if h.signingKey != nil {
-		if err := h.VerifySignature(rawJWT, h.signingKey); err != nil {
-			return nil, err
+	// 0. Resolve Verification Key and Fail Closed if missing
+	h.mu.RLock()
+	verificationKey := h.signingKey
+	if verificationKey == nil {
+		headerBytes, decErr := base64.RawURLEncoding.DecodeString(parts[0])
+		if decErr == nil {
+			var hdr OIDCHeader
+			if json.Unmarshal(headerBytes, &hdr) == nil && hdr.Kid != "" {
+				if pk, ok := h.jwksCache[hdr.Kid]; ok {
+					verificationKey = pk
+				}
+			}
 		}
+	}
+	h.mu.RUnlock()
+
+	if verificationKey == nil {
+		return nil, ErrUnsignedToken
+	}
+
+	if err := h.VerifySignature(rawJWT, verificationKey); err != nil {
+		return nil, err
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])

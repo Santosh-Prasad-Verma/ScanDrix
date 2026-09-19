@@ -39,6 +39,10 @@ import (
 	platformRepo "github.com/scandrix/backend/internal/platformdata/infrastructure/repositories"
 	"github.com/scandrix/backend/internal/clireview"
 	centinfra "github.com/scandrix/backend/internal/centralizedconfig/infrastructure"
+	"github.com/scandrix/backend/internal/analytics/pricing"
+	analyticsRepo "github.com/scandrix/backend/internal/analytics/repository"
+	"github.com/scandrix/backend/internal/analytics/spendlimit"
+	"github.com/scandrix/backend/internal/analytics/usage"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
 )
@@ -299,8 +303,32 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	}
 	orgModule := organization.NewOrganizationModule(pool, nil, organization.ModuleConfig{})
 
+	// Token Analytics & Pricing Engine
+	pricingCatalog := pricing.NewTokenPricingCatalog()
+	pricingResolver := pricing.NewPricingResolver(pricingCatalog)
+	modelCostCalc := pricing.NewModelCostCalculator(pricingResolver)
+
+	tokenUsageRepo := analyticsRepo.NewTokenUsageRepository(pricingResolver)
+	tokenUsageService := analyticsRepo.NewTokenUsageService(tokenUsageRepo)
+
+	usageSummaryUC := usage.NewBuildUsageSummaryUseCase(tokenUsageService, pricingResolver, nil)
+	costEstimateUC := usage.NewCostEstimateUseCase(tokenUsageService, nil, modelCostCalc)
+	developerUsageUC := usage.NewTokensByDeveloperUseCase(tokenUsageService, nil, nil)
+	monthlySpendUC := usage.NewMonthlySpendUseCase(tokenUsageService, modelCostCalc)
+
+	spendLimitCfgSvc := spendlimit.NewSpendLimitConfigService(nil, monthlySpendUC, pricingResolver)
+	configureSpendLimitUC := spendlimit.NewConfigureSpendLimitUseCase(spendLimitCfgSvc)
+	getSpendLimitConfigUC := spendlimit.NewGetSpendLimitConfigUseCase(spendLimitCfgSvc, nil, nil, pricingResolver)
+
 	workspaceCtrl := controllers.NewWorkspaceController(workspaceRepo)
-	usageCtrl := controllers.NewUsageController(usageRepo)
+	usageCtrl := controllers.NewUsageController(usageRepo).WithAnalyticsServices(
+		tokenUsageService,
+		usageSummaryUC,
+		costEstimateUC,
+		developerUsageUC,
+		pricingCatalog,
+		spendLimitCfgSvc,
+	)
 	teamCtrl := controllers.NewTeamController(teamRepo).WithUseCases(
 		orgModule.CreateTeamUC,
 		orgModule.ListTeamsUC,
@@ -368,7 +396,11 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	}
 	prMessagesCtrl := controllers.NewPullRequestMessagesController(cfg.Repo)
 	cockpitCtrl := controllers.NewCockpitController(cfg.Repo)
-	spendLimitCtrl := controllers.NewSpendLimitController(cfg.Repo)
+	spendLimitCtrl := controllers.NewSpendLimitController(cfg.Repo).WithSpendLimitServices(
+		spendLimitCfgSvc,
+		configureSpendLimitUC,
+		getSpendLimitConfigUC,
+	)
 	systemCtrl := controllers.NewSystemController()
 	skillsCtrl := controllers.NewSkillsController()
 	userLogCtrl := controllers.NewUserLogController(auditRepo)

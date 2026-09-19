@@ -14,7 +14,7 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// Standard RFC 8628 timing constants matching Kodus
+// Standard RFC 8628 timing constants for OAuth 2.0 Device Authorization Grant
 const (
 	DeviceTTLSeconds    = 600 // 10 minutes
 	PollIntervalSeconds = 5   // 5 seconds
@@ -28,6 +28,8 @@ var (
 	ErrSessionConsumed = errors.New("cli auth session already consumed")
 	ErrSessionPending  = errors.New("authorization pending")
 	ErrSessionDenied   = errors.New("authorization denied by user")
+	ErrSlowDown        = errors.New("slow_down")
+	ErrTooManyAttempts = errors.New("too many invalid verification attempts")
 )
 
 // SessionStatus tracks state of RFC 8628 device authorization.
@@ -70,6 +72,13 @@ type DeviceLoginInitiateResult struct {
 	VerificationURIComplete string `json:"verification_uri_complete"`
 	ExpiresIn               int    `json:"expires_in"`
 	Interval                int    `json:"interval"`
+
+	// Standard camelCase serialization fields
+	DeviceCodeCamel              string `json:"deviceCode,omitempty"`
+	UserCodeCamel                string `json:"userCode,omitempty"`
+	VerificationURICamel         string `json:"verificationUri,omitempty"`
+	VerificationURICompleteCamel string `json:"verificationUriComplete,omitempty"`
+	ExpiresInCamel               int    `json:"expiresIn,omitempty"`
 }
 
 // DeviceLoginPollResult is returned when polling the session state.
@@ -78,6 +87,12 @@ type DeviceLoginPollResult struct {
 	AccessToken  string        `json:"access_token,omitempty"`
 	RefreshToken string        `json:"refresh_token,omitempty"`
 	UserEmail    string        `json:"user_email,omitempty"`
+	Interval     int           `json:"interval,omitempty"`
+
+	// Standard camelCase serialization fields
+	AccessTokenCamel  string `json:"accessToken,omitempty"`
+	RefreshTokenCamel string `json:"refreshToken,omitempty"`
+	UserEmailCamel    string `json:"userEmail,omitempty"`
 }
 
 // SessionStore defines the storage contract for CLI auth sessions.
@@ -124,9 +139,10 @@ func (s *InMemorySessionStore) GetByDeviceCode(ctx context.Context, deviceCode s
 func (s *InMemorySessionStore) GetByUserCode(ctx context.Context, userCode string) (*CLIDeviceSession, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cleanCode := strings.ToUpper(strings.TrimSpace(userCode))
+	normalized := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(userCode), "-", ""))
 	for _, sess := range s.sessions {
-		if sess.UserCode == cleanCode {
+		sessNormalized := strings.ToUpper(strings.ReplaceAll(sess.UserCode, "-", ""))
+		if sessNormalized == normalized {
 			cpy := *sess
 			return &cpy, nil
 		}
@@ -173,19 +189,44 @@ func (s *InMemorySessionStore) MarkConsumed(ctx context.Context, sessionID uuid.
 
 // DeviceFlowManager manages the RFC 8628 device authorization grant.
 type DeviceFlowManager struct {
-	store      SessionStore
-	appBaseURL string
+	store               SessionStore
+	appBaseURL          string
+	mu                  sync.RWMutex
+	lastPollTime        map[string]time.Time
+	pollIntervals       map[string]int
+	failedAttempts      map[string]int
+	failedByUser        map[string]int
+	failedByClient      map[string]int
+	consecutiveFailures int
+	lastFailureTime     time.Time
+}
+
+type contextKey string
+
+const ContextKeyClientIP contextKey = "device_flow_client_ip"
+
+// WithClientIP binds a client IP address into the context for device code brute-force protection.
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, ContextKeyClientIP, ip)
 }
 
 // NewDeviceFlowManager initializes the RFC 8628 manager.
 func NewDeviceFlowManager(store SessionStore, appBaseURL string) *DeviceFlowManager {
+	if store == nil {
+		store = NewInMemorySessionStore()
+	}
 	if appBaseURL == "" {
 		appBaseURL = "http://localhost:3000"
 	}
 	appBaseURL = strings.TrimSuffix(appBaseURL, "/")
 	return &DeviceFlowManager{
-		store:      store,
-		appBaseURL: appBaseURL,
+		store:          store,
+		appBaseURL:     appBaseURL,
+		lastPollTime:   make(map[string]time.Time),
+		pollIntervals:  make(map[string]int),
+		failedAttempts: make(map[string]int),
+		failedByUser:   make(map[string]int),
+		failedByClient: make(map[string]int),
 	}
 }
 
@@ -205,7 +246,9 @@ func (m *DeviceFlowManager) InitiateDeviceLogin(ctx context.Context, userAgent s
 	}
 
 	stateBytes := make([]byte, 32)
-	_, _ = rand.Read(stateBytes)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return nil, fmt.Errorf("failed generating state entropy: %w", err)
+	}
 	state := hex.EncodeToString(stateBytes)
 
 	now := time.Now().UTC()
@@ -228,20 +271,33 @@ func (m *DeviceFlowManager) InitiateDeviceLogin(ctx context.Context, userAgent s
 		return nil, fmt.Errorf("failed creating session: %w", err)
 	}
 
+	m.mu.Lock()
+	if m.pollIntervals == nil {
+		m.pollIntervals = make(map[string]int)
+	}
+	m.pollIntervals[deviceCode] = PollIntervalSeconds
+	m.mu.Unlock()
+
 	verificationURI := fmt.Sprintf("%s/cli/authorize", m.appBaseURL)
 	verificationURIComplete := fmt.Sprintf("%s?code=%s", verificationURI, userCode)
 
 	return &DeviceLoginInitiateResult{
-		DeviceCode:              deviceCode,
-		UserCode:                userCode,
-		VerificationURI:         verificationURI,
-		VerificationURIComplete: verificationURIComplete,
-		ExpiresIn:               DeviceTTLSeconds,
-		Interval:                PollIntervalSeconds,
+		DeviceCode:                   deviceCode,
+		UserCode:                     userCode,
+		VerificationURI:              verificationURI,
+		VerificationURIComplete:      verificationURIComplete,
+		ExpiresIn:                    DeviceTTLSeconds,
+		Interval:                     PollIntervalSeconds,
+		DeviceCodeCamel:              deviceCode,
+		UserCodeCamel:                userCode,
+		VerificationURICamel:         verificationURI,
+		VerificationURICompleteCamel: verificationURIComplete,
+		ExpiresInCamel:               DeviceTTLSeconds,
 	}, nil
 }
 
 // PollDeviceLogin checks session state and delivers tokens once upon completion.
+// Enforces RFC 8628 §3.5 polling rate limiting with slow_down response and interval backoff.
 func (m *DeviceFlowManager) PollDeviceLogin(ctx context.Context, deviceCode string) (*DeviceLoginPollResult, error) {
 	if deviceCode == "" {
 		return &DeviceLoginPollResult{Status: StatusExpired}, ErrSessionNotFound
@@ -257,29 +313,122 @@ func (m *DeviceFlowManager) PollDeviceLogin(ctx context.Context, deviceCode stri
 		return &DeviceLoginPollResult{Status: StatusExpired}, nil
 	}
 
+	m.mu.Lock()
+	if m.pollIntervals == nil {
+		m.pollIntervals = make(map[string]int)
+	}
+	if m.lastPollTime == nil {
+		m.lastPollTime = make(map[string]time.Time)
+	}
+
+	reqInterval := m.pollIntervals[deviceCode]
+	if reqInterval <= 0 {
+		reqInterval = PollIntervalSeconds
+		m.pollIntervals[deviceCode] = reqInterval
+	}
+
+	// RFC 8628 §3.5: slow_down is returned when authorization is pending and client polls too fast
+	if sess.Status == StatusPending {
+		if last, exists := m.lastPollTime[deviceCode]; exists {
+			elapsed := time.Since(last)
+			if elapsed < time.Duration(reqInterval)*time.Second {
+				// Polling too fast: increment interval by 5 seconds
+				m.pollIntervals[deviceCode] += 5
+				newInterval := m.pollIntervals[deviceCode]
+				m.mu.Unlock()
+				return &DeviceLoginPollResult{
+					Status:   "slow_down",
+					Interval: newInterval,
+				}, ErrSlowDown
+			}
+		}
+		m.lastPollTime[deviceCode] = time.Now()
+	}
+	m.mu.Unlock()
+
 	if sess.Status != StatusCompleted {
-		return &DeviceLoginPollResult{Status: sess.Status}, nil
+		return &DeviceLoginPollResult{Status: sess.Status, Interval: reqInterval}, nil
 	}
 
 	// One-time consumption: mark consumed and clear re-fetchability
 	_ = m.store.MarkConsumed(ctx, sess.UUID)
 
 	return &DeviceLoginPollResult{
-		Status:       StatusCompleted,
-		AccessToken:  sess.AccessToken,
-		RefreshToken: sess.RefreshToken,
-		UserEmail:    sess.UserEmail,
+		Status:            StatusCompleted,
+		AccessToken:       sess.AccessToken,
+		RefreshToken:      sess.RefreshToken,
+		UserEmail:         sess.UserEmail,
+		Interval:          reqInterval,
+		AccessTokenCamel:  sess.AccessToken,
+		RefreshTokenCamel: sess.RefreshToken,
+		UserEmailCamel:    sess.UserEmail,
 	}, nil
 }
 
 // CompleteDeviceLogin is called by the browser when an authenticated user approves the user code.
+// Enforces rate-limiting on user code verification attempts to prevent brute-forcing.
 func (m *DeviceFlowManager) CompleteDeviceLogin(ctx context.Context, userCode string, accessToken, refreshToken string, user *models.AccountProfile) error {
 	if user == nil {
 		return errors.New("user profile required to complete device login")
 	}
 
-	sess, err := m.store.GetByUserCode(ctx, userCode)
+	cleanCode := strings.ToUpper(strings.TrimSpace(userCode))
+
+	clientKey := ""
+	if v := ctx.Value(ContextKeyClientIP); v != nil {
+		if s, ok := v.(string); ok {
+			clientKey = strings.TrimSpace(s)
+		}
+	}
+
+	m.mu.Lock()
+	if m.failedAttempts == nil {
+		m.failedAttempts = make(map[string]int)
+	}
+	if m.failedByUser == nil {
+		m.failedByUser = make(map[string]int)
+	}
+	if m.failedByClient == nil {
+		m.failedByClient = make(map[string]int)
+	}
+	// 1. Code-specific lockout (prevents targeting a specific known code)
+	if m.failedAttempts[cleanCode] >= 5 {
+		m.mu.Unlock()
+		return ErrTooManyAttempts
+	}
+	// 2. User-specific lockout (prevents authenticated account scanning)
+	if user.Email != "" && m.failedByUser[user.Email] >= 5 {
+		m.mu.Unlock()
+		return ErrTooManyAttempts
+	}
+	// 3. Client IP lockout (prevents single origin from sweeping across codes)
+	if clientKey != "" && m.failedByClient[clientKey] >= 5 {
+		m.mu.Unlock()
+		return ErrTooManyAttempts
+	}
+	// 4. Global burst lockout (prevents distributed dictionary attacks across codes)
+	if time.Since(m.lastFailureTime) < time.Minute && m.consecutiveFailures >= 10 {
+		m.mu.Unlock()
+		return ErrTooManyAttempts
+	}
+	m.mu.Unlock()
+
+	sess, err := m.store.GetByUserCode(ctx, cleanCode)
 	if err != nil {
+		m.mu.Lock()
+		m.failedAttempts[cleanCode]++
+		if user.Email != "" {
+			m.failedByUser[user.Email]++
+		}
+		if clientKey != "" {
+			m.failedByClient[clientKey]++
+		}
+		if time.Since(m.lastFailureTime) >= time.Minute {
+			m.consecutiveFailures = 0
+		}
+		m.consecutiveFailures++
+		m.lastFailureTime = time.Now()
+		m.mu.Unlock()
 		return ErrSessionNotFound
 	}
 
@@ -291,7 +440,36 @@ func (m *DeviceFlowManager) CompleteDeviceLogin(ctx context.Context, userCode st
 		return ErrSessionExpired
 	}
 
-	return m.store.CompleteSession(ctx, userCode, accessToken, refreshToken, user.ID, user.Email)
+	m.mu.Lock()
+	delete(m.failedAttempts, cleanCode)
+	if user.Email != "" {
+		delete(m.failedByUser, user.Email)
+	}
+	if clientKey != "" {
+		delete(m.failedByClient, clientKey)
+	}
+	m.consecutiveFailures = 0
+	m.mu.Unlock()
+
+	return m.store.CompleteSession(ctx, cleanCode, accessToken, refreshToken, user.ID, user.Email)
+}
+
+// GetSessionByUserCode retrieves a copy of the pending device session without modifying its state.
+func (m *DeviceFlowManager) GetSessionByUserCode(ctx context.Context, userCode string) (*CLIDeviceSession, error) {
+	cleanCode := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(userCode), "-", ""))
+	if cleanCode == "" {
+		return nil, ErrSessionNotFound
+	}
+	return m.store.GetByUserCode(ctx, cleanCode)
+}
+
+// GetSessionByDeviceCode retrieves a copy of the device session by device code.
+func (m *DeviceFlowManager) GetSessionByDeviceCode(ctx context.Context, deviceCode string) (*CLIDeviceSession, error) {
+	trimmed := strings.TrimSpace(deviceCode)
+	if trimmed == "" {
+		return nil, ErrSessionNotFound
+	}
+	return m.store.GetByDeviceCode(ctx, trimmed)
 }
 
 // GenerateUnbiasedUserCode generates an 8-character code formatted as XXXX-XXXX

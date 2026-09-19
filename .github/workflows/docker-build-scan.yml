@@ -1,0 +1,51 @@
+name: "ScanDrix Containers: Build Test & Trivy Vulnerability Scan"
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - 'docker/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'internal/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-scan:
+    name: "Build Container & Scan with Trivy"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Local Image for Vulnerability Scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: scandrix/backend:scan-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Image with Aqua Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: scandrix/backend:scan-test
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'

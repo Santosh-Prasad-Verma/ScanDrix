@@ -1,0 +1,29 @@
+# ═══════════════════════════════════════════════════════════════
+# ScanDrix AI - Enterprise Multi-Server Cluster Load Balancer
+# Copyright (c) 2026 ScanDrix AI. All rights reserved.
+# ═══════════════════════════════════════════════════════════════
+
+:8080 {
+    # Health check endpoint for the load balancer itself
+    handle /lb-health {
+        respond "ScanDrix Load Balancer Healthy" 200
+    }
+
+    # High-Availability Reverse Proxy load balancing across Server 1 & Server 2
+    reverse_proxy scandrix-api-1:8080 scandrix-api-2:8080 {
+        lb_policy round_robin
+        lb_try_duration 3s
+        lb_try_interval 250ms
+
+        # Active Health Checking (removes unhealthy nodes automatically)
+        health_uri /health
+        health_interval 5s
+        health_timeout 2s
+        health_status 200
+
+        # Header forwarding
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}

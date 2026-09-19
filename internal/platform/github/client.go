@@ -35,6 +35,9 @@ type Adapter struct {
 	httpClient *http.Client
 }
 
+// Client is an alias for Adapter for backwards and service compatibility.
+type Client = Adapter
+
 // NewAdapter creates an authenticated GitHub API client.
 func NewAdapter(baseURL, token string) *Adapter {
 	return &Adapter{
@@ -367,22 +370,22 @@ func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform
 	case "pull_request":
 		event.Type = platform.WebhookEventPullRequest
 		var prEvent struct {
-			Action      string `json:"action"`
-			Repository  struct {
-				FullName string `json:"full_name"`
+			Action     string `json:"action"`
+			Repository struct {
+				FullName      string `json:"full_name"`
 				DefaultBranch string `json:"default_branch"`
 			} `json:"repository"`
 			Sender struct {
 				Login string `json:"login"`
 			} `json:"sender"`
 			PullRequest struct {
-				Number    int       `json:"number"`
-				Title     string    `json:"title"`
+				Number    int                       `json:"number"`
+				Title     string                    `json:"title"`
 				Head      struct{ SHA, Ref string } `json:"head"`
 				Base      struct{ SHA, Ref string } `json:"base"`
-				Draft     bool      `json:"draft"`
-				CreatedAt time.Time `json:"created_at"`
-				User      struct{ Login string } `json:"user"`
+				Draft     bool                      `json:"draft"`
+				CreatedAt time.Time                 `json:"created_at"`
+				User      struct{ Login string }    `json:"user"`
 			} `json:"pull_request"`
 		}
 		if err := json.Unmarshal(payload, &prEvent); err != nil {
@@ -428,8 +431,8 @@ func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform
 				FullName string `json:"full_name"`
 			} `json:"repository"`
 			Comment struct {
-				ID   int64  `json:"id"`
-				Body string `json:"body"`
+				ID   int64                  `json:"id"`
+				Body string                 `json:"body"`
 				User struct{ Login string } `json:"user"`
 			} `json:"comment"`
 			Issue struct {
@@ -457,5 +460,16 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("Content-Type", "application/json")
+}
+
+// NewClient creates a new GitHub client (alias of NewAdapter).
+func NewClient(baseURL, token string) *Client {
+	return NewAdapter(baseURL, token)
+}
+
+// Do performs an authenticated HTTP request with GitHub headers.
+func (a *Adapter) Do(req *http.Request) (*http.Response, error) {
+	a.setHeaders(req)
+	return a.httpClient.Do(req)
 }
 

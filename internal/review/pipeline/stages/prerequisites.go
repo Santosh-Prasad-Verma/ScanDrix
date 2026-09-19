@@ -22,7 +22,7 @@ func (s *PrerequisitesStage) Name() string {
 func (s *PrerequisitesStage) Execute(ctx context.Context, pCtx *pipeline.PipelineContext) error {
 	// 1. Check for manual bypass tags in PR title
 	lowerTitle := strings.ToLower(pCtx.Title)
-	if strings.Contains(lowerTitle, "[scandrix-skip]") || strings.Contains(lowerTitle, "[skip-review]") || strings.Contains(lowerTitle, "[skip-ci]") {
+	if strings.Contains(lowerTitle, "[drixy-skip]") || strings.Contains(lowerTitle, "[scandrix-skip]") || strings.Contains(lowerTitle, "[skip-review]") || strings.Contains(lowerTitle, "[skip-ci]") {
 		return errors.New("review skipped by PR title bypass flag")
 	}
 
@@ -42,7 +42,7 @@ func (s *PrerequisitesStage) Execute(ctx context.Context, pCtx *pipeline.Pipelin
 
 	// 4. Circular Review Protection for Config & Governance Repositories
 	repoLower := strings.ToLower(pCtx.RepoNamespace)
-	if strings.HasSuffix(repoLower, "/.github") || strings.HasSuffix(repoLower, "/scandrix-rules") || strings.HasSuffix(repoLower, "/centralized-config") {
+	if strings.HasSuffix(repoLower, "/.github") || strings.HasSuffix(repoLower, "/drixy-rules") || strings.HasSuffix(repoLower, "/scandrix-rules") || strings.HasSuffix(repoLower, "/centralized-config") {
 		return errors.New("review skipped: governance and rules definition repository")
 	}
 

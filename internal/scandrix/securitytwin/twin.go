@@ -45,13 +45,13 @@ type RuntimeMitigation struct {
 
 // ContinuumNode tracks an entity at a hop in the digital twin.
 type ContinuumNode struct {
-	ID         string       `json:"id"`
-	Hop        ContinuumHop `json:"hop"`
-	Name       string       `json:"name"`
-	ParentID   string       `json:"parent_id,omitempty"`
-	AssetTier  string       `json:"asset_tier,omitempty"`
-	IsPublic   bool         `json:"is_public"`
-	IsReachable bool        `json:"is_reachable"`
+	ID          string       `json:"id"`
+	Hop         ContinuumHop `json:"hop"`
+	Name        string       `json:"name"`
+	ParentID    string       `json:"parent_id,omitempty"`
+	AssetTier   string       `json:"asset_tier,omitempty"`
+	IsPublic    bool         `json:"is_public"`
+	IsReachable bool         `json:"is_reachable"`
 }
 
 // SecurityTwin manages the 7-hop continuum graph and live risk attenuation.

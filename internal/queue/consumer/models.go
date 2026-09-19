@@ -9,6 +9,7 @@ import (
 
 // ReviewTaskPayload represents the structured task distributed via queue for review execution.
 type ReviewTaskPayload struct {
+	ID                uuid.UUID          `json:"id,omitempty"`
 	TaskID            uuid.UUID          `json:"task_id"`
 	EventID           uuid.UUID          `json:"event_id"`
 	WorkspaceID       uuid.UUID          `json:"workspace_id"`
@@ -24,12 +25,12 @@ type ReviewTaskPayload struct {
 
 // ConsumerConfig specifies queue connection and concurrency limits.
 type ConsumerConfig struct {
-	QueueName        string        `json:"queue_name"`
-	DeadLetterQueue  string        `json:"dead_letter_queue"`
-	MaxRetries       int           `json:"max_retries"`       // Default 5
-	Concurrency      int           `json:"concurrency"`       // Number of parallel workers
-	PollInterval     time.Duration `json:"poll_interval"`
-	ClaimTTL         time.Duration `json:"claim_ttl"`
+	QueueName       string        `json:"queue_name"`
+	DeadLetterQueue string        `json:"dead_letter_queue"`
+	MaxRetries      int           `json:"max_retries"` // Default 5
+	Concurrency     int           `json:"concurrency"` // Number of parallel workers
+	PollInterval    time.Duration `json:"poll_interval"`
+	ClaimTTL        time.Duration `json:"claim_ttl"`
 }
 
 // TaskStatus classifies task execution outcome.
@@ -57,4 +58,3 @@ type WorkerJob struct {
 	Task       ReviewTaskPayload
 	OnComplete func(res TaskExecutionResult)
 }
-

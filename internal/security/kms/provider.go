@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -155,8 +156,21 @@ func (k *LocalMemoryKMS) Decrypt(ctx context.Context, keyID string, version int,
 	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
 	if err != nil {
+		slog.WarnContext(ctx, "KMS master key decryption failed",
+			"event_type", "kms.decrypt_failed",
+			"key_id", keyID,
+			"key_version", version,
+			"error", err,
+		)
 		return nil, fmt.Errorf("kms master key decryption failed: %w", err)
 	}
+
+	slog.InfoContext(ctx, "KMS master key decrypt operation completed",
+		"event_type", "kms.decrypt",
+		"key_id", keyID,
+		"key_version", version,
+		"ciphertext_bytes", len(ciphertext),
+	)
 
 	return plaintext, nil
 }
@@ -177,4 +191,74 @@ func (k *LocalMemoryKMS) GetActiveVersion(ctx context.Context, keyID string) (in
 		}
 	}
 	return 0, fmt.Errorf("no active version for master key '%s'", keyID)
+}
+
+// StaticKeyKMS provides a deterministic KMS MasterKeyProvider backed by a persistent master key.
+type StaticKeyKMS struct {
+	mu        sync.RWMutex
+	rawSecret []byte
+	keyID     string
+}
+
+// NewStaticKeyKMS creates a MasterKeyProvider using a fixed master key (256-bit AES).
+func NewStaticKeyKMS(rawKey []byte, defaultKeyID string) (*StaticKeyKMS, error) {
+	if len(rawKey) != 32 {
+		return nil, fmt.Errorf("static KMS key must be exactly 32 bytes (256-bit AES), got %d", len(rawKey))
+	}
+	if defaultKeyID == "" {
+		defaultKeyID = "scandrix-master-key"
+	}
+	keyCopy := make([]byte, 32)
+	copy(keyCopy, rawKey)
+	return &StaticKeyKMS{
+		rawSecret: keyCopy,
+		keyID:     defaultKeyID,
+	}, nil
+}
+
+func (s *StaticKeyKMS) Encrypt(ctx context.Context, keyID string, plaintext []byte) ([]byte, int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	block, err := aes.NewCipher(s.rawSecret)
+	if err != nil {
+		return nil, 0, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, 0, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, 0, err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	return ciphertext, 1, nil
+}
+
+func (s *StaticKeyKMS) Decrypt(ctx context.Context, keyID string, version int, ciphertext []byte) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	block, err := aes.NewCipher(s.rawSecret)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(ciphertext) < gcm.NonceSize() {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	nonce, actualCiphertext := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, actualCiphertext, nil)
+}
+
+func (s *StaticKeyKMS) Rotate(ctx context.Context, keyID string) (int, error) {
+	return 1, nil
+}
+
+func (s *StaticKeyKMS) GetActiveVersion(ctx context.Context, keyID string) (int, error) {
+	return 1, nil
 }

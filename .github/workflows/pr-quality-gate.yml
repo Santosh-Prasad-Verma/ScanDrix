@@ -1,0 +1,70 @@
+name: "ScanDrix Quality: PR Gate"
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-gate:
+    name: "Go Engine: Verify, Test & Build"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Module Integrity & Cleanliness
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Run Test Suite with Race Detector & Coverage
+        run: |
+          gotestsum --format pkgname -- -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Compile All 10 ScanDrix Binaries
+        run: |
+          make build
+
+  frontend-gate:
+    name: "Next.js Web App: Typecheck & Build"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scandrix-website
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: scandrix-website/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: scandrix-website
+        run: npm ci
+
+      - name: Verify Next.js Production Build
+        working-directory: scandrix-website
+        env:
+          NEXT_PUBLIC_APP_URL: "https://scandrix.dev"
+          NEXT_PUBLIC_SCANDRIX_API_URL: "https://api.scandrix.dev"
+        run: npm run build

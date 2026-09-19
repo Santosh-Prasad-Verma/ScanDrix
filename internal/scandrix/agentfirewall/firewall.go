@@ -72,11 +72,10 @@ type EvaluationResult struct {
 
 var promptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions`),
-	regexp.MustCompile(`(?i)system\s+override`),
-	regexp.MustCompile(`(?i)disregard\s+security\s+guidelines`),
+	regexp.MustCompile(`(?i)disregard\s+(all\s+)?(prior|previous|security)\s+(instructions|guidelines|rules)`),
+	regexp.MustCompile(`(?i)you\s+are\s+now\s+(in\s+)?(dan|jailbreak|unfiltered)\s+mode`),
+	regexp.MustCompile(`(?i)system\s+prompt\s+override`),
 	regexp.MustCompile(`(?i)dump\s+(all\s+)?passwords`),
-	regexp.MustCompile(`(?i)print\s+(all\s+)?env(ironment)?`),
-	regexp.MustCompile(`(?i)curl\s+.*\|\s*(bash|sh)`),
 }
 
 // Firewall manages tool execution policy, prompt injection defense, and HITL tickets.

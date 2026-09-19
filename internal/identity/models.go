@@ -4,33 +4,58 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/identity/domain"
 )
 
-// UserRole defines hierarchical organizational privileges.
+// UserRole defines organizational privileges.
 type UserRole string
 
 const (
+	RoleOwner          UserRole = UserRole(domain.RoleOwner)
+	RoleBillingManager UserRole = UserRole(domain.RoleBillingManager)
+	RoleRepoAdmin      UserRole = UserRole(domain.RoleRepoAdmin)
+	RoleContributor    UserRole = UserRole(domain.RoleContributor)
+
+	// Legacy ScanDrix roles
 	RoleAdmin      UserRole = "admin"
 	RoleMaintainer UserRole = "maintainer"
 	RoleReviewer   UserRole = "reviewer"
 	RoleViewer     UserRole = "viewer"
 )
 
-// ResourceAction defines actionable operations on platform entities.
+// ResourceAction defines operations on resources.
 type ResourceAction string
 
 const (
-	ActionRead    ResourceAction = "read"
-	ActionCreate  ResourceAction = "create"
-	ActionUpdate  ResourceAction = "update"
-	ActionDelete  ResourceAction = "delete"
+	ActionManage  ResourceAction = ResourceAction(domain.ActionManage)
+	ActionCreate  ResourceAction = ResourceAction(domain.ActionCreate)
+	ActionRead    ResourceAction = ResourceAction(domain.ActionRead)
+	ActionUpdate  ResourceAction = ResourceAction(domain.ActionUpdate)
+	ActionDelete  ResourceAction = ResourceAction(domain.ActionDelete)
 	ActionTrigger ResourceAction = "trigger"
 )
 
-// ResourceType categorizes platform assets protected by RBAC.
+// ResourceType categorizes platform assets protected by authorization policies.
 type ResourceType string
 
 const (
+	ResourceAll                ResourceType = ResourceType(domain.ResourceAll)
+	ResourcePullRequests       ResourceType = ResourceType(domain.ResourcePullRequests)
+	ResourceIssues             ResourceType = ResourceType(domain.ResourceIssues)
+	ResourceCockpit            ResourceType = ResourceType(domain.ResourceCockpit)
+	ResourceBilling            ResourceType = ResourceType(domain.ResourceBilling)
+	ResourceCodeReviewSettings ResourceType = ResourceType(domain.ResourceCodeReviewSettings)
+	ResourceIssuesSettings     ResourceType = ResourceType(domain.ResourceIssuesSettings)
+	ResourceGitSettings        ResourceType = ResourceType(domain.ResourceGitSettings)
+	ResourceUserSettings       ResourceType = ResourceType(domain.ResourceUserSettings)
+	ResourceOrgSettings        ResourceType = ResourceType(domain.ResourceOrgSettings)
+	ResourcePluginSettings     ResourceType = ResourceType(domain.ResourcePluginSettings)
+	ResourceLogs               ResourceType = ResourceType(domain.ResourceLogs)
+	ResourceDrixyRules         ResourceType = ResourceType(domain.ResourceDrixyRules)
+	ResourceTokenUsage         ResourceType = ResourceType(domain.ResourceTokenUsage)
+	ResourceCliReview          ResourceType = ResourceType(domain.ResourceCliReview)
+
+	// Legacy aliases
 	ResourceWorkspace ResourceType = "workspace"
 	ResourceRepo      ResourceType = "repository"
 	ResourceReview    ResourceType = "code_review"
@@ -38,7 +63,7 @@ const (
 	ResourceRule      ResourceType = "security_rule"
 )
 
-// UserProfile represents an authenticated user's account details.
+// UserProfile represents account details and environment preferences.
 type UserProfile struct {
 	ID          uuid.UUID         `json:"id"`
 	WorkspaceID uuid.UUID         `json:"workspace_id"`

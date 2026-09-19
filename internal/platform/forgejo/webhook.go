@@ -39,12 +39,12 @@ func parseForgejoWebhook(eventType string, payload []byte) (*platform.WebhookEve
 				Username string `json:"username"`
 			} `json:"sender"`
 			PullRequest struct {
-				Index     int       `json:"number"`
-				Title     string    `json:"title"`
+				Index     int                       `json:"number"`
+				Title     string                    `json:"title"`
 				Head      struct{ SHA, Ref string } `json:"head"`
 				Base      struct{ SHA, Ref string } `json:"base"`
-				Draft     bool      `json:"draft"`
-				CreatedAt time.Time `json:"created_at"`
+				Draft     bool                      `json:"draft"`
+				CreatedAt time.Time                 `json:"created_at"`
 				User      struct{ Username string } `json:"user"`
 			} `json:"pull_request"`
 		}
@@ -95,8 +95,8 @@ func parseForgejoWebhook(eventType string, payload []byte) (*platform.WebhookEve
 				FullName string `json:"full_name"`
 			} `json:"repository"`
 			Comment struct {
-				ID   int64  `json:"id"`
-				Body string `json:"body"`
+				ID   int64                     `json:"id"`
+				Body string                    `json:"body"`
 				User struct{ Username string } `json:"user"`
 			} `json:"comment"`
 			PullRequest struct {

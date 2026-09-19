@@ -1,0 +1,29 @@
+# ScanDrix Custom Repository Rules
+# Edit this file to enforce team and organization security & quality policies.
+# Syntax reference: https://docs.scandrix.dev/rules
+
+version: "1.0"
+rules:
+  - id: custom-no-hardcoded-dev-secrets
+    title: Prohibit Hardcoded Development Keys & Secrets
+    severity: CRITICAL
+    category: SECURITY
+    description: Flags exposed API keys, private tokens, or connection credentials.
+    pattern: "(?i)(api[_-]?key|secret[_-]?key|private[_-]?key)\\s*[:=]\\s*['\"][A-Za-z0-9_\\-]{16,}['\"]"
+    remediation: Store credentials in environment variables and read at runtime via os.Getenv() or process.env.
+
+  - id: custom-prohibit-raw-sql-concat
+    title: Prohibit Raw SQL String Concatenation
+    severity: HIGH
+    category: SECURITY
+    description: Detects potential SQL injection via string concatenation or Sprintf.
+    pattern: "(?i)(SELECT|INSERT|UPDATE|DELETE)\\s+.*\\+\\s*\\w+|fmt\\.Sprintf\\(.*(SELECT|INSERT|UPDATE|DELETE)\\)"
+    remediation: Use parameterized queries with bind variables ($1, $2) or an ORM.
+
+  - id: custom-no-console-log-in-prod
+    title: Disallow console.log in Production Code
+    severity: LOW
+    category: QUALITY
+    description: Prevents noisy or sensitive console logs from leaking into production.
+    pattern: "console\\.log\\("
+    remediation: Use a structured logger with log levels instead of raw console.log.

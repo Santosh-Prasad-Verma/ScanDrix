@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -130,4 +131,30 @@ func (e *KMSEnvelopeEngine) ReEncrypt(ctx context.Context, env *EncryptedEnvelop
 	}
 
 	return upgraded, true, nil
+}
+
+// EncryptString serializes a 2-tier encrypted envelope into a JSON string.
+func (e *KMSEnvelopeEngine) EncryptString(ctx context.Context, keyID, plaintext string) (string, error) {
+	env, err := e.Encrypt(ctx, keyID, []byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+	bytes, err := json.Marshal(env)
+	if err != nil {
+		return "", fmt.Errorf("failed marshaling envelope to json: %w", err)
+	}
+	return string(bytes), nil
+}
+
+// DecryptString deserializes and opens an envelope from a JSON string.
+func (e *KMSEnvelopeEngine) DecryptString(ctx context.Context, envelopeJSON string) (string, error) {
+	var env EncryptedEnvelope
+	if err := json.Unmarshal([]byte(envelopeJSON), &env); err != nil {
+		return "", fmt.Errorf("invalid envelope JSON format: %w", err)
+	}
+	decryptedBytes, err := e.Decrypt(ctx, &env)
+	if err != nil {
+		return "", err
+	}
+	return string(decryptedBytes), nil
 }

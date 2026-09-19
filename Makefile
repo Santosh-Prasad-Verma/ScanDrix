@@ -1,11 +1,10 @@
-# ==============================================================================
-# ScanDrix Enterprise Engineering Makefile
-# ==============================================================================
-
-.PHONY: all build test test-race bench clean docker-up docker-down fmt lint run-api run-worker run-webhooks
+.PHONY: all build test test-race bench clean docker-up docker-down fmt lint run-api run-worker run-webhooks env-check
 
 BIN_DIR := ./bin
-APPS := api server webhooks worker cli mcp-manager ast-cli analytics-cli try migrate
+APPS := api server webhooks worker cli mcp-manager ast-cli analytics-cli try migrate envcheck
+
+env-check:
+	@go run ./cmd/envcheck
 
 all: build test
 
@@ -23,6 +22,11 @@ build:
 	go build -o $(BIN_DIR)/scandrix-try ./cmd/try
 	go build -o $(BIN_DIR)/scandrix-migrate ./cmd/migrate
 	@echo "All 10 binaries compiled successfully into $(BIN_DIR)/"
+
+install: build
+	@mkdir -p $(HOME)/.local/bin
+	@install -m 755 $(BIN_DIR)/scandrix-cli $(HOME)/.local/bin/scandrix
+	@echo "Installed scandrix binary to $(HOME)/.local/bin/scandrix"
 
 test:
 	@echo "Running unit and integration tests..."

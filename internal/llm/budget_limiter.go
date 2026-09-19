@@ -97,7 +97,16 @@ func (l *TokenBudgetLimiter) ConsumeTokensWithBYOK(workspaceID uuid.UUID, reques
 
 	budget, exists := l.budgets[workspaceID]
 	if !exists {
-		return nil // No quota restriction configured (unlimited)
+		// Apply baseline Community tier quota (500,000 monthly tokens, 50,000 burst tokens/min)
+		now := time.Now().UTC()
+		budget = &WorkspaceTokenBudget{
+			WorkspaceID:       workspaceID,
+			MonthlyTokenLimit: 500000,
+			BurstLimitPerMin:  50000,
+			LastMinuteWindow:  now,
+			LastMonthWindow:   now,
+		}
+		l.budgets[workspaceID] = budget
 	}
 
 	now := time.Now().UTC()

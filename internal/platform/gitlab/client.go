@@ -68,13 +68,13 @@ func (a *Adapter) FetchPullRequest(ctx context.Context, repo string, pullNumber 
 	}
 
 	var data struct {
-		IID          int       `json:"iid"`
-		Title        string    `json:"title"`
-		Author       struct {
+		IID    int    `json:"iid"`
+		Title  string `json:"title"`
+		Author struct {
 			Username string `json:"username"`
 		} `json:"author"`
-		SHA          string    `json:"sha"`
-		DiffRefs     struct {
+		SHA      string `json:"sha"`
+		DiffRefs struct {
 			BaseSHA string `json:"base_sha"`
 			HeadSHA string `json:"head_sha"`
 		} `json:"diff_refs"`
@@ -351,14 +351,14 @@ func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform
 				DefaultBranch     string `json:"default_branch"`
 			} `json:"project"`
 			ObjectAttributes struct {
-				IID          int       `json:"iid"`
-				Title        string    `json:"title"`
-				Action       string    `json:"action"`
-				LastCommit   struct{ ID string } `json:"last_commit"`
-				SourceBranch string    `json:"source_branch"`
-				TargetBranch string    `json:"target_branch"`
-				WorkInProgress bool    `json:"work_in_progress"`
-				CreatedAt    time.Time `json:"created_at"`
+				IID            int                 `json:"iid"`
+				Title          string              `json:"title"`
+				Action         string              `json:"action"`
+				LastCommit     struct{ ID string } `json:"last_commit"`
+				SourceBranch   string              `json:"source_branch"`
+				TargetBranch   string              `json:"target_branch"`
+				WorkInProgress bool                `json:"work_in_progress"`
+				CreatedAt      time.Time           `json:"created_at"`
 			} `json:"object_attributes"`
 		}
 		if err := json.Unmarshal(payload, &mrEvent); err != nil {
@@ -381,9 +381,9 @@ func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform
 	case "Push Hook", "push":
 		event.Type = platform.WebhookEventPush
 		var pushEvent struct {
-			After     string `json:"after"`
-			UserName  string `json:"user_username"`
-			Project   struct {
+			After    string `json:"after"`
+			UserName string `json:"user_username"`
+			Project  struct {
 				PathWithNamespace string `json:"path_with_namespace"`
 				DefaultBranch     string `json:"default_branch"`
 			} `json:"project"`
@@ -426,5 +426,19 @@ func (a *Adapter) ParseWebhookEvent(eventType string, payload []byte) (*platform
 func (a *Adapter) setHeaders(req *http.Request) {
 	req.Header.Set("PRIVATE-TOKEN", a.token)
 	req.Header.Set("Content-Type", "application/json")
+}
+
+// Client is an alias for Adapter for backwards and service compatibility.
+type Client = Adapter
+
+// NewClient creates a new GitLab client (alias of NewAdapter).
+func NewClient(baseURL, token string) *Client {
+	return NewAdapter(baseURL, token)
+}
+
+// Do performs an authenticated HTTP request with GitLab headers.
+func (a *Adapter) Do(req *http.Request) (*http.Response, error) {
+	a.setHeaders(req)
+	return a.httpClient.Do(req)
 }
 

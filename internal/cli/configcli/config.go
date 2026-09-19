@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package configcli
 
@@ -25,6 +25,12 @@ type CLIConfig struct {
 	AccessToken      string `json:"access_token,omitempty"`
 	RefreshToken     string `json:"refresh_token,omitempty"`
 	APIKey           string `json:"api_key,omitempty"`
+	TeamKey          string `json:"team_key,omitempty"`
+	TeamKeyCamel     string `json:"teamKey,omitempty"`
+	TeamName         string `json:"team_name,omitempty"`
+	TeamNameCamel    string `json:"teamName,omitempty"`
+	OrganizationName string `json:"organization_name,omitempty"`
+	OrgNameCamel     string `json:"organizationName,omitempty"`
 	UserEmail        string `json:"user_email,omitempty"`
 	WorkspaceID      string `json:"workspace_id,omitempty"`
 	DefaultFormat    string `json:"default_format,omitempty"`
@@ -73,44 +79,70 @@ func Load(workDir string) *CLIConfig {
 		_ = json.Unmarshal(data, cfg)
 	}
 
+	if cfg.APIKey == "" && cfg.TeamKey != "" {
+		cfg.APIKey = cfg.TeamKey
+	}
+	if cfg.APIKey == "" && cfg.TeamKeyCamel != "" {
+		cfg.APIKey = cfg.TeamKeyCamel
+	}
+	if cfg.TeamKey == "" && cfg.APIKey != "" {
+		cfg.TeamKey = cfg.APIKey
+	}
+	if cfg.TeamName == "" && cfg.TeamNameCamel != "" {
+		cfg.TeamName = cfg.TeamNameCamel
+	}
+	if cfg.OrganizationName == "" && cfg.OrgNameCamel != "" {
+		cfg.OrganizationName = cfg.OrgNameCamel
+	}
+
 	// 3. Apply Environment Variable overrides
-	if envURL := os.Getenv("SCANDRIX_SERVER_URL"); envURL != "" {
+	if envURL := getFirstEnv("SCANDRIX_SERVER_URL", "SCANDRIX_API_URL", "APP_BASE_URL", "API_BASE_URL"); envURL != "" {
 		cfg.ServerURL = strings.TrimRight(envURL, "/")
 	}
-	if envBilling := os.Getenv("SCANDRIX_BILLING_URL"); envBilling != "" {
+	if envBilling := getFirstEnv("SCANDRIX_BILLING_URL", "BILLING_URL"); envBilling != "" {
 		cfg.BillingURL = envBilling
 	}
-	if envKey := os.Getenv("SCANDRIX_API_KEY"); envKey != "" {
+	if envKey := getFirstEnv("SCANDRIX_API_KEY", "SCANDRIX_TEAM_KEY", "TEAM_API_KEY"); envKey != "" {
 		cfg.APIKey = envKey
+		cfg.TeamKey = envKey
 	}
-	if envToken := os.Getenv("SCANDRIX_ACCESS_TOKEN"); envToken != "" {
+	if envToken := getFirstEnv("SCANDRIX_ACCESS_TOKEN", "ACCESS_TOKEN"); envToken != "" {
 		cfg.AccessToken = envToken
 	}
-	if envRefresh := os.Getenv("SCANDRIX_REFRESH_TOKEN"); envRefresh != "" {
+	if envRefresh := getFirstEnv("SCANDRIX_REFRESH_TOKEN", "REFRESH_TOKEN"); envRefresh != "" {
 		cfg.RefreshToken = envRefresh
 	}
-	if envWS := os.Getenv("SCANDRIX_WORKSPACE_ID"); envWS != "" {
+	if envWS := getFirstEnv("SCANDRIX_WORKSPACE_ID", "WORKSPACE_ID"); envWS != "" {
 		cfg.WorkspaceID = envWS
 	}
-	if envFmt := os.Getenv("SCANDRIX_FORMAT"); envFmt != "" {
+	if envFmt := getFirstEnv("SCANDRIX_FORMAT", "FORMAT"); envFmt != "" {
 		cfg.DefaultFormat = strings.ToLower(envFmt)
 	}
-	if envFail := os.Getenv("SCANDRIX_FAIL_ON_SEVERITY"); envFail != "" {
+	if envFail := getFirstEnv("SCANDRIX_FAIL_ON_SEVERITY", "FAIL_ON_SEVERITY"); envFail != "" {
 		cfg.FailOnSeverity = strings.ToUpper(envFail)
 	}
-	if envTimeout := os.Getenv("SCANDRIX_REQUEST_TIMEOUT_MIN"); envTimeout != "" {
+	if envTimeout := getFirstEnv("SCANDRIX_REQUEST_TIMEOUT_MIN", "REQUEST_TIMEOUT_MIN"); envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t > 0 {
 			cfg.TimeoutMinutes = t
 		}
 	}
-	if envVerbose := os.Getenv("SCANDRIX_VERBOSE"); envVerbose == "1" || strings.ToLower(envVerbose) == "true" {
+	if envVerbose := getFirstEnv("SCANDRIX_VERBOSE", "VERBOSE"); envVerbose == "1" || strings.ToLower(envVerbose) == "true" {
 		cfg.Verbose = true
 	}
-	if envQuiet := os.Getenv("SCANDRIX_QUIET"); envQuiet == "1" || strings.ToLower(envQuiet) == "true" {
+	if envQuiet := getFirstEnv("SCANDRIX_QUIET", "QUIET"); envQuiet == "1" || strings.ToLower(envQuiet) == "true" {
 		cfg.Quiet = true
 	}
 
 	return cfg
+}
+
+func getFirstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // SaveGlobal persists credentials and settings to ~/.scandrix/config.json.
@@ -161,11 +193,11 @@ type TrackRepositoryResponse struct {
 
 // CentralizedConfigStatus models status of centralized repository rules.
 type CentralizedConfigStatus struct {
-	Enabled       bool     `json:"enabled"`
-	SelectedRepo  string   `json:"selected_repository,omitempty"`
-	SyncMode      string   `json:"sync_mode,omitempty"`
-	TargetRepos   []string `json:"target_repositories,omitempty"`
-	LastSyncedAt  string   `json:"last_synced_at,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	SelectedRepo string   `json:"selected_repository,omitempty"`
+	SyncMode     string   `json:"sync_mode,omitempty"`
+	TargetRepos  []string `json:"target_repositories,omitempty"`
+	LastSyncedAt string   `json:"last_synced_at,omitempty"`
 }
 
 // CentralizedConfigActionResponse models response from centralized actions.
@@ -224,6 +256,11 @@ func (c *APIClient) DoRequest(ctx context.Context, method, endpoint string, body
 	// Apply authentication headers: Bearer Token or Team Key
 	if c.apiKey != "" {
 		req.Header.Set("X-Team-Key", c.apiKey)
+		req.Header.Set("X-API-Key", c.apiKey)
+		req.Header.Set("X-Workspace-Key", c.apiKey)
+		if !strings.HasPrefix(c.apiKey, "Bearer ") {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
 	} else if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}

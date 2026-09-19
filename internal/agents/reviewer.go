@@ -9,10 +9,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/agents/deliberation"
 	"github.com/scandrix/backend/internal/codeanalysis/languages"
+	"github.com/scandrix/backend/internal/drixy"
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/internal/rules"
 	"github.com/scandrix/backend/internal/sandbox/syntax"
+	"github.com/scandrix/backend/internal/usecases/feedback"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -40,6 +42,7 @@ type AutonomousReviewer struct {
 	llmGateway      *llm.Gateway
 	deliberator     *deliberation.AgentDeliberator
 	syntaxValidator *syntax.SandboxSyntaxValidator
+	feedbackTracker *feedback.FeedbackTracker
 	maxIterations   int
 }
 
@@ -61,6 +64,11 @@ func (a *AutonomousReviewer) SetLLMGateway(gw *llm.Gateway) {
 // SetDeliberator attaches custom consensus adjudication.
 func (a *AutonomousReviewer) SetDeliberator(d *deliberation.AgentDeliberator) {
 	a.deliberator = d
+}
+
+// SetFeedbackTracker attaches workspace sentiment feedback memory.
+func (a *AutonomousReviewer) SetFeedbackTracker(fb *feedback.FeedbackTracker) {
+	a.feedbackTracker = fb
 }
 
 // PlanReview analyzes patch metadata and formulates an optimal review strategy.
@@ -149,8 +157,22 @@ func (a *AutonomousReviewer) ExecuteAgenticReview(ctx context.Context, reviewID,
 		}
 		diffStr := diffBuilder.String()
 		if len(diffStr) > 0 {
+			var customRules strings.Builder
+			customRules.WriteString(fmt.Sprintf("Identity: %s (%s)\nEnforce rules defined in .drixy/rules/\n", drixy.Name, drixy.Tagline))
+			if a.feedbackTracker != nil {
+				total, helpfulRate, fpRate := a.feedbackTracker.CalculateWorkspaceSentiment(wsID)
+				if total > 0 {
+					customRules.WriteString(fmt.Sprintf(
+						"Developer Sentiment Memory: Workspace sentiment is %.1f%% helpful with a %.1f%% false-positive rate across %d reviews. Prioritize high signal-to-noise and minimize noise.\n",
+						helpfulRate*100, fpRate*100, total,
+					))
+				}
+			}
+
 			aiResp, err := a.llmGateway.AnalyzeDiff(ctx, llm.ReviewRequest{
+				WorkspaceID: wsID,
 				DiffContent: diffStr,
+				CustomRules: customRules.String(),
 			})
 			if err == nil && aiResp != nil {
 				for _, f := range aiResp.Findings {

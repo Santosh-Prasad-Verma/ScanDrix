@@ -15,7 +15,7 @@ func GetOWASPRules() []RuleDefinition {
 			Severity:    models.SeverityCritical,
 			CWE:         "CWE-89",
 			OWASP:       "A03:2021-Injection",
-			RegexRule:   `(?i)(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER).*(?:%s|\+.*(?:req|param|query|input|body)|concat\()`,
+			RegexRule:   `(?i)(?:db|conn|tx|sql|gorm|client)\.(?:Query|Exec|Raw|Select|Where)\(.*(?:fmt\.Sprintf|%s|\+.*(?:req|param|query|input|body)|concat\()`,
 			Description: "Direct string formatting or raw concatenation into SQL query execution creates critical SQL injection vulnerabilities.",
 			Remediation: "Use parameterized queries or prepared statements ($1, ? placeholder) provided by the database driver.",
 		},

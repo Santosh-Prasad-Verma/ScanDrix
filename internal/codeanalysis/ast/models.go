@@ -8,8 +8,8 @@ import (
 type HalsteadMetrics struct {
 	DistinctOperators int     `json:"distinct_operators"` // eta1
 	DistinctOperands  int     `json:"distinct_operands"`  // eta2
-	TotalOperators     int     `json:"total_operators"`    // N1
-	TotalOperands      int     `json:"total_operands"`     // N2
+	TotalOperators    int     `json:"total_operators"`    // N1
+	TotalOperands     int     `json:"total_operands"`     // N2
 	ProgramVocabulary int     `json:"program_vocabulary"` // eta = eta1 + eta2
 	ProgramLength     int     `json:"program_length"`     // N = N1 + N2
 	Volume            float64 `json:"volume"`             // V = N * log2(eta)

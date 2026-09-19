@@ -11,7 +11,7 @@ type RuleDefinition struct {
 	Code        string                 `json:"code"`
 	Name        string                 `json:"name"`
 	Category    string                 `json:"category"`
-	Language    string                 `json:"language"`    // "ALL", "GO", "PYTHON", "TYPESCRIPT", "JAVA", "CPP", "DOCKER", "CLOUD"
+	Language    string                 `json:"language"` // "ALL", "GO", "PYTHON", "TYPESCRIPT", "JAVA", "CPP", "DOCKER", "CLOUD"
 	PathPattern string                 `json:"path_pattern"`
 	Severity    models.FindingSeverity `json:"severity"`
 	CWE         string                 `json:"cwe,omitempty"`

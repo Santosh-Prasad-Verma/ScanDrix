@@ -6,6 +6,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. TENANCY & IDENTITY MODELS (Workspace, UserRole & AccountProfile)
+// ═══════════════════════════════════════════════════════════════
+
 // TenantStatus represents the operational lifecycle state of an organization workspace.
 type TenantStatus string
 
@@ -46,6 +50,10 @@ type AccountProfile struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 2. SOURCE CONTROL & CODE REVIEW RUNS (SCMProvider, TrackedRepository & PullRequestReview)
+// ═══════════════════════════════════════════════════════════════
+
 // SCMProvider enumerates supported source control management platforms.
 type SCMProvider string
 
@@ -55,6 +63,13 @@ const (
 	ProviderBitbucket SCMProvider = "bitbucket"
 	ProviderAzure     SCMProvider = "azure"
 	ProviderForgejo   SCMProvider = "forgejo"
+
+	// SCMProvider aliases for domain contracts
+	SCMProviderGitHub      = ProviderGitHub
+	SCMProviderGitLab      = ProviderGitLab
+	SCMProviderBitbucket   = ProviderBitbucket
+	SCMProviderAzureDevOps = ProviderAzure
+	SCMProviderForgejo     = ProviderForgejo
 )
 
 // TrackedRepository represents a Git repository monitored for automated pull request assurance.
@@ -97,6 +112,10 @@ type PullRequestReview struct {
 	CompletedAt    *time.Time  `json:"completed_at,omitempty" db:"completed_at"`
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 3. SECURITY FINDINGS & SEVERITY TAXONOMY (FindingSeverity & CodeFinding)
+// ═══════════════════════════════════════════════════════════════
+
 // FindingSeverity categorizes the impact of an identified code issue.
 type FindingSeverity string
 
@@ -110,21 +129,25 @@ const (
 
 // CodeFinding represents an individual actionable recommendation generated during review.
 type CodeFinding struct {
-	ID          uuid.UUID       `json:"id" db:"id"`
-	ReviewID    uuid.UUID       `json:"review_id" db:"review_id"`
-	WorkspaceID uuid.UUID       `json:"workspace_id" db:"workspace_id"`
-	FilePath    string          `json:"file_path" db:"file_path"`
-	StartLine   int             `json:"start_line" db:"start_line"`
-	EndLine     int             `json:"end_line" db:"end_line"`
-	Severity    FindingSeverity `json:"severity" db:"severity"`
-	Category    string          `json:"category" db:"category"`
-	Title       string          `json:"title" db:"title"`
-	Description string          `json:"description" db:"description"`
-	Remediation string          `json:"remediation" db:"remediation"`
-	SuggestedDiff string        `json:"suggested_diff,omitempty" db:"suggested_diff"`
-	Fingerprint string          `json:"fingerprint" db:"fingerprint"`
-	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+	ID            uuid.UUID       `json:"id" db:"id"`
+	ReviewID      uuid.UUID       `json:"review_id" db:"review_id"`
+	WorkspaceID   uuid.UUID       `json:"workspace_id" db:"workspace_id"`
+	FilePath      string          `json:"file_path" db:"file_path"`
+	StartLine     int             `json:"start_line" db:"start_line"`
+	EndLine       int             `json:"end_line" db:"end_line"`
+	Severity      FindingSeverity `json:"severity" db:"severity"`
+	Category      string          `json:"category" db:"category"`
+	Title         string          `json:"title" db:"title"`
+	Description   string          `json:"description" db:"description"`
+	Remediation   string          `json:"remediation" db:"remediation"`
+	SuggestedDiff string          `json:"suggested_diff,omitempty" db:"suggested_diff"`
+	Fingerprint   string          `json:"fingerprint" db:"fingerprint"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 4. ASYNCHRONOUS RELAY & OUTBOX (OutboxStatus & OutboxRecord)
+// ═══════════════════════════════════════════════════════════════
 
 // OutboxStatus defines processing states for the transactional outbox pattern.
 type OutboxStatus string
@@ -148,18 +171,22 @@ type OutboxRecord struct {
 	PublishedAt *time.Time   `json:"published_at,omitempty" db:"published_at"`
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5. RULES ENGINE & SEMANTIC VECTORS (FineTuningVector, ReviewRule & RepoRuleOverride)
+// ═══════════════════════════════════════════════════════════════
+
 // FineTuningVector stores semantic embedding vectors for rules and code suggestions.
 type FineTuningVector struct {
-	ID             uuid.UUID `json:"id" db:"id"`
-	WorkspaceID    uuid.UUID `json:"workspace_id" db:"workspace_id"`
+	ID             uuid.UUID  `json:"id" db:"id"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id" db:"workspace_id"`
 	RuleID         *uuid.UUID `json:"rule_id,omitempty" db:"rule_id"`
-	EntityType     string    `json:"entity_type" db:"entity_type"`
-	EmbeddingModel string    `json:"embedding_model" db:"embedding_model"`
-	EmbeddingDim   int       `json:"embedding_dim" db:"embedding_dim"`
-	ContentHash    string    `json:"content_hash" db:"content_hash"`
-	RawContent     string    `json:"raw_content" db:"raw_content"`
-	CreatedAt      time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
+	EntityType     string     `json:"entity_type" db:"entity_type"`
+	EmbeddingModel string     `json:"embedding_model" db:"embedding_model"`
+	EmbeddingDim   int        `json:"embedding_dim" db:"embedding_dim"`
+	ContentHash    string     `json:"content_hash" db:"content_hash"`
+	RawContent     string     `json:"raw_content" db:"raw_content"`
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // BillingSeatAllocation tracks seat consumption and feature allowances per organization.
@@ -178,16 +205,37 @@ type BillingSeatAllocation struct {
 
 // RepoRuleOverride configures per-repository rule adjustments and severity thresholds.
 type RepoRuleOverride struct {
-	ID                uuid.UUID       `json:"id" db:"id"`
-	WorkspaceID       uuid.UUID       `json:"workspace_id" db:"workspace_id"`
-	RepositoryID      uuid.UUID       `json:"repository_id" db:"repository_id"`
-	RuleName          string          `json:"rule_name" db:"rule_name"`
-	Disabled          bool            `json:"disabled" db:"disabled"`
+	ID                 uuid.UUID       `json:"id" db:"id"`
+	WorkspaceID        uuid.UUID       `json:"workspace_id" db:"workspace_id"`
+	RepositoryID       uuid.UUID       `json:"repository_id" db:"repository_id"`
+	RuleName           string          `json:"rule_name" db:"rule_name"`
+	Disabled           bool            `json:"disabled" db:"disabled"`
 	OverriddenSeverity FindingSeverity `json:"overridden_severity,omitempty" db:"overridden_severity"`
-	CustomPathGlobs   []string        `json:"custom_path_globs,omitempty" db:"custom_path_globs"`
-	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at" db:"updated_at"`
+	CustomPathGlobs    []string        `json:"custom_path_globs,omitempty" db:"custom_path_globs"`
+	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at" db:"updated_at"`
 }
+
+// ReviewRule represents an enterprise custom Drixy/ScanDrix review rule in PostgreSQL.
+type ReviewRule struct {
+	ID           uuid.UUID       `json:"id" db:"id"`
+	WorkspaceID  uuid.UUID       `json:"workspace_id" db:"workspace_id"`
+	RepositoryID *uuid.UUID      `json:"repository_id,omitempty" db:"repository_id"`
+	Name         string          `json:"name" db:"name"`
+	Description  string          `json:"description" db:"description"`
+	Severity     FindingSeverity `json:"severity" db:"severity"`
+	RuleType     string          `json:"rule_type" db:"rule_type"`
+	RuleContent  string          `json:"rule_content" db:"rule_content"`
+	PathPattern  string          `json:"path_pattern,omitempty"`
+	Remediation  string          `json:"remediation,omitempty"`
+	IsEnabled    bool            `json:"is_enabled" db:"is_enabled"`
+	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 6. TEAMS, INTEGRATIONS & AUDIT LOGS (Team, IntegrationConnection & AuditLogRecord)
+// ═══════════════════════════════════════════════════════════════
 
 // Team represents a group of developers within a workspace.
 type Team struct {
@@ -257,6 +305,10 @@ type AuditLogRecord struct {
 	Metadata    []byte    `json:"metadata" db:"metadata"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 7. ENTERPRISE BILLING & QUOTAS (TokenUsageRecord, OrganizationLicense & PlanConfiguration)
+// ═══════════════════════════════════════════════════════════════
 
 // TokenUsageRecord represents token consumption for a review execution.
 type TokenUsageRecord struct {
@@ -332,11 +384,18 @@ type WorkspacePlanDetails struct {
 	MonthlyTokensUsed  int64                `json:"monthly_tokens_used"`
 	BurstLimitPerMin   int64                `json:"burst_limit_per_min"`
 	BurstTokensUsed    int64                `json:"burst_tokens_used"`
-	AllocatedModels    []string             `json:"allocated_models"`
-	FeaturesEnabled    []string             `json:"features_enabled"`
-	BYOKAllowed        bool                 `json:"byok_allowed"`
-	RecentTransactions []BillingTransaction `json:"recent_transactions,omitempty"`
+	AllocatedModels      []string             `json:"allocated_models"`
+	FeaturesEnabled      []string             `json:"features_enabled"`
+	MaxConcurrentReviews int                  `json:"max_concurrent_reviews"`
+	BYOKAllowed          bool                 `json:"byok_allowed"`
+	SubscriptionStatus   string               `json:"subscription_status"` // "ACTIVE", "GRACE_PERIOD", "EXPIRED"
+	IsExpired            bool                 `json:"is_expired"`
+	RecentTransactions   []BillingTransaction `json:"recent_transactions,omitempty"`
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 8. CLI KEYS & HARDWARE DEVICE QUOTAS (CockpitMetrics, TeamCLIKey & CLIDevice)
+// ═══════════════════════════════════════════════════════════════
 
 // CockpitMetrics provides real aggregated executive security and engineering KPIs.
 type CockpitMetrics struct {
@@ -348,3 +407,195 @@ type CockpitMetrics struct {
 	ActiveRepositories int     `json:"active_repositories"`
 	TotalDevelopers    int     `json:"total_developers"`
 }
+
+// TeamCLIKey represents an active or revoked CLI API key in PostgreSQL.
+type TeamCLIKey struct {
+	ID          uuid.UUID  `json:"id" db:"uuid"`
+	WorkspaceID *uuid.UUID `json:"workspace_id,omitempty" db:"workspace_id"`
+	TeamID      *uuid.UUID `json:"team_id,omitempty" db:"team_id"`
+	Name        string     `json:"name" db:"name"`
+	KeyHash     string     `json:"-" db:"keyHash"`
+	KeyPrefix   string     `json:"key_prefix" db:"keyPrefix"`
+	Active      bool       `json:"active" db:"active"`
+	Config      []byte     `json:"config,omitempty" db:"config"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty" db:"lastUsedAt"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty" db:"expiresAt"`
+	CreatedAt   time.Time  `json:"created_at" db:"createdAt"`
+	UpdatedAt   time.Time  `json:"updated_at" db:"updatedAt"`
+}
+
+// CLIDevice tracks an authorized physical machine / developer workstation for hardware quota limits.
+type CLIDevice struct {
+	ID              uuid.UUID `json:"id" db:"uuid"`
+	WorkspaceID     uuid.UUID `json:"workspace_id" db:"workspace_id"`
+	DeviceID        string    `json:"device_id" db:"device_id"`
+	DeviceTokenHash string    `json:"-" db:"device_token_hash"`
+	UserAgent       string    `json:"user_agent" db:"user_agent"`
+	LastSeen        time.Time `json:"last_seen" db:"last_seen_at"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+}
+
+// UserRepositoryAssignment defines explicit per-user repository restrictions within a workspace for enterprise RBAC.
+type UserRepositoryAssignment struct {
+	ID            uuid.UUID   `json:"id" db:"uuid"`
+	WorkspaceID   uuid.UUID   `json:"workspace_id" db:"workspace_id"`
+	UserID        uuid.UUID   `json:"user_id" db:"user_id"`
+	RepositoryIDs []uuid.UUID `json:"repository_ids" db:"repository_ids"`
+	AssignedBy    string      `json:"assigned_by,omitempty" db:"assigned_by"`
+	CreatedAt     time.Time   `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at" db:"updated_at"`
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 9. PULL REQUEST EXECUTIONS, FACETS & MESSAGES
+// ═══════════════════════════════════════════════════════════════
+
+// PullRequestExecutionFilter defines multi-dimensional search criteria.
+type PullRequestExecutionFilter struct {
+	TeamID             *uuid.UUID `json:"team_id,omitempty"`
+	RepositoryID       *uuid.UUID `json:"repository_id,omitempty"`
+	RepositoryName     string     `json:"repository_name,omitempty"`
+	Limit              int        `json:"limit,omitempty"`
+	Page               int        `json:"page,omitempty"`
+	PullRequestTitle   string     `json:"pull_request_title,omitempty"`
+	PullRequestNumber  *int       `json:"pull_request_number,omitempty"`
+	HasSentSuggestions *bool      `json:"has_sent_suggestions,omitempty"`
+	AuthorPolicy       string     `json:"author_policy,omitempty"` // "all" | "reviewable" | "excluded"
+	Status             string     `json:"status,omitempty"`        // "success" | "error" | "partial_error" | "skipped" | "in_progress" | "pending"
+	CreatedAtFrom      *time.Time `json:"created_at_from,omitempty"`
+	CreatedAtTo        *time.Time `json:"created_at_to,omitempty"`
+	Severity           string     `json:"severity,omitempty"`
+	Category           string     `json:"category,omitempty"`
+	NeedsAttention     *bool      `json:"needs_attention,omitempty"`
+	Author             string     `json:"author,omitempty"`
+}
+
+// EnrichedPullRequestExecution represents an enriched PR review run.
+type EnrichedPullRequestExecution struct {
+	UUID               uuid.UUID      `json:"uuid"`
+	RepositoryID       string         `json:"repository_id"`
+	RepositoryName     string         `json:"repository_name"`
+	PullRequestNumber  int            `json:"pull_request_number"`
+	PullRequestTitle   string         `json:"pull_request_title"`
+	Author             string         `json:"author"`
+	Status             string         `json:"status"` // "success", "error", "in_progress", etc.
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	ExecutionTimeMs    int64          `json:"execution_time_ms"`
+	SuggestionsCount   int            `json:"suggestions_count"`
+	CriticalCount      int            `json:"critical_count"`
+	HighCount          int            `json:"high_count"`
+	MediumCount        int            `json:"medium_count"`
+	LowCount           int            `json:"low_count"`
+	NeedsAttention     bool           `json:"needs_attention"`
+	HasSentSuggestions bool           `json:"has_sent_suggestions"`
+	HeadSHA            string         `json:"head_sha,omitempty"`
+	BaseSHA            string         `json:"base_sha,omitempty"`
+	Findings           []CodeFinding  `json:"findings,omitempty"`
+}
+
+// PaginatedEnrichedPullRequests represents the paginated API response.
+type PaginatedEnrichedPullRequests struct {
+	Data       []EnrichedPullRequestExecution `json:"data"`
+	Total      int                            `json:"total"`
+	Page       int                            `json:"page"`
+	Limit      int                            `json:"limit"`
+	TotalPages int                            `json:"total_pages"`
+}
+
+// PullRequestsDailyDigest represents daily PR status counts.
+type PullRequestsDailyDigest struct {
+	ReviewedCount       int `json:"reviewed_count"`
+	NeedsAttentionCount int `json:"needs_attention_count"`
+	ErroredCount        int `json:"errored_count"`
+	AwaitingCount       int `json:"awaiting_count"`
+}
+
+// PullRequestsFacets represents segment counts.
+type PullRequestsFacets struct {
+	All            int `json:"all"`
+	NeedsAttention int `json:"needs_attention"`
+	Errored        int `json:"errored"`
+	Awaiting       int `json:"awaiting"`
+	Mine           int `json:"mine"`
+}
+
+// PullRequestAuthorSuggestion represents an author suggestion.
+type PullRequestAuthorSuggestion struct {
+	Author string `json:"author"`
+	Count  int    `json:"count"`
+}
+
+// AwaitingPullRequest represents an open PR awaiting review.
+type AwaitingPullRequest struct {
+	RepositoryID      string    `json:"repository_id"`
+	RepositoryName    string    `json:"repository_name"`
+	PullRequestNumber int       `json:"pull_request_number"`
+	PullRequestTitle  string    `json:"pull_request_title"`
+	Author            string    `json:"author"`
+	CreatedAt         time.Time `json:"created_at"`
+	URL               string    `json:"url"`
+}
+
+// PullRequestChangedFile represents a file modified in a PR with diff patches.
+type PullRequestChangedFile struct {
+	FilePath  string `json:"file_path"`
+	OldPath   string `json:"old_path,omitempty"`
+	Status    string `json:"status"` // "added", "modified", "deleted"
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Patch     string `json:"patch,omitempty"`
+}
+
+// PullRequestMessageStatus defines the active/inactive state of a comment message template.
+type PullRequestMessageStatus string
+
+const (
+	PRMessageStatusActive   PullRequestMessageStatus = "ACTIVE"
+	PRMessageStatusInactive PullRequestMessageStatus = "INACTIVE"
+)
+
+// MessageContentWithStatus defines content paired with its enabled status.
+type MessageContentWithStatus struct {
+	Content string                   `json:"content"`
+	Status  PullRequestMessageStatus `json:"status"`
+}
+
+// PullRequestMessageSettings represents custom PR review messaging configuration.
+type PullRequestMessageSettings struct {
+	UUID                 *uuid.UUID                `json:"uuid,omitempty"`
+	WorkspaceID          uuid.UUID                 `json:"workspace_id"`
+	TeamID               *uuid.UUID                `json:"team_id,omitempty"`
+	RepositoryID         *uuid.UUID                `json:"repository_id,omitempty"`
+	DirectoryID          string                    `json:"directory_id,omitempty"`
+	ConfigLevel          string                    `json:"config_level"` // "global", "repository", "directory"
+	StartReviewMessage   MessageContentWithStatus  `json:"start_review_message"`
+	EndReviewMessage     *MessageContentWithStatus `json:"end_review_message,omitempty"`
+	ErrorReviewMessage   *MessageContentWithStatus `json:"error_review_message,omitempty"`
+	HideComments         bool                      `json:"hide_comments"`
+	SuggestionCopyPrompt bool                      `json:"suggestion_copy_prompt"`
+	CreatedAt            time.Time                 `json:"created_at"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
+}
+
+// SpendLimitEvaluation represents the month-to-date BYOK spend status.
+type SpendLimitEvaluation struct {
+	SpentUSD            float64 `json:"spent_usd"`
+	LimitUSD            float64 `json:"limit_usd"`
+	PercentageUsed      float64 `json:"percentage_used"`
+	IsOverLimit         bool    `json:"is_over_limit"`
+	MonthlyBudgetUSD    float64 `json:"monthly_budget_usd"`
+	AlertThresholdPct   float64 `json:"alert_threshold_pct"`
+	NotificationEnabled bool    `json:"notification_enabled"`
+}
+
+// ModelPriceInfo represents per-token price resolution.
+type ModelPriceInfo struct {
+	Provider       string  `json:"provider"`
+	Model          string  `json:"model"`
+	InputPrice1M   float64 `json:"input_price_1m"`
+	OutputPrice1M  float64 `json:"output_price_1m"`
+	CachedInput1M  float64 `json:"cached_input_1m"`
+}
+
+

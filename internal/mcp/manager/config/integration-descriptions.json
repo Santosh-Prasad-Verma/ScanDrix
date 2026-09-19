@@ -1,0 +1,15 @@
+{
+  "scandrixmcp": {
+    "integrations": {
+      "scandrix-docs-default": "ScanDrix Docs MCP exposes the official ScanDrix documentation as MCP tools, allowing ScanDrix AI to respond with official snippets, setup guides, and best practices always up to date.",
+      "scandrix-issues-default": "Read issues from your repository's tracker (GitHub, GitLab, Bitbucket, Azure DevOps, or Forgejo) using your existing ScanDrix code-management integration—so reviews can be cross-referenced against the issue they implement.",
+      "sentry-default": "Sentry MCP allows agents to access project and team info, retrieve and update issues and events, and create releases—bringing production error tracking into your automated code reviews.",
+      "exa-default": "Exa Search MCP allows agents to perform web and codebase intelligence searches to retrieve relevant documentation and patterns.",
+      "scandrix-osv-default": "ScanDrix OSV MCP allows agents to query the Open Source Vulnerability database for known security CVEs and package advisories in your codebase.",
+      "linear-default": "Create and manage Linear issues: create, update, and label tasks, add comments, fetch cycles, projects, and states—keeping code reviews and your sprint backlog synchronized.",
+      "atlassian-rovo-default": "Atlassian Rovo MCP enables agents to search across your Atlassian ecosystem (Jira, Confluence) and retrieve relevant knowledge and context.",
+      "notion-default": "Notion MCP lets agents read and search your Notion workspaces, databases, and engineering specs—bringing product requirements directly into code reviews.",
+      "fireflies-default": "Fireflies MCP exposes meeting transcripts, summaries, and action items so agents can ground pull request decisions in what was architecturally discussed."
+    }
+  }
+}

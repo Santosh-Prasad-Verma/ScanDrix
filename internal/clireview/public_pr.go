@@ -27,7 +27,7 @@ type PublicPrReviewPayload struct {
 	JobID     string             `json:"jobId"`
 	Status    string             `json:"status"`
 	StatusURL string             `json:"statusUrl"`
-	PR        try.PrInfo         `json:"pr"`
+	PR        any                `json:"pr"`
 	Diff      string             `json:"diff"`
 	RateLimit *RateLimitMetadata `json:"rateLimit,omitempty"`
 }

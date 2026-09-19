@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ type BillingService struct {
 	keyID         string
 	keySecret     string
 	webhookSecret string
+	upgradeMu     sync.Mutex
 }
 
 // NewBillingService initializes the billing orchestration service.
@@ -67,12 +69,12 @@ func (s *BillingService) SetClient(client *RazorpayClient) {
 
 // CreateOrderResponse returns checkout parameters needed by the frontend Razorpay SDK.
 type CreateOrderResponse struct {
-	OrderID   string `json:"order_id"`
-	Amount    int64  `json:"amount"`
-	Currency  string `json:"currency"`
-	KeyID     string `json:"key_id"`
-	Receipt   string `json:"receipt"`
-	PlanTier  string `json:"plan_tier"`
+	OrderID  string `json:"order_id"`
+	Amount   int64  `json:"amount"`
+	Currency string `json:"currency"`
+	KeyID    string `json:"key_id"`
+	Receipt  string `json:"receipt"`
+	PlanTier string `json:"plan_tier"`
 }
 
 // VerifyPaymentRequest contains client-side cryptographic proof of payment.
@@ -110,16 +112,22 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 		switch normTier {
 		case license.TierEnterprise:
 			if curr == "USD" {
-				amount = 24900 // $249.00
+				amount = 12900 // $129.00
 			} else {
-				amount = 1999900 // ₹19,999.00
+				amount = 999900 // ₹9,999.00
+			}
+		case license.TierDeveloper:
+			if curr == "USD" {
+				amount = 999 // $9.99
+			} else {
+				amount = 79900 // ₹799.00
 			}
 		default: // TierTeam / Pro
 			normTier = license.TierTeam
 			if curr == "USD" {
-				amount = 2900 // $29.00
+				amount = 1900 // $19.00
 			} else {
-				amount = 249900 // ₹2,499.00
+				amount = 149900 // ₹1,499.00
 			}
 		}
 	}
@@ -192,12 +200,53 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 		return nil, errors.New("cryptographic signature mismatch: payment verification failed")
 	}
 
-	// Derived plan tier from database order record if available to prevent client tampering
+	// Derive and verify order record from database to prevent client tampering
 	planTier := req.PlanTier
+	var chargedTx *models.BillingTransaction
 	if s.repo != nil {
-		chargedTx, err := s.repo.GetBillingTransaction(ctx, wsID, req.OrderID)
-		if err == nil && chargedTx != nil && chargedTx.PlanTier != "" {
+		var err error
+		chargedTx, err = s.repo.GetBillingTransaction(ctx, wsID, req.OrderID)
+		if err != nil || chargedTx == nil {
+			return nil, errors.New("unauthorized: order transaction not found for workspace")
+		}
+		if chargedTx.PlanTier != "" {
 			planTier = chargedTx.PlanTier
+		}
+	}
+
+	// Server-side payment verification with Razorpay API (Master Rule 2.1 & 5.5)
+	if s.client != nil && s.keyID != "" && s.keySecret != "" {
+		payment, err := s.client.FetchPayment(ctx, req.PaymentID)
+		if err != nil {
+			slog.Error("Failed to fetch payment status from Razorpay", "payment_id", req.PaymentID, "error", err)
+			return nil, fmt.Errorf("failed verifying payment status with razorpay API: %w", err)
+		}
+		if payment.Status != "captured" && payment.Status != "authorized" {
+			return nil, fmt.Errorf("payment verification rejected: razorpay status is %s", payment.Status)
+		}
+		if payment.OrderID != "" && payment.OrderID != req.OrderID {
+			return nil, errors.New("payment order ID mismatch")
+		}
+		// Enforce amount and currency consistency to prevent price/tier tampering
+		if chargedTx != nil {
+			if chargedTx.Amount > 0 && payment.Amount != chargedTx.Amount {
+				slog.Warn("Payment amount tampering attempt detected",
+					"workspace_id", wsID, "order_id", req.OrderID, "payment_id", req.PaymentID,
+					"expected_amount", chargedTx.Amount, "paid_amount", payment.Amount)
+				if s.repo != nil {
+					_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, "amount_mismatch_fraud")
+				}
+				return nil, fmt.Errorf("payment verification rejected: amount mismatch (expected %d paise, got %d paise)", chargedTx.Amount, payment.Amount)
+			}
+			if chargedTx.Currency != "" && payment.Currency != "" && !strings.EqualFold(payment.Currency, chargedTx.Currency) {
+				slog.Warn("Payment currency tampering attempt detected",
+					"workspace_id", wsID, "order_id", req.OrderID, "payment_id", req.PaymentID,
+					"expected_currency", chargedTx.Currency, "paid_currency", payment.Currency)
+				if s.repo != nil {
+					_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, req.OrderID, req.PaymentID, req.Signature, "currency_mismatch_fraud")
+				}
+				return nil, fmt.Errorf("payment verification rejected: currency mismatch (expected %s, got %s)", chargedTx.Currency, payment.Currency)
+			}
 		}
 	}
 
@@ -206,6 +255,9 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 
 // applyWorkspaceUpgrade executes database plan elevation, quota updates, and email notifications.
 func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UUID, orderID, paymentID, signature, planTierStr, recipientEmailParam, recipientNameParam string) (*models.OrganizationLicense, error) {
+	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
+
 	planTier := license.NormalizeTier(license.LicenseTier(planTierStr))
 	quota := license.GetPlanQuota(planTier)
 
@@ -236,14 +288,12 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 			}
 		}
 
-		// Update transaction status
-		_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, signature, "captured")
-
-		// Upgrade workspace in PostgreSQL
-		err := s.repo.UpgradeWorkspacePlan(ctx, wsID, string(planTier), maxSeats, expiresAt, features)
+		// Atomically update transaction status and upgrade workspace plan in a single transaction
+		err := s.repo.UpgradeWorkspacePlanAtomic(ctx, wsID, orderID, paymentID, signature, string(planTier), maxSeats, expiresAt, features)
 		if err != nil {
-			return nil, fmt.Errorf("failed upgrading workspace plan in database: %w", err)
+			return nil, fmt.Errorf("failed atomically upgrading workspace plan in database: %w", err)
 		}
+		_ = s.repo.InsertAuditLog(ctx, wsID, "system:billing", "", "", "workspace.plan_upgrade", "workspace", wsID.String(), fmt.Appendf(nil, `{"plan":"%s","order_id":"%s","payment_id":"%s"}`, planTier, orderID, paymentID))
 	}
 
 	// Upgrade in-memory token rate limiter
@@ -293,7 +343,7 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 			}
 			billingPortalURL := dashboardURL + "/billing"
 
-			amountFormatted := "₹2,499.00 INR"
+			amountFormatted := "₹1,499.00 INR"
 			if chargedTx != nil && chargedTx.Amount > 0 {
 				if chargedTx.Currency == "USD" {
 					amountFormatted = fmt.Sprintf("$%.2f USD", float64(chargedTx.Amount)/100.0)
@@ -301,7 +351,7 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 					amountFormatted = fmt.Sprintf("₹%.2f %s", float64(chargedTx.Amount)/100.0, chargedTx.Currency)
 				}
 			} else if planTier == license.TierEnterprise {
-				amountFormatted = "₹19,999.00 INR"
+				amountFormatted = "₹9,999.00 INR"
 			}
 
 			// 5a. Send Itemized Tax Invoice & Payment Receipt Email
@@ -343,19 +393,19 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 
 // WebhookEvent represents an incoming event from Razorpay Webhook.
 type WebhookEvent struct {
-	Entity    string `json:"entity"`
-	AccountID string `json:"account_id"`
-	Event     string `json:"event"` // e.g. "order.paid", "payment.captured", "payment.failed"
+	Entity    string   `json:"entity"`
+	AccountID string   `json:"account_id"`
+	Event     string   `json:"event"` // e.g. "order.paid", "payment.captured", "payment.failed"
 	Contains  []string `json:"contains"`
 	Payload   struct {
 		Payment struct {
 			Entity struct {
-				ID          string            `json:"id"`
-				OrderID     string            `json:"order_id"`
-				Amount      int64             `json:"amount"`
-				Currency    string            `json:"currency"`
-				Status      string            `json:"status"`
-				Notes       map[string]string `json:"notes"`
+				ID       string            `json:"id"`
+				OrderID  string            `json:"order_id"`
+				Amount   int64             `json:"amount"`
+				Currency string            `json:"currency"`
+				Status   string            `json:"status"`
+				Notes    map[string]string `json:"notes"`
 			} `json:"entity"`
 		} `json:"payment"`
 		Order struct {
@@ -370,15 +420,16 @@ type WebhookEvent struct {
 	CreatedAt int64 `json:"created_at"`
 }
 
-// ProcessWebhook validates the webhook signature and processes asynchronous payment state changes.
-func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, signature string) error {
+// VerifyWebhookSignature checks if the HMAC-SHA256 signature is valid.
+func (s *BillingService) VerifyWebhookSignature(payload []byte, signature string) bool {
 	if s.webhookSecret == "" {
-		return errors.New("unauthorized webhook: razorpay webhook secret is not configured")
+		return false
 	}
-	if !VerifyWebhookSignature(payload, signature, s.webhookSecret) {
-		return errors.New("unauthorized webhook: invalid razorpay signature")
-	}
+	return VerifyWebhookSignature(payload, signature, s.webhookSecret)
+}
 
+// ProcessVerifiedWebhook processes an unmarshaled or already signature-verified webhook payload asynchronously.
+func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []byte) error {
 	var event WebhookEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return fmt.Errorf("failed parsing webhook event payload: %w", err)
@@ -410,10 +461,11 @@ func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, sig
 		}
 
 		if err := func() error {
-			_, err := s.applyWorkspaceUpgrade(ctx, wsID, orderID, paymentID, signature, planTierStr, "", "")
+			_, err := s.applyWorkspaceUpgrade(ctx, wsID, orderID, paymentID, "", planTierStr, "", "")
 			return err
 		}(); err != nil {
 			slog.Error("Razorpay webhook upgrade failed", "workspace_id", wsID, "order_id", orderID, "error", err)
+			return err
 		}
 
 	case "payment.failed":
@@ -422,7 +474,7 @@ func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, sig
 		wsIDStr := event.Payload.Payment.Entity.Notes["workspace_id"]
 		if wsID, err := uuid.Parse(wsIDStr); err == nil {
 			if s.repo != nil {
-				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, signature, "failed")
+				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, "", "failed")
 			}
 			if s.mailer != nil {
 				recipientEmail := ""
@@ -436,7 +488,32 @@ func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, sig
 				}
 			}
 		}
+
+	case "refund.processed", "refund.created":
+		// Record refund status in billing_transactions for ledger reconciliation (§12 Razorpay Security Audit).
+		paymentID := event.Payload.Payment.Entity.ID
+		orderID := event.Payload.Payment.Entity.OrderID
+		wsIDStr := event.Payload.Payment.Entity.Notes["workspace_id"]
+		if wsID, err := uuid.Parse(wsIDStr); err == nil {
+			if s.repo != nil {
+				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, "", "refunded")
+			}
+			slog.Warn("Razorpay refund event recorded",
+				"event", event.Event,
+				"workspace_id", wsID,
+				"payment_id", paymentID,
+				"order_id", orderID,
+			)
+		}
 	}
 
 	return nil
+}
+
+// ProcessWebhook validates the webhook signature and processes payment state changes synchronously.
+func (s *BillingService) ProcessWebhook(ctx context.Context, payload []byte, signature string) error {
+	if !s.VerifyWebhookSignature(payload, signature) {
+		return errors.New("unauthorized webhook: invalid razorpay signature or secret unconfigured")
+	}
+	return s.ProcessVerifiedWebhook(ctx, payload)
 }

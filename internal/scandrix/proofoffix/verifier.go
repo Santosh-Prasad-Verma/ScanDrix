@@ -50,14 +50,14 @@ const (
 
 // ProofOfFixAttestation is the cryptographic assertion that a patch cleanly resolves the defect.
 type ProofOfFixAttestation struct {
-	FindingID      uuid.UUID         `json:"finding_id"`
-	PatchSHA256    string            `json:"patch_sha256"`
-	VerifiedAt     time.Time         `json:"verified_at"`
+	FindingID      uuid.UUID           `json:"finding_id"`
+	PatchSHA256    string              `json:"patch_sha256"`
+	VerifiedAt     time.Time           `json:"verified_at"`
 	StagesPassed   []VerificationStage `json:"stages_passed"`
-	CompilerOutput string            `json:"compiler_output,omitempty"`
-	SignatureHex   string            `json:"signature_hex,omitempty"`
-	SignerIdentity string            `json:"signer_identity"`
-	IsProved       bool              `json:"is_proved"`
+	CompilerOutput string              `json:"compiler_output,omitempty"`
+	SignatureHex   string              `json:"signature_hex,omitempty"`
+	SignerIdentity string              `json:"signer_identity"`
+	IsProved       bool                `json:"is_proved"`
 }
 
 // Verifier executes the 4-stage closed-loop verification matrix.

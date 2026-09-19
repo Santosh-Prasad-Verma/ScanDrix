@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"html"
 	"strings"
 )
 
@@ -17,14 +18,18 @@ func RenderSubscriptionWelcome(subscriberName, orgName, planTier string, monthly
 		planTitle = "Enterprise Custom Plan"
 	}
 
-	subject = fmt.Sprintf("Welcome to ScanDrix %s! Your frontier AI models are now unlocked", planTitle)
-	preview := fmt.Sprintf("Your %s subscription for %s is now active. Enjoy frontier model access and elevated token limits.", planTitle, orgName)
+	safeSubscriber := html.EscapeString(subscriberName)
+	safeOrg := html.EscapeString(orgName)
+	safePlanTitle := html.EscapeString(planTitle)
+
+	subject = fmt.Sprintf("Welcome to ScanDrix %s! Your frontier AI models are now unlocked", safePlanTitle)
+	preview := fmt.Sprintf("Your %s subscription for %s is now active. Enjoy frontier model access and elevated token limits.", safePlanTitle, safeOrg)
 
 	var modelPills strings.Builder
 	for _, m := range allocatedModels {
 		modelPills.WriteString(fmt.Sprintf(
 			`<span style="display: inline-block; background-color: #f3f4f6; color: #374151; font-size: 12px; font-weight: 600; padding: 4px 10px; margin: 3px 4px 3px 0; border-radius: 9999px; border: 1px solid #e5e7eb;">%s</span>`,
-			m,
+			html.EscapeString(m),
 		))
 	}
 
@@ -64,9 +69,9 @@ func RenderSubscriptionWelcome(subscriberName, orgName, planTier string, monthly
 		<p style="color: #4b5563;">
 			All team pull requests submitted to your connected GitHub, GitLab, Bitbucket, and Azure DevOps repositories will now automatically leverage these frontier review engines.
 		</p>
-	`, subscriberName, orgName, planTitle, formatNumber(monthlyTokens), modelPills.String())
+	`, safeSubscriber, safeOrg, safePlanTitle, formatNumber(monthlyTokens), modelPills.String())
 
-	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("Welcome to ScanDrix %s", planTitle), content, "Open Developer Dashboard", dashboardURL)
+	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("Welcome to ScanDrix %s", safePlanTitle), content, "Open Developer Dashboard", dashboardURL)
 	return subject, htmlBody
 }
 

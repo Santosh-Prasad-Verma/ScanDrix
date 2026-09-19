@@ -33,13 +33,13 @@ func TestGitLabAdapterOperations(t *testing.T) {
 		case strings.HasSuffix(p, "/merge_requests/10"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"iid":           10,
-				"title":         "Add feature",
-				"author":        map[string]string{"username": "bob"},
-				"sha":           "gitlabheadsha",
-				"diff_refs":     map[string]string{"base_sha": "gitlabbasesha"},
-				"source_branch": "feature-x",
-				"target_branch": "main",
+				"iid":              10,
+				"title":            "Add feature",
+				"author":           map[string]string{"username": "bob"},
+				"sha":              "gitlabheadsha",
+				"diff_refs":        map[string]string{"base_sha": "gitlabbasesha"},
+				"source_branch":    "feature-x",
+				"target_branch":    "main",
 				"work_in_progress": false,
 			})
 		case strings.HasSuffix(p, "/statuses/gitlabheadsha"):

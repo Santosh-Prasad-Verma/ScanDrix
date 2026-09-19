@@ -31,18 +31,18 @@ type PMIssue struct {
 
 // IssueCreationRequest defines the payload to export a finding to Jira/Linear/Boards.
 type IssueCreationRequest struct {
-	WorkspaceID uuid.UUID              `json:"workspace_id"`
-	FindingID   uuid.UUID              `json:"finding_id"`
-	ProjectKey  string                 `json:"project_key"` // e.g. "SEC" or Linear team ID
-	IssueType   string                 `json:"issue_type"`  // "Bug", "Security", "Task"
-	Title       string                 `json:"title"`
-	Description string                 `json:"description"`
-	Severity    models.FindingSeverity `json:"severity"`
-	Category    string                 `json:"category"`
-	FilePath    string                 `json:"file_path"`
-	Line        int                    `json:"line"`
-	Remediation string                 `json:"remediation"`
-	PullRequestURL string              `json:"pull_request_url,omitempty"`
+	WorkspaceID    uuid.UUID              `json:"workspace_id"`
+	FindingID      uuid.UUID              `json:"finding_id"`
+	ProjectKey     string                 `json:"project_key"` // e.g. "SEC" or Linear team ID
+	IssueType      string                 `json:"issue_type"`  // "Bug", "Security", "Task"
+	Title          string                 `json:"title"`
+	Description    string                 `json:"description"`
+	Severity       models.FindingSeverity `json:"severity"`
+	Category       string                 `json:"category"`
+	FilePath       string                 `json:"file_path"`
+	Line           int                    `json:"line"`
+	Remediation    string                 `json:"remediation"`
+	PullRequestURL string                 `json:"pull_request_url,omitempty"`
 }
 
 // PMConfig holds authentication credentials for project management backends.

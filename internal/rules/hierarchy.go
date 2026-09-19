@@ -19,12 +19,12 @@ const (
 
 // InheritedRule represents a rule along with its inheritance provenance and active overrides.
 type InheritedRule struct {
-	Spec              RuleSpec   `json:"spec"`
-	Source            RuleSource `json:"source"`
-	SourceID          uuid.UUID  `json:"source_id"`
-	IsOverridden      bool       `json:"is_overridden"`
-	IsDisabled        bool       `json:"is_disabled"`
-	OriginalSeverity  models.FindingSeverity `json:"original_severity"`
+	Spec             RuleSpec               `json:"spec"`
+	Source           RuleSource             `json:"source"`
+	SourceID         uuid.UUID              `json:"source_id"`
+	IsOverridden     bool                   `json:"is_overridden"`
+	IsDisabled       bool                   `json:"is_disabled"`
+	OriginalSeverity models.FindingSeverity `json:"original_severity"`
 }
 
 // HierarchyResolver merges rules across org, team, and repository layers according to precedence.

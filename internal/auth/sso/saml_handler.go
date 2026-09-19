@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -81,12 +80,14 @@ func (h *SAMLHandler) GenerateSPMetadata(entityID, acsURL, certPEM string) strin
 
 // XML structures for assertion unmarshaling
 type rawSAMLResponse struct {
-	XMLName   xml.Name        `xml:"Response"`
+	XMLName   xml.Name         `xml:"Response"`
+	ID        string           `xml:"ID,attr"`
 	Assertion rawSAMLAssertion `xml:"Assertion"`
 	Signature *rawXMLSignature `xml:"Signature"`
 }
 
 type rawSAMLAssertion struct {
+	ID                 string             `xml:"ID,attr"`
 	Issuer             string             `xml:"Issuer"`
 	Subject            rawSAMLSubject     `xml:"Subject"`
 	Conditions         rawSAMLConditions  `xml:"Conditions"`
@@ -102,7 +103,15 @@ type rawXMLSignature struct {
 }
 
 type rawSignedInfo struct {
-	SignatureMethod rawAlgorithm `xml:"SignatureMethod"`
+	CanonicalizationMethod rawAlgorithm  `xml:"CanonicalizationMethod"`
+	SignatureMethod        rawAlgorithm  `xml:"SignatureMethod"`
+	Reference              *rawReference `xml:"Reference"`
+}
+
+type rawReference struct {
+	URI          string       `xml:"URI,attr"`
+	DigestMethod rawAlgorithm `xml:"DigestMethod"`
+	DigestValue  string       `xml:"DigestValue"`
 }
 
 type rawAlgorithm struct {
@@ -118,8 +127,8 @@ type rawSAMLSubject struct {
 }
 
 type rawSAMLConditions struct {
-	NotBefore           string                   `xml:"NotBefore,attr"`
-	NotOnOrAfter        string                   `xml:"NotOnOrAfter,attr"`
+	NotBefore           string                  `xml:"NotBefore,attr"`
+	NotOnOrAfter        string                  `xml:"NotOnOrAfter,attr"`
 	AudienceRestriction rawSAMLAudienceRestrict `xml:"AudienceRestriction"`
 }
 
@@ -136,7 +145,8 @@ type rawSAMLAttribute struct {
 	Values []string `xml:"AttributeValue"`
 }
 
-// VerifySignature validates XMLDSig cryptographic signature against IdP certificate.
+// VerifySignature validates XMLDSig cryptographic signature against IdP certificate,
+// enforcing strict defense against XML Signature Wrapping (XSW) attacks (CWE-347).
 func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) error {
 	if cert == nil {
 		return errors.New("cannot verify signature: no IdP certificate configured")
@@ -145,6 +155,21 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 	rsaPub, ok := cert.PublicKey.(*rsa.PublicKey)
 	if !ok {
 		return errors.New("unsupported public key type: expected RSA")
+	}
+
+	// 1. Detect and prevent XML Signature Wrapping (XSW) attacks (CWE-347)
+	assertionCount := bytes.Count(xmlData, []byte("<Assertion")) +
+		bytes.Count(xmlData, []byte("<saml:Assertion")) +
+		bytes.Count(xmlData, []byte("<saml2:Assertion"))
+	if assertionCount > 1 {
+		return errors.New("XML Signature Wrapping (XSW) vulnerability detected: multiple assertions present in document (CWE-347)")
+	}
+
+	responseCount := bytes.Count(xmlData, []byte("<Response")) +
+		bytes.Count(xmlData, []byte("<samlp:Response")) +
+		bytes.Count(xmlData, []byte("<saml2p:Response"))
+	if responseCount > 1 {
+		return errors.New("XML Signature Wrapping (XSW) vulnerability detected: multiple response root elements present (CWE-347)")
 	}
 
 	var resp rawSAMLResponse
@@ -169,7 +194,61 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 		return fmt.Errorf("invalid base64 signature: %w", err)
 	}
 
-	// In XMLDSig Enveloped Signature, strip the <Signature>...</Signature> element before computing document digest
+	// 2. Algorithm enforcement (reject MD5/SHA-1)
+	algo := strings.ToLower(sig.SignedInfo.SignatureMethod.Algorithm)
+	var hashFunc crypto.Hash
+	if strings.Contains(algo, "rsa-sha256") || strings.Contains(algo, "sha256") {
+		hashFunc = crypto.SHA256
+	} else if strings.Contains(algo, "rsa-sha384") || strings.Contains(algo, "sha384") {
+		hashFunc = crypto.SHA384
+	} else if strings.Contains(algo, "rsa-sha512") || strings.Contains(algo, "sha512") {
+		hashFunc = crypto.SHA512
+	} else {
+		return fmt.Errorf("insecure or unsupported signature algorithm '%s': only RSA-SHA256/384/512 are accepted (CWE-327)", sig.SignedInfo.SignatureMethod.Algorithm)
+	}
+
+	// 3. If Reference URI is present, verify binding to Assertion or Response ID
+	if sig.SignedInfo.Reference != nil && sig.SignedInfo.Reference.URI != "" {
+		refURI := strings.TrimPrefix(sig.SignedInfo.Reference.URI, "#")
+		if refURI != "" && refURI != resp.ID && refURI != resp.Assertion.ID {
+			return fmt.Errorf("XMLDSig reference mismatch: signature references '%s', but assertion ID is '%s'", refURI, resp.Assertion.ID)
+		}
+	}
+
+	// 4. In standard XMLDSig, signature is computed over canonicalized <SignedInfo>...</SignedInfo>
+	if idxStart := bytes.Index(xmlData, []byte("<SignedInfo")); idxStart != -1 {
+		if idxEnd := bytes.Index(xmlData[idxStart:], []byte("</SignedInfo>")); idxEnd != -1 {
+			rawBlock := xmlData[idxStart : idxStart+idxEnd+len("</SignedInfo>")]
+			
+			// Build canonicalization variants to accommodate exc-c14n namespace propagation and whitespace rules
+			signedInfoCandidates := [][]byte{
+				rawBlock,
+			}
+
+			// Variant: inject XMLDSig default namespace if omitted by parent <Signature> inheritance
+			if !bytes.Contains(rawBlock, []byte("xmlns")) {
+				injected := bytes.Replace(rawBlock, []byte("<SignedInfo"), []byte(`<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"`), 1)
+				signedInfoCandidates = append(signedInfoCandidates, injected)
+			}
+
+			// Variant: normalized line endings (LF only)
+			if bytes.Contains(rawBlock, []byte("\r\n")) {
+				lfNormalized := bytes.ReplaceAll(rawBlock, []byte("\r\n"), []byte("\n"))
+				signedInfoCandidates = append(signedInfoCandidates, lfNormalized)
+			}
+
+			for _, candidate := range signedInfoCandidates {
+				hasher := hashFunc.New()
+				hasher.Write(candidate)
+				digest := hasher.Sum(nil)
+				if err := rsa.VerifyPKCS1v15(rsaPub, hashFunc, digest, sigBytes); err == nil {
+					return nil
+				}
+			}
+		}
+	}
+
+	// 5. Fallback to enveloped document digest (with <Signature> element stripped)
 	dataForDigest := xmlData
 	if idxStart := bytes.Index(xmlData, []byte("<Signature")); idxStart != -1 {
 		if idxEnd := bytes.Index(xmlData[idxStart:], []byte("</Signature>")); idxEnd != -1 {
@@ -177,27 +256,9 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 		}
 	}
 
-	// Compute digest over SignedInfo or XML content
-	var digest []byte
-	var hashFunc crypto.Hash
-	algo := strings.ToLower(sig.SignedInfo.SignatureMethod.Algorithm)
-	if strings.Contains(algo, "rsa-sha256") || strings.Contains(algo, "sha256") {
-		h256 := sha256.Sum256(dataForDigest)
-		digest = h256[:]
-		hashFunc = crypto.SHA256
-	} else if strings.Contains(algo, "rsa-sha384") || strings.Contains(algo, "sha384") {
-		h384 := crypto.SHA384.New()
-		h384.Write(dataForDigest)
-		digest = h384.Sum(nil)
-		hashFunc = crypto.SHA384
-	} else if strings.Contains(algo, "rsa-sha512") || strings.Contains(algo, "sha512") {
-		h512 := crypto.SHA512.New()
-		h512.Write(dataForDigest)
-		digest = h512.Sum(nil)
-		hashFunc = crypto.SHA512
-	} else {
-		return fmt.Errorf("insecure or unsupported signature algorithm '%s': only RSA-SHA256/384/512 are accepted (CWE-327)", sig.SignedInfo.SignatureMethod.Algorithm)
-	}
+	hasher := hashFunc.New()
+	hasher.Write(dataForDigest)
+	digest := hasher.Sum(nil)
 
 	if err := rsa.VerifyPKCS1v15(rsaPub, hashFunc, digest, sigBytes); err != nil {
 		return fmt.Errorf("cryptographic XMLDSig signature verification failed: %w", err)
@@ -206,8 +267,13 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 	return nil
 }
 
-// ParseAndVerifyAssertion parses SAML response XML, validates audience, temporal validity, and optional cryptographic signature.
-func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
+// HasIdPCertificate reports whether an IdP X.509 certificate has been loaded.
+func (h *SAMLHandler) HasIdPCertificate() bool {
+	return h.idpCert != nil
+}
+
+// ParseAssertionWithoutSignature parses SAML claims, audience, and temporal validity without cryptographic signature verification (used for sandbox diagnostic claim inspection).
+func (h *SAMLHandler) ParseAssertionWithoutSignature(xmlData []byte, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
 	var resp rawSAMLResponse
 	decoder := xml.NewDecoder(bytes.NewReader(xmlData))
 	if err := decoder.Decode(&resp); err != nil {
@@ -239,25 +305,20 @@ func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience s
 		}
 	}
 
-	// 3. Cryptographic Signature Verification (IdP certificate is mandatory, Master Rule 5.1 & CWE-1390)
-	if h.idpCert == nil {
-		return nil, errors.New("cannot verify SAML assertion: IdP certificate is not configured (refusing unsigned authentication)")
-	}
-	if err := h.VerifySignature(xmlData, h.idpCert); err != nil {
-		return nil, err
-	}
-
-	// 4. Extract attributes
+	// 3. Extract attributes
 	attrs := make(map[string]string)
 	var groups []string
 	firstName := ""
 	lastName := ""
+	email := assertion.Subject.NameID
 
 	for _, a := range assertion.AttributeStatement.Attributes {
 		lowerName := strings.ToLower(a.Name)
 		if len(a.Values) > 0 {
 			attrs[lowerName] = a.Values[0]
-			if strings.Contains(lowerName, "firstname") || strings.Contains(lowerName, "givenname") {
+			if strings.Contains(lowerName, "email") || strings.Contains(lowerName, "mail") {
+				email = a.Values[0]
+			} else if strings.Contains(lowerName, "firstname") || strings.Contains(lowerName, "givenname") {
 				firstName = a.Values[0]
 			} else if strings.Contains(lowerName, "lastname") || strings.Contains(lowerName, "surname") {
 				lastName = a.Values[0]
@@ -269,7 +330,7 @@ func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience s
 
 	return &FederatedIdentity{
 		ExternalID: assertion.Subject.NameID,
-		Email:      assertion.Subject.NameID,
+		Email:      email,
 		FirstName:  firstName,
 		LastName:   lastName,
 		Groups:     groups,
@@ -277,6 +338,24 @@ func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience s
 		Provider:   ProviderTypeSAML2,
 		RawClaims:  attrs,
 	}, nil
+}
+
+// ParseAndVerifyAssertion parses SAML response XML, validates audience, temporal validity, and mandatory cryptographic signature.
+func (h *SAMLHandler) ParseAndVerifyAssertion(xmlData []byte, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
+	identity, err := h.ParseAssertionWithoutSignature(xmlData, expectedAudience, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cryptographic Signature Verification (IdP certificate is mandatory, Master Rule 5.1 & CWE-1390)
+	if h.idpCert == nil {
+		return nil, errors.New("cannot verify SAML assertion: IdP certificate is not configured (refusing unsigned authentication)")
+	}
+	if err := h.VerifySignature(xmlData, h.idpCert); err != nil {
+		return nil, err
+	}
+
+	return identity, nil
 }
 
 // IdPMetadata represents parsed Identity Provider XML metadata.

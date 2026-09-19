@@ -100,14 +100,14 @@ func (r *RuleLearningCron) learnRulesForWorkspace(ctx context.Context, wsID uuid
 		if f.TotalFindings > 5 && f.PassRate < 80.0 {
 			// Significant vulnerability or defect cluster discovered; emit candidate rule learning event
 			rulePayload, _ := json.Marshal(map[string]any{
-				"workspace_id":    wsID.String(),
-				"repository_id":   f.RepositoryID.String(),
-				"namespace":       f.NamespacePath,
-				"candidate_rule":  fmt.Sprintf("Enforce compliance & defect prevention for %s", f.NamespacePath),
-				"defect_count":    f.TotalFindings,
-				"critical_count":  f.CriticalFindings,
-				"pass_rate":       f.PassRate,
-				"synthesized_at":  time.Now().UTC().Format(time.RFC3339),
+				"workspace_id":   wsID.String(),
+				"repository_id":  f.RepositoryID.String(),
+				"namespace":      f.NamespacePath,
+				"candidate_rule": fmt.Sprintf("Enforce compliance & defect prevention for %s", f.NamespacePath),
+				"defect_count":   f.TotalFindings,
+				"critical_count": f.CriticalFindings,
+				"pass_rate":      f.PassRate,
+				"synthesized_at": time.Now().UTC().Format(time.RFC3339),
 			})
 
 			outbox := &models.OutboxRecord{

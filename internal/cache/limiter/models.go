@@ -17,6 +17,7 @@ type RateLimitResult struct {
 	Remaining  int           `json:"remaining"`
 	ResetAfter time.Duration `json:"reset_after"`
 	RetryAfter time.Duration `json:"retry_after,omitempty"`
+	Degraded   bool          `json:"degraded,omitempty"` // true if evaluated via local in-memory fallback during Redis outage
 }
 
 // DistributedLock represents an active mutual exclusion lease on a resource.

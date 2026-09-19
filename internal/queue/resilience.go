@@ -14,12 +14,12 @@ type TaskHandler func(ctx context.Context, body []byte) error
 
 // ResilientConsumer manages a bounded worker pool and automatic reconnection loop.
 type ResilientConsumer struct {
-	broker        *Broker
-	queueName     string
-	workerCount   int
-	handler       TaskHandler
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
+	broker      *Broker
+	queueName   string
+	workerCount int
+	handler     TaskHandler
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
 }
 
 // NewResilientConsumer initializes a robust worker pool.
@@ -105,9 +105,14 @@ func (rc *ResilientConsumer) dispatchLoop(ctx context.Context, deliveries <-chan
 				defer jobCancel()
 
 				if err := rc.handler(jobCtx, d.Body); err != nil {
-					slog.Error("Task processing failed", "error", err)
-					// Reject with requeue if retry count is under limit
-					_ = d.Nack(false, true)
+					attempts := getDeliveryAttempts(d)
+					slog.Error("Task processing failed", "error", err, "attempts", attempts)
+					if attempts >= 5 {
+						slog.Error("Task reached max retries threshold, rejecting to DLQ", "attempts", attempts)
+						_ = d.Nack(false, false) // Drop to dead-letter exchange (poison-message prevention)
+					} else {
+						_ = d.Nack(false, true) // Requeue for next retry
+					}
 				} else {
 					_ = d.Ack(false)
 				}
@@ -121,4 +126,26 @@ func (rc *ResilientConsumer) Stop() {
 	close(rc.stopChan)
 	rc.wg.Wait()
 	slog.Info("Worker consumer drained and terminated safely")
+}
+
+func getDeliveryAttempts(d amqp.Delivery) int64 {
+	if d.Headers != nil {
+		if count, ok := d.Headers["x-delivery-count"].(int64); ok {
+			return count
+		}
+		if count, ok := d.Headers["x-delivery-count"].(int); ok {
+			return int64(count)
+		}
+		if deaths, ok := d.Headers["x-death"].([]any); ok && len(deaths) > 0 {
+			if deathMap, ok := deaths[0].(amqp.Table); ok {
+				if count, ok := deathMap["count"].(int64); ok {
+					return count
+				}
+			}
+		}
+	}
+	if d.Redelivered {
+		return 2
+	}
+	return 1
 }

@@ -233,3 +233,54 @@ func TestWorkerPoolGracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestWorkerPoolUnconsumedResultsChannelNoDeadlock(t *testing.T) {
+	ctx := context.Background()
+	inbox := relay.NewInboxDeduplicator()
+
+	var completedCounter int64
+	fastExecutor := func(ctx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
+		atomic.AddInt64(&completedCounter, 1)
+		return nil, nil
+	}
+
+	cfg := consumer.ConsumerConfig{
+		MaxRetries:  3,
+		ClaimTTL:    1 * time.Minute,
+		Concurrency: 4,
+	}
+
+	reviewConsumer := consumer.NewReviewConsumer(cfg, inbox, fastExecutor)
+	pool := consumer.NewWorkerPool(4, reviewConsumer)
+	pool.Start(ctx)
+
+	// Submit 150 tasks (capacity of p.results is 100) using Submit (OnComplete == nil)
+	// without any consumer reading from ResultsChannel(). Must not deadlock.
+	const taskCount = 150
+	for i := 0; i < taskCount; i++ {
+		for !pool.Submit(consumer.ReviewTaskPayload{
+			TaskID:            uuid.New(),
+			WorkspaceID:       uuid.New(),
+			Provider:          models.ProviderGitHub,
+			RepoNamespace:     "acme/deadlock-test",
+			PullRequestNumber: i + 1,
+		}) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if atomic.LoadInt64(&completedCounter) != taskCount {
+			t.Fatalf("expected %d completed tasks, got %d", taskCount, completedCounter)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker pool deadlocked when results channel was unconsumed")
+	}
+}
+

@@ -69,7 +69,12 @@ func TestRepositoryNilClientGuards(t *testing.T) {
 		t.Fatalf("expected nil error on nil client for MarkRefreshTokenUsed, got: %v", err)
 	}
 
-	err = repo.SaveAPIKey(ctx, uuid.New(), uuid.New(), "CLI Key", "hash", "kodus_cli_", nil)
+	err = repo.InvalidateAllUserRefreshTokens(ctx, uuid.New())
+	if err != nil {
+		t.Fatalf("expected nil error on nil client for InvalidateAllUserRefreshTokens, got: %v", err)
+	}
+
+	err = repo.SaveAPIKey(ctx, uuid.New(), uuid.New(), "CLI Key", "hash", "scandrix_cli_", nil)
 	if err != nil {
 		t.Fatalf("expected nil error on nil client for SaveAPIKey, got: %v", err)
 	}

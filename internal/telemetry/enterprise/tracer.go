@@ -100,6 +100,24 @@ func (t *Tracer) StartSpan(ctx context.Context, name string, attrs map[string]an
 	return newCtx, span
 }
 
+// End finalizes span execution.
+func (s *Span) End() {
+	if s.EndTime.IsZero() {
+		s.EndTime = time.Now().UTC()
+	}
+	if s.Status == "" {
+		s.Status = "OK"
+	}
+}
+
+// RecordError records an error onto the span and marks its status as ERROR.
+func (s *Span) RecordError(err error) {
+	if err != nil {
+		s.ErrorMessage = err.Error()
+		s.Status = "ERROR"
+	}
+}
+
 // EndSpan finalizes span execution.
 func (t *Tracer) EndSpan(span *Span, status, errMsg string) {
 	span.EndTime = time.Now().UTC()

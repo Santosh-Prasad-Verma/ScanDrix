@@ -2,24 +2,26 @@ package templates
 
 import (
 	"fmt"
-	"strings"
+	"html"
 	"time"
 )
 
-// RenderBrandLayout renders the responsive HTML shell mirroring Kodus AI / ScanDrix brand design.
+// RenderBrandLayout renders the responsive HTML shell with the ScanDrix brand design.
 func RenderBrandLayout(previewText, title, contentHTML, ctaText, ctaURL string) string {
 	var ctaBlock string
+	safeTitle := html.EscapeString(title)
+	safePreview := html.EscapeString(previewText)
 	if ctaText != "" && ctaURL != "" {
+		safeCtaText := html.EscapeString(ctaText)
+		safeCtaURL := html.EscapeString(ctaURL)
 		ctaBlock = fmt.Sprintf(`
 			<div style="text-align: center; margin: 32px 0 24px 0;">
 				<a href="%s" style="background-color: %s; color: %s; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-weight: 700; font-size: 15px; display: inline-block; letter-spacing: -0.01em; box-shadow: 0 2px 4px rgba(0,0,0,0.06);">
 					%s &rarr;
 				</a>
 			</div>
-		`, ctaURL, ColorPrimaryLight, ColorPrimaryDark, ctaText)
+		`, safeCtaURL, ColorPrimaryLight, ColorPrimaryDark, safeCtaText)
 	}
-
-	previewEscaped := strings.ReplaceAll(previewText, "\"", "&quot;")
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
@@ -104,18 +106,18 @@ func RenderBrandLayout(previewText, title, contentHTML, ctaText, ctaURL string) 
 	</table>
 </body>
 </html>`,
-		title,
+		safeTitle,
 		ColorPageBG,
 		ColorPrimaryDark,
 		ColorPageBG,
-		previewEscaped,
+		safePreview,
 		ColorHeaderBG,
 		ColorPrimaryLight,
 		ColorPrimaryLight,
 		ColorCardBG,
 		ColorBorder,
 		ColorTextPrimary,
-		title,
+		safeTitle,
 		ColorTextPrimary,
 		contentHTML,
 		ctaBlock,
