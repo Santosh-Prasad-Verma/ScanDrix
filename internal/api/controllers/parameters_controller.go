@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	centdomain "github.com/scandrix/backend/internal/centralizedconfig/domain"
 	paramusecases "github.com/scandrix/backend/internal/organization/application/usecases/parameters"
 	paramdomain "github.com/scandrix/backend/internal/organization/domain/parameters"
 	"github.com/scandrix/backend/pkg/models"
@@ -27,10 +29,12 @@ type ParametersRepository interface {
 
 // ParametersController handles review settings, model selections, and organizational thresholds.
 type ParametersController struct {
-	repo               ParametersRepository
-	findByKeyUC        *paramusecases.FindByKeyParametersUseCase
-	createOrUpdateUC   *paramusecases.CreateOrUpdateParametersUseCase
-	getDefaultConfigUC *paramusecases.GetDefaultConfigUseCase
+	repo                   ParametersRepository
+	findByKeyUC            *paramusecases.FindByKeyParametersUseCase
+	createOrUpdateUC       *paramusecases.CreateOrUpdateParametersUseCase
+	getDefaultConfigUC     *paramusecases.GetDefaultConfigUseCase
+	centralizedConfigSvc   centdomain.CentralizedConfigService
+	centralizedConfigPRSvc centdomain.CentralizedConfigPRService
 }
 
 // NewParametersController initializes the parameters controller.
@@ -50,6 +54,16 @@ func (c *ParametersController) WithUseCases(
 	c.findByKeyUC = findByKeyUC
 	c.createOrUpdateUC = createOrUpdateUC
 	c.getDefaultConfigUC = getDefaultConfigUC
+	return c
+}
+
+// WithCentralizedConfig injects the centralized configuration services.
+func (c *ParametersController) WithCentralizedConfig(
+	svc centdomain.CentralizedConfigService,
+	prSvc centdomain.CentralizedConfigPRService,
+) *ParametersController {
+	c.centralizedConfigSvc = svc
+	c.centralizedConfigPRSvc = prSvc
 	return c
 }
 
@@ -354,6 +368,20 @@ func (c *ParametersController) handleDeleteRepoParameter(w http.ResponseWriter, 
 
 func (c *ParametersController) handleCentralizedConfigSync(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+	teamID := r.URL.Query().Get("teamId")
+
+	if c.centralizedConfigSvc != nil && wsID != uuid.Nil {
+		if err := c.centralizedConfigSvc.SyncRepositoryConfig(r.Context(), wsID.String(), teamID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"statusCode": http.StatusInternalServerError,
+				"error":      err.Error(),
+			})
+			return
+		}
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
@@ -375,34 +403,180 @@ func (c *ParametersController) CentralizedConfigRoutes() chi.Router {
 
 func (c *ParametersController) handleCentralizedStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+	teamID := r.URL.Query().Get("teamId")
+
+	if c.centralizedConfigSvc == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":       false,
+			"repository":    nil,
+			"selected_repo": "",
+			"sync_mode":     "manual",
+			"success":       true,
+		})
+		return
+	}
+
+	status, err := c.centralizedConfigSvc.ValidateCentralizedConfig(r.Context(), wsID.String(), teamID)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":      false,
+			"errorMessage": err.Error(),
+			"success":      false,
+		})
+		return
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"enabled":       false,
-		"repository":    nil,
-		"selected_repo": "",
-		"sync_mode":     "manual",
-		"success":       true,
+		"enabled":      status.IsValid,
+		"lastSyncAt":   status.LastSyncAt,
+		"activeRules":  status.ActiveRules,
+		"totalFiles":   status.TotalFiles,
+		"errorMessage": status.ErrorMessage,
+		"success":      true,
 	})
 }
 
 func (c *ParametersController) handleCentralizedInit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+
 	var body struct {
-		RepositoryID string `json:"repository_id"`
-		RepoID       string `json:"repositoryId"`
-		SyncOption   string `json:"sync_option"`
+		RepositoryID  string `json:"repository_id"`
+		RepoID        string `json:"repositoryId"`
+		DefaultBranch string `json:"default_branch"`
+		Branch        string `json:"branch"`
+		TeamID        string `json:"team_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	w.Header().Set("Content-Type", "application/json")
+	repoID := body.RepositoryID
+	if repoID == "" {
+		repoID = body.RepoID
+	}
+	if repoID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   "repository_id is required",
+		})
+		return
+	}
+
+	branch := body.DefaultBranch
+	if branch == "" {
+		branch = body.Branch
+	}
+	if branch == "" {
+		branch = "main"
+	}
+
+	teamID := body.TeamID
+	if teamID == "" {
+		teamID = r.URL.Query().Get("teamId")
+	}
+
+	if c.centralizedConfigSvc != nil {
+		type repoInitializer interface {
+			InitCentralizedRepository(ctx context.Context, req centdomain.InitRepoRequest) (*centdomain.InitRepoResult, error)
+		}
+		if s, ok := c.centralizedConfigSvc.(repoInitializer); ok {
+			res, err := s.InitCentralizedRepository(r.Context(), centdomain.InitRepoRequest{
+				OrganizationID:      wsID.String(),
+				TeamID:              teamID,
+				CentralRepositoryID: repoID,
+				DefaultBranch:       branch,
+			})
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": false,
+					"error":   err.Error(),
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": res.Success,
+				"message": res.Message,
+				"prUrl":   res.PRURL,
+				"pr_url":  res.PRURL,
+			})
+			return
+		}
+
+		if err := c.centralizedConfigSvc.InitCentralizedConfig(r.Context(), wsID.String(), teamID, branch); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
 		"message": "Centralized configuration initialized successfully",
-		"prUrl":   nil,
-		"pr_url":  "",
 	})
 }
 
 func (c *ParametersController) handleCentralizedSync(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+
+	var body struct {
+		RepositoryID string `json:"repository_id"`
+		RepoID       string `json:"repositoryId"`
+		TeamID       string `json:"team_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	teamID := body.TeamID
+	if teamID == "" {
+		teamID = r.URL.Query().Get("teamId")
+	}
+
+	repoID := body.RepositoryID
+	if repoID == "" {
+		repoID = body.RepoID
+	}
+
+	if c.centralizedConfigSvc != nil {
+		type repoSyncer interface {
+			SyncCentralizedRepository(ctx context.Context, req centdomain.SyncRepoRequest) (*centdomain.SyncRepoResult, error)
+		}
+		if s, ok := c.centralizedConfigSvc.(repoSyncer); ok && repoID != "" {
+			res, err := s.SyncCentralizedRepository(r.Context(), centdomain.SyncRepoRequest{
+				OrganizationID:      wsID.String(),
+				TeamID:              teamID,
+				CentralRepositoryID: repoID,
+			})
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": false,
+					"error":   err.Error(),
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success":     res.Success,
+				"message":     res.Message,
+				"syncedFiles": res.SyncedFiles,
+			})
+			return
+		}
+
+		if err := c.centralizedConfigSvc.SyncRepositoryConfig(r.Context(), wsID.String(), teamID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
 		"message": "Centralized organization rules synchronized successfully",
@@ -411,14 +585,39 @@ func (c *ParametersController) handleCentralizedSync(w http.ResponseWriter, r *h
 
 func (c *ParametersController) handleCentralizedDisable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+	teamID := r.URL.Query().Get("teamId")
+
+	if c.centralizedConfigPRSvc != nil {
+		c.centralizedConfigPRSvc.ClearActivePullRequestMetadata(wsID.String(), teamID)
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
-		"message": "Centralized configuration disabled",
+		"message": "Centralized configuration disabled successfully",
 	})
 }
 
 func (c *ParametersController) handleCentralizedConfigInit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+	teamID := r.URL.Query().Get("teamId")
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		branch = "main"
+	}
+
+	if c.centralizedConfigSvc != nil && wsID != uuid.Nil {
+		if err := c.centralizedConfigSvc.InitCentralizedConfig(r.Context(), wsID.String(), teamID, branch); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"statusCode": http.StatusInternalServerError,
+				"error":      err.Error(),
+			})
+			return
+		}
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
@@ -428,11 +627,51 @@ func (c *ParametersController) handleCentralizedConfigInit(w http.ResponseWriter
 }
 
 func (c *ParametersController) handleCentralizedConfigDownload(w http.ResponseWriter, r *http.Request) {
+	wsID, _ := auth.WorkspaceFromContext(r.Context())
+	teamID := r.URL.Query().Get("teamId")
+	asZip := r.URL.Query().Get("zip") == "true" || strings.Contains(r.Header.Get("Accept"), "application/zip")
+
+	if c.centralizedConfigSvc == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"statusCode": http.StatusOK,
+			"data": map[string]any{
+				"files": []any{},
+			},
+		})
+		return
+	}
+
+	if asZip {
+		rc, err := c.centralizedConfigSvc.DownloadConfigZip(r.Context(), wsID.String(), teamID)
+		if err != nil {
+			http.Error(w, `{"error":"failed creating config zip"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="scandrix-config.zip"`)
+		_, _ = io.Copy(w, rc)
+		return
+	}
+
+	files, err := c.centralizedConfigSvc.DownloadConfig(r.Context(), wsID.String(), teamID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"statusCode": http.StatusInternalServerError,
+			"error":      err.Error(),
+		})
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
-			"content": "",
+			"files": files,
+			"count": len(files),
 		},
 	})
 }

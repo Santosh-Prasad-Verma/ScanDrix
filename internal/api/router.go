@@ -38,6 +38,7 @@ import (
 	"github.com/scandrix/backend/internal/platformdata/application/usecases"
 	platformRepo "github.com/scandrix/backend/internal/platformdata/infrastructure/repositories"
 	"github.com/scandrix/backend/internal/clireview"
+	centinfra "github.com/scandrix/backend/internal/centralizedconfig/infrastructure"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
 )
@@ -311,11 +312,19 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	)
 	codeCtrl := controllers.NewCodeManagementController(codeRepo)
 	codeCtrl.SetOAuthService(cfg.OAuthService)
-	paramCtrl := controllers.NewParametersController(paramRepo).WithUseCases(
-		orgModule.ParamFindByKeyUC,
-		orgModule.ParamCreateOrUpdateUC,
-		orgModule.ParamGetDefaultConfigUC,
-	)
+
+	centStorage := centinfra.NewDefaultConfigStorage(paramRepo)
+	centTree := centinfra.NewMemoryTreeProvider()
+	centPRSvc := centinfra.NewPRService(nil)
+	centSvc := centinfra.NewService(centPRSvc, centTree, centStorage)
+
+	paramCtrl := controllers.NewParametersController(paramRepo).
+		WithUseCases(
+			orgModule.ParamFindByKeyUC,
+			orgModule.ParamCreateOrUpdateUC,
+			orgModule.ParamGetDefaultConfigUC,
+		).
+		WithCentralizedConfig(centSvc, centPRSvc)
 	orgParamCtrl := controllers.NewOrganizationParametersController(orgParamRepo).WithUseCases(
 		orgModule.OrgParamFindByKeyUC,
 		orgModule.OrgParamCreateOrUpdateUC,
