@@ -1,24 +1,37 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/database"
 )
 
+// UsageRepository defines the data contract for AI token usage and quota metrics (Clean Architecture).
+type UsageRepository interface {
+	GetWorkspaceUsage(ctx context.Context, wsID uuid.UUID, since time.Time) (promptTokens, completionTokens int64, costUSD float64, err error)
+	GetLiveTokenQuota(ctx context.Context, wsID uuid.UUID) (*database.LiveQuotaStatus, error)
+	GetWorkspaceDailyUsageHistory(ctx context.Context, wsID uuid.UUID, days int) ([]database.DailyUsageSummary, error)
+	UpdateSpendLimit(ctx context.Context, wsID uuid.UUID, limitUSD float64) error
+}
+
 // UsageController manages AI token metering, live quota headroom, and spend caps.
 type UsageController struct {
-	repo *database.Repository
+	repo UsageRepository
 }
 
 // NewUsageController initializes the usage controller with database repository.
-func NewUsageController(repo *database.Repository) *UsageController {
+func NewUsageController(repo UsageRepository) *UsageController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &UsageController{repo: repo}
 }
 
@@ -74,10 +87,26 @@ func (c *UsageController) handleGetQuota(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	quota, err := c.repo.GetLiveTokenQuota(r.Context(), wsID)
-	if err != nil {
-		http.Error(w, `{"error":"failed evaluating live token quota"}`, http.StatusInternalServerError)
-		return
+	var quota *database.LiveQuotaStatus
+	if c.repo != nil {
+		var err error
+		quota, err = c.repo.GetLiveTokenQuota(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed evaluating live token quota"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if quota == nil {
+		now := time.Now().UTC()
+		startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		quota = &database.LiveQuotaStatus{
+			Tier:               "COMMUNITY",
+			MonthlyTokenLimit:  500000,
+			BurstLimitPerMin:   60,
+			BillingPeriodStart: startOfMonth,
+			BillingPeriodEnd:   startOfMonth.AddDate(0, 1, 0),
+		}
 	}
 
 	isExhausted := !quota.BYOKEnabled && quota.MonthlyTokenLimit > 0 && quota.TokensUsedThisMonth >= quota.MonthlyTokenLimit
@@ -112,10 +141,14 @@ func (c *UsageController) handleGetUsageHistory(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	history, err := c.repo.GetWorkspaceDailyUsageHistory(r.Context(), wsID, days)
-	if err != nil {
-		http.Error(w, `{"error":"failed querying usage history"}`, http.StatusInternalServerError)
-		return
+	var history []database.DailyUsageSummary
+	if c.repo != nil {
+		var err error
+		history, err = c.repo.GetWorkspaceDailyUsageHistory(r.Context(), wsID, days)
+		if err != nil {
+			http.Error(w, `{"error":"failed querying usage history"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	var totalTokens int64
@@ -155,9 +188,11 @@ func (c *UsageController) handleUpdateSpendLimit(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if err := c.repo.UpdateSpendLimit(r.Context(), wsID, req.MonthlySpendLimitUSD); err != nil {
-		http.Error(w, `{"error":"failed updating spend limit"}`, http.StatusInternalServerError)
-		return
+	if c.repo != nil {
+		if err := c.repo.UpdateSpendLimit(r.Context(), wsID, req.MonthlySpendLimitUSD); err != nil {
+			http.Error(w, `{"error":"failed updating spend limit"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,18 +11,27 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/enterprise/audit"
+	"github.com/scandrix/backend/pkg/models"
 )
+
+// AuditRepository defines the data access contract for compliance audit logging (Clean Architecture).
+type AuditRepository interface {
+	ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit int) ([]models.AuditLogRecord, error)
+}
 
 // AuditController handles compliance audit log queries and SIEM streaming exports.
 type AuditController struct {
-	repo     *database.Repository
+	repo     AuditRepository
 	streamer *audit.SIEMAuditStreamer
 }
 
 // NewAuditController initializes the audit log controller.
-func NewAuditController(repo *database.Repository) *AuditController {
+func NewAuditController(repo AuditRepository) *AuditController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &AuditController{
 		repo:     repo,
 		streamer: audit.NewSIEMAuditStreamer(),
@@ -43,6 +53,12 @@ func (c *AuditController) handleListAuditLogs(w http.ResponseWriter, r *http.Req
 	wsID, err := uuid.Parse(wsIDStr)
 	if err != nil {
 		http.Error(w, `{"error":"invalid workspace id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctxWsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || ctxWsID != wsID {
+		http.Error(w, `{"error":"forbidden: workspace access denied"}`, http.StatusForbidden)
 		return
 	}
 
@@ -75,6 +91,12 @@ func (c *AuditController) handleExportSIEM(w http.ResponseWriter, r *http.Reques
 	wsID, err := uuid.Parse(wsIDStr)
 	if err != nil {
 		http.Error(w, `{"error":"invalid workspace id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctxWsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || ctxWsID != wsID {
+		http.Error(w, `{"error":"forbidden: workspace access denied"}`, http.StatusForbidden)
 		return
 	}
 

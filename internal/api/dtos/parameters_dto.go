@@ -13,8 +13,8 @@ type ReviewParametersDTO struct {
 
 // OrgParametersDTO holds organization-wide enforcement rules.
 type OrgParametersDTO struct {
-	BlockPRMergeOnCritical    bool   `json:"block_pr_merge_on_critical"`
+	BlockPRMergeOnCritical     bool   `json:"block_pr_merge_on_critical"`
 	RequireReviewDismissalRole string `json:"require_review_dismissal_role"`
-	DefaultBranchOnly         bool   `json:"default_branch_only"`
-	NotificationSlackChannel  string `json:"notification_slack_channel"`
+	DefaultBranchOnly          bool   `json:"default_branch_only"`
+	NotificationSlackChannel   string `json:"notification_slack_channel"`
 }

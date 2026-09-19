@@ -15,25 +15,27 @@ type LoginRequest struct {
 
 // RegisterRequest defines input for account creation.
 type RegisterRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
-	WorkspaceName string `json:"workspace_name"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	DisplayName    string `json:"display_name"`
+	WorkspaceName  string `json:"workspace_name"`
+	WebsiteURL     string `json:"website_url,omitempty"`     // Anti-bot honeypot: must be empty
+	TurnstileToken string `json:"turnstile_token,omitempty"` // Cloudflare Turnstile bot verification token
 }
 
 // AuthTokenResponse returns issued access tokens.
 type AuthTokenResponse struct {
-	AccessToken  string             `json:"access_token"`
-	RefreshToken string             `json:"refresh_token,omitempty"`
-	TokenType    string             `json:"token_type"`
-	ExpiresIn    int64              `json:"expires_in"`
+	AccessToken  string                `json:"access_token"`
+	RefreshToken string                `json:"refresh_token,omitempty"`
+	TokenType    string                `json:"token_type"`
+	ExpiresIn    int64                 `json:"expires_in"`
 	User         models.AccountProfile `json:"user"`
 }
 
 // CreateAPIKeyRequest defines input for generating team/CLI keys.
 type CreateAPIKeyRequest struct {
-	Name        string     `json:"name"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Name      string     `json:"name"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // APIKeyResponse returns details of an issued API key.
@@ -77,6 +79,3 @@ type OAuthCallbackRequest struct {
 	Code  string `json:"code"`
 	State string `json:"state,omitempty"`
 }
-
-
-

@@ -14,6 +14,7 @@ import (
 	"github.com/scandrix/backend/internal/api/controllers"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/provenance/intoto"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 func TestReviewControllerAttestationEndpoints(t *testing.T) {
@@ -77,3 +78,67 @@ func TestReviewControllerAttestationEndpoints(t *testing.T) {
 		t.Fatalf("expected valid verification outcome, got: %+v", verifyResp)
 	}
 }
+
+func TestReviewControllerStreamAuth(t *testing.T) {
+	ctrl := controllers.NewReviewController(nil, nil, nil)
+	router := ctrl.Routes()
+	reviewID := uuid.New()
+
+	// 1. Without workspace context -> 401 Unauthorized
+	req := httptest.NewRequest(http.MethodGet, "/"+reviewID.String()+"/stream", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized without workspace context, got: %d", rec.Code)
+	}
+}
+
+func TestReviewControllerTriggerReviewViewerForbidden(t *testing.T) {
+	ctrl := controllers.NewReviewController(nil, nil, nil)
+	router := ctrl.Routes()
+	wsID := uuid.New()
+
+	// Viewer role cannot trigger review -> 403 Forbidden
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"pull_number":1,"title":"feat: test"}`)))
+	ctx := context.WithValue(req.Context(), auth.WorkspaceContextKey, wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{
+		ID:          uuid.New(),
+		WorkspaceID: wsID,
+		Email:       "viewer@scandrix.dev",
+		Role:        models.RoleViewer,
+	})
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for viewer role, got: %d", rec.Code)
+	}
+}
+
+func TestReviewControllerTriggerReviewMemberAccepted(t *testing.T) {
+	ctrl := controllers.NewReviewController(nil, nil, nil)
+	router := ctrl.Routes()
+	wsID := uuid.New()
+
+	// Member role can trigger review -> 202 Accepted
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"pull_number":1,"title":"feat: test"}`)))
+	ctx := context.WithValue(req.Context(), auth.WorkspaceContextKey, wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{
+		ID:          uuid.New(),
+		WorkspaceID: wsID,
+		Email:       "member@scandrix.dev",
+		Role:        models.RoleMember,
+	})
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for member role, got: %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+

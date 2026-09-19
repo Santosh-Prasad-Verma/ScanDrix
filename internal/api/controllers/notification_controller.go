@@ -1,23 +1,33 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
-	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// NotificationController manages channel alert destinations and notification policies.
-type NotificationController struct {
-	repo *database.Repository
+// NotificationRepository defines the data access contract for notification channels (Clean Architecture).
+type NotificationRepository interface {
+	ListNotificationChannels(ctx context.Context, wsID uuid.UUID) ([]models.NotificationChannel, error)
+	CreateNotificationChannel(ctx context.Context, wsID uuid.UUID, chType, target string, severity models.FindingSeverity) (*models.NotificationChannel, error)
 }
 
-// NewNotificationController initializes the notification controller with database repository.
-func NewNotificationController(repo *database.Repository) *NotificationController {
+// NotificationController manages channel alert destinations and notification policies.
+type NotificationController struct {
+	repo NotificationRepository
+}
+
+// NewNotificationController initializes the notification controller with repository dependency.
+func NewNotificationController(repo NotificationRepository) *NotificationController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &NotificationController{repo: repo}
 }
 
@@ -38,10 +48,14 @@ func (c *NotificationController) handleListChannels(w http.ResponseWriter, r *ht
 		return
 	}
 
-	channels, err := c.repo.ListNotificationChannels(r.Context(), wsID)
-	if err != nil {
-		http.Error(w, `{"error":"failed listing notification channels"}`, http.StatusInternalServerError)
-		return
+	var channels []models.NotificationChannel
+	if c.repo != nil {
+		var err error
+		channels, err = c.repo.ListNotificationChannels(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed listing notification channels"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	res := make([]dtos.NotificationChannelDTO, 0, len(channels))
@@ -63,6 +77,11 @@ func (c *NotificationController) handleCreateChannel(w http.ResponseWriter, r *h
 	wsID, err := auth.WorkspaceFromContext(r.Context())
 	if err != nil {
 		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 

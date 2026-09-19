@@ -32,6 +32,7 @@ func NewTrialRateLimiter(limit int, window time.Duration) *TrialRateLimiter {
 type TrialRateLimitResult struct {
 	Allowed   bool
 	Remaining int
+	Limit     int
 	ResetAt   time.Time
 }
 
@@ -62,18 +63,55 @@ func (rl *TrialRateLimiter) CheckRateLimit(fingerprint string) TrialRateLimitRes
 		return TrialRateLimitResult{
 			Allowed:   false,
 			Remaining: 0,
+			Limit:     rl.limit,
 			ResetAt:   resetAt,
 		}
 	}
 
 	valid = append(valid, now)
 	rl.requests[fingerprint] = valid
-	remaining := rl.limit - len(valid)
 
+	resetAt := now.Add(rl.window)
 	return TrialRateLimitResult{
 		Allowed:   true,
+		Remaining: rl.limit - len(valid),
+		Limit:     rl.limit,
+		ResetAt:   resetAt,
+	}
+}
+
+// InspectRateLimit inspects the current rate limit status for a fingerprint without consuming a request.
+func (rl *TrialRateLimiter) InspectRateLimit(fingerprint string) TrialRateLimitResult {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now().UTC()
+	cutoff := now.Add(-rl.window)
+
+	var valid []time.Time
+	for _, t := range rl.requests[fingerprint] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	remaining := rl.limit - len(valid)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	var resetAt time.Time
+	if len(valid) > 0 {
+		resetAt = valid[0].Add(rl.window)
+	} else {
+		resetAt = now.Add(rl.window)
+	}
+
+	return TrialRateLimitResult{
+		Allowed:   remaining > 0,
 		Remaining: remaining,
-		ResetAt:   now.Add(rl.window),
+		Limit:     rl.limit,
+		ResetAt:   resetAt,
 	}
 }
 

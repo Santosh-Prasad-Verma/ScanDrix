@@ -10,11 +10,11 @@ import (
 type EventType string
 
 const (
-	EventStageTransition    EventType = "STAGE_TRANSITION"
-	EventFindingDiscovered  EventType = "FINDING_DISCOVERED"
-	EventCritiqueDebate     EventType = "CRITIQUE_DEBATE"
-	EventReviewCompleted    EventType = "REVIEW_COMPLETED"
-	EventHeartbeat          EventType = "HEARTBEAT"
+	EventStageTransition   EventType = "STAGE_TRANSITION"
+	EventFindingDiscovered EventType = "FINDING_DISCOVERED"
+	EventCritiqueDebate    EventType = "CRITIQUE_DEBATE"
+	EventReviewCompleted   EventType = "REVIEW_COMPLETED"
+	EventHeartbeat         EventType = "HEARTBEAT"
 )
 
 // StreamEvent represents an atomic telemetry packet broadcast to subscribers.

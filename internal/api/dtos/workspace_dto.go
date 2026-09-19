@@ -15,11 +15,11 @@ type CreateWorkspaceRequest struct {
 
 // WorkspaceResponse returns workspace details.
 type WorkspaceResponse struct {
-	ID        uuid.UUID            `json:"id"`
-	Name      string               `json:"name"`
-	Slug      string               `json:"slug"`
-	Status    models.TenantStatus  `json:"status"`
-	CreatedAt time.Time            `json:"created_at"`
+	ID        uuid.UUID           `json:"id"`
+	Name      string              `json:"name"`
+	Slug      string              `json:"slug"`
+	Status    models.TenantStatus `json:"status"`
+	CreatedAt time.Time           `json:"created_at"`
 }
 
 // CockpitMetricsResponse provides executive security dashboard stats.

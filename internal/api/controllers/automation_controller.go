@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -8,16 +9,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/automation"
-	"github.com/scandrix/backend/internal/database"
 )
+
+// AutomationRepository defines the data contract for workflow rules (Clean Architecture).
+type AutomationRepository interface {
+	ListAutomationRules(ctx context.Context, wsID uuid.UUID) ([]automation.AutomationRule, error)
+	CreateAutomationRule(ctx context.Context, rule *automation.AutomationRule) error
+	DeleteAutomationRule(ctx context.Context, wsID, ruleID uuid.UUID) error
+}
 
 // AutomationController manages team workflow rules.
 type AutomationController struct {
-	repo *database.Repository
+	repo AutomationRepository
 }
 
 // NewAutomationController initializes the workflow automation controller.
-func NewAutomationController(repo *database.Repository) *AutomationController {
+func NewAutomationController(repo AutomationRepository) *AutomationController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &AutomationController{repo: repo}
 }
 
@@ -39,10 +49,14 @@ func (c *AutomationController) handleListRules(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	rules, err := c.repo.ListAutomationRules(r.Context(), wsID)
-	if err != nil {
-		http.Error(w, `{"error":"failed querying automations"}`, http.StatusInternalServerError)
-		return
+	var rules []automation.AutomationRule
+	if c.repo != nil {
+		var err error
+		rules, err = c.repo.ListAutomationRules(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed querying automations"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if rules == nil {
@@ -70,9 +84,11 @@ func (c *AutomationController) handleCreateRule(w http.ResponseWriter, r *http.R
 	}
 
 	rule.WorkspaceID = wsID
-	if err := c.repo.CreateAutomationRule(r.Context(), &rule); err != nil {
-		http.Error(w, `{"error":"failed creating automation rule"}`, http.StatusInternalServerError)
-		return
+	if c.repo != nil {
+		if err := c.repo.CreateAutomationRule(r.Context(), &rule); err != nil {
+			http.Error(w, `{"error":"failed creating automation rule"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -94,9 +110,11 @@ func (c *AutomationController) handleDeleteRule(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := c.repo.DeleteAutomationRule(r.Context(), wsID, ruleID); err != nil {
-		http.Error(w, `{"error":"failed deleting automation rule"}`, http.StatusInternalServerError)
-		return
+	if c.repo != nil {
+		if err := c.repo.DeleteAutomationRule(r.Context(), wsID, ruleID); err != nil {
+			http.Error(w, `{"error":"failed deleting automation rule"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
