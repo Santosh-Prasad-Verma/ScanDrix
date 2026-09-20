@@ -345,6 +345,20 @@ func (e *ClusterTuningEngine) ClusterizeSuggestions(
 		}
 	}
 
+	// Final assignment pass to guarantee assignments correspond to final centroids
+	for i, s := range suggestions {
+		bestCluster := 0
+		bestSim := -2.0
+		for cIdx := 0; cIdx < k; cIdx++ {
+			sim := e.CosineSimilarity(s.Embedding, centroids[cIdx])
+			if sim > bestSim {
+				bestSim = sim
+				bestCluster = cIdx
+			}
+		}
+		assignments[i] = bestCluster
+	}
+
 	// 3. Build clusterized output and centroid summary records
 	clusterized := make([]*ClusterizedSuggestion, n)
 	centroidMap := make(map[int]*ClusterCentroid, k)
@@ -458,11 +472,14 @@ func (e *ClusterTuningEngine) CompareCandidateWithClusters(
 		return res
 	}
 
-	// 2. Find closest cluster centroid by cosine similarity
+	// 2. Find closest cluster centroid by cosine similarity (ignoring empty clusters)
 	bestClusterID := -1
 	bestSim := -2.0
 
 	for cID, cm := range centroids {
+		if cm == nil || cm.MemberCount == 0 {
+			continue
+		}
 		sim := e.CosineSimilarity(candidateEmbedding, cm.Centroid)
 		if sim > bestSim {
 			bestSim = sim
