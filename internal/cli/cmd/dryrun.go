@@ -62,11 +62,18 @@ func init() {
 
 // ExecuteDryRun performs the simulated review run.
 func ExecuteDryRun(ctx context.Context, opts DryRunOptions) error {
+	// 1. Build and validate review configuration
+	configBuilder := review.NewReviewConfigBuilder(".")
+	effConfig, err := configBuilder.Build(ctx, opts.MinSeverity, nil)
+	if err != nil {
+		return err
+	}
+	_ = effConfig
+
 	gitSvc := git.DefaultService()
 
-	// 1. Gather diff based on options
+	// 2. Gather diff based on options
 	var diff string
-	var err error
 
 	if opts.Commit != "" {
 		utils.Info("Evaluating commit %s in dry-run mode...", opts.Commit)
@@ -91,17 +98,9 @@ func ExecuteDryRun(ctx context.Context, opts DryRunOptions) error {
 		return nil
 	}
 
-	// 2. Load local rules
+	// 3. Load local rules
 	localRules, _ := rulescli.ViewRules(ctx, "", "", "", "")
 	utils.Info("Loaded %d active local/centralized rules for evaluation", len(localRules))
-
-	// 3. Build review configuration
-	configBuilder := review.NewReviewConfigBuilder(".")
-	effConfig, err := configBuilder.Build(ctx, opts.MinSeverity, nil)
-	if err != nil {
-		return err
-	}
-	_ = effConfig
 
 	// 4. Simulate review findings
 	stats := types.ReviewStats{

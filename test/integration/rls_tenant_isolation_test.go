@@ -42,8 +42,26 @@ func TestRLSTenantIsolation(t *testing.T) {
 	tenantA := uuid.New()
 	tenantB := uuid.New()
 
-	// Setup workspace records at the system level
+	// Setup workspace records at the system level and ensure scandrix_app role is provisioned
 	err = client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, _ = tx.Exec(ctx, `
+			DO $$
+			BEGIN
+				IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_app') THEN
+					CREATE ROLE scandrix_app NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE;
+				END IF;
+			END $$;
+			GRANT USAGE ON SCHEMA public TO scandrix_app;
+			GRANT ALL ON ALL TABLES IN SCHEMA public TO scandrix_app;
+			GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO scandrix_app;
+			DO $$
+			BEGIN
+				EXECUTE format('GRANT scandrix_app TO %I', CURRENT_USER);
+			EXCEPTION WHEN OTHERS THEN
+				NULL;
+			END $$;
+		`)
+
 		_, err := tx.Exec(ctx, `
 			INSERT INTO workspaces (id, slug, name, status)
 			VALUES ($1, $2, 'Tenant A Corp', 'ACTIVE'),
@@ -67,7 +85,7 @@ func TestRLSTenantIsolation(t *testing.T) {
 	// 2. Setup tracked repository under Tenant A context with non-superuser role
 	err = client.ExecWithTenant(ctx, tenantA, func(tx pgx.Tx) error {
 		// Set to non-superuser application role to test active RLS enforcement
-		_, _ = tx.Exec(ctx, "SET LOCAL ROLE authenticated")
+		_, _ = tx.Exec(ctx, "SET LOCAL ROLE scandrix_app")
 
 		_, err := tx.Exec(ctx, `
 			INSERT INTO tracked_repositories (id, workspace_id, provider, external_id, namespace_path, default_branch)
@@ -82,7 +100,7 @@ func TestRLSTenantIsolation(t *testing.T) {
 
 	// 3. Query from Tenant B context: MUST return 0 rows for Tenant A's records
 	err = client.ExecWithTenant(ctx, tenantB, func(tx pgx.Tx) error {
-		_, _ = tx.Exec(ctx, "SET LOCAL ROLE authenticated")
+		_, _ = tx.Exec(ctx, "SET LOCAL ROLE scandrix_app")
 
 		// Cross-tenant SELECT must see 0 rows
 		var count int
@@ -117,7 +135,7 @@ func TestRLSTenantIsolation(t *testing.T) {
 
 	// 4. Verify Tenant A CAN query its own repository
 	err = client.ExecWithTenant(ctx, tenantA, func(tx pgx.Tx) error {
-		_, _ = tx.Exec(ctx, "SET LOCAL ROLE authenticated")
+		_, _ = tx.Exec(ctx, "SET LOCAL ROLE scandrix_app")
 		var count int
 		err := tx.QueryRow(ctx, `
 			SELECT COUNT(*) FROM tracked_repositories
