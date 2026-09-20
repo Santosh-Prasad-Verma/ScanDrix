@@ -80,7 +80,7 @@ func (c *RuleLikeController) handleSetFeedback(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(res)
+	_ = json.NewEncoder(w).Encode(res.ToObject())
 }
 
 func (c *RuleLikeController) handleRemoveFeedback(w http.ResponseWriter, r *http.Request) {

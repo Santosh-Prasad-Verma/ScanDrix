@@ -44,7 +44,7 @@ func BuildBusinessRulesAnalysisPrompt(ctx BusinessRulesContext) string {
 	)
 
 	taskLabel := strings.TrimSpace(fmt.Sprintf("%s — %s", meta.ID, meta.Title))
-	taskLabel = strings.Trim(taskLabel, " — ")
+	taskLabel = strings.Trim(taskLabel, "— ")
 	if taskLabel != "" {
 		sections = append(sections, "", fmt.Sprintf("TASK: %s", taskLabel))
 	}

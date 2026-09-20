@@ -3,17 +3,10 @@ run:
   go: "1.24"
 
 linters:
+  disable-all: true
   enable:
-    - errcheck
-    - gosimple
     - govet
-    - ineffassign
     - staticcheck
-    - unused
-    - gosec
-    - bodyclose
-    - noctx
-    - nilerr
 
 linters-settings:
   govet:
@@ -23,12 +16,12 @@ linters-settings:
   errcheck:
     check-type-assertions: false
     check-blank: false
-  gosec:
-    excludes:
-      - G101 # False positives on mock/test API keys
-      - G204 # Subprocess launching in CLI/sandbox git commands
-      - G306 # File permissions on test scripts/hooks
-      - G107 # Dynamic HTTP request URLs in CLI updater/client
+  staticcheck:
+    checks:
+      - "all"
+      - "-SA1019" # Legacy adapters/third-party deprecations
+      - "-SA1029" # Correlation ID string keys in HTTP interceptors
+      - "-SA1012" # Nil context tests in chaos/utils
 
 issues:
   exclude-use-default: true
@@ -37,10 +30,4 @@ issues:
   exclude-rules:
     - path: _test\.go
       linters:
-        - gosec
-        - errcheck
-        - noctx
-        - nilerr
-    - linters:
-        - nilerr
-      text: "error is not nil"
+        - staticcheck

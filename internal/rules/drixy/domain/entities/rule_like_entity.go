@@ -5,7 +5,10 @@
 
 package entities
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // RuleFeedbackType indicates whether user sentiment was positive (like) or negative (dislike).
 type RuleFeedbackType string
@@ -88,3 +91,9 @@ func (e *RuleLikeEntity) ToObject() IRuleLike {
 		UpdatedAt: e.updatedAt,
 	}
 }
+
+// MarshalJSON provides custom JSON serialization for the entity.
+func (e *RuleLikeEntity) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.ToObject())
+}
+

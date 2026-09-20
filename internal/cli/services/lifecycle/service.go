@@ -321,10 +321,7 @@ func (s *Service) HandleTurnEnd(ctx context.Context, repoRoot string, agentType 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 
 	// Append turn-end to local session log
-	commitBefore := ""
-	if state != nil {
-		commitBefore = state.CommitBefore
-	}
+	commitBefore := state.CommitBefore
 	endLine := trace.TraceRecordLine{
 		Kind:          "turn-end",
 		SessionID:     event.SessionID,

@@ -23,10 +23,7 @@ func TestSkillsCmd_List(t *testing.T) {
 		t.Fatalf("skills list failed: %v", err)
 	}
 
-	output := buf.String()
-	if !bytes.Contains([]byte(output), []byte("Bundled ScanDrix Assistant Skills")) && len(output) == 0 {
-		// Output went to stdout via fmt.Printf
-	}
+	_ = buf.String()
 }
 
 func TestSkillsCmd_SyncDryRun(t *testing.T) {

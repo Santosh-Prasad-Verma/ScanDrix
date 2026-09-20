@@ -91,7 +91,7 @@ func TestGitServiceOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetHooksDir error: %v", err)
 	}
-	if !filepath.IsAbs(hooksDir) || !filepath.IsAbs(hooksDir) || filepath.Base(hooksDir) != "hooks" {
+	if !filepath.IsAbs(hooksDir) || filepath.Base(hooksDir) != "hooks" {
 		t.Errorf("unexpected hooksDir: %s", hooksDir)
 	}
 

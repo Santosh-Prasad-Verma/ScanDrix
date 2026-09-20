@@ -1,9 +1,9 @@
 -- Migration 008: RLS Hardening, Embedding Column, and Missing Tenant Isolation
 -- Fixes:
 -- 1. FORCE ROW LEVEL SECURITY on migration-004 tables (warehouse_domain_events,
---    organization_billing_seats, kody_embedding_vectors) so the table owner
+--    organization_billing_seats, drixy_embedding_vectors) so the table owner
 --    cannot bypass RLS policies.
--- 2. Add actual vector storage column to kody_embedding_vectors.
+-- 2. Add actual vector storage column to drixy_embedding_vectors.
 -- 3. Add RLS to code_ast_nodes and code_ast_edges (migration 003) which had
 --    no tenant isolation at all.
 -- 4. Add RLS to team_members (migration 005) which had no tenant isolation.
@@ -16,20 +16,20 @@
 
 ALTER TABLE warehouse_domain_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE organization_billing_seats FORCE ROW LEVEL SECURITY;
-ALTER TABLE kody_embedding_vectors FORCE ROW LEVEL SECURITY;
+ALTER TABLE drixy_embedding_vectors FORCE ROW LEVEL SECURITY;
 
 
 -- =========================================================================
--- 2. Add embedding vector storage to kody_embedding_vectors
+-- 2. Add embedding vector storage to drixy_embedding_vectors
 -- The table had embedding_dim and embedding_model metadata but no actual
 -- vector column. We use FLOAT8[] as a portable fallback; if pgvector is
 -- installed, a typed vector column can be added separately.
 -- =========================================================================
 
-ALTER TABLE kody_embedding_vectors
+ALTER TABLE drixy_embedding_vectors
     ADD COLUMN IF NOT EXISTS embedding FLOAT8[];
 
-COMMENT ON COLUMN kody_embedding_vectors.embedding IS
+COMMENT ON COLUMN drixy_embedding_vectors.embedding IS
     'Dense float64 vector. Length MUST match embedding_dim. Use pgvector vector() type for indexed ANN search.';
 
 

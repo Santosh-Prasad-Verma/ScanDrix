@@ -5,9 +5,6 @@
 
 package priority
 
-import (
-	"math"
-)
 
 // AdaptiveProfileKind classifies the fidelity profile based on model context window constraints.
 type AdaptiveProfileKind string
@@ -64,7 +61,7 @@ func classifyProfile(tokens int) AdaptiveProfileKind {
 func ResolveAdaptiveProfile(contextWindowTokens int) AdaptiveProfile {
 	kind := classifyProfile(contextWindowTokens)
 	resolvedWindow := contextWindowTokens
-	if resolvedWindow < 0 || math.IsNaN(float64(resolvedWindow)) {
+	if resolvedWindow < 0 {
 		resolvedWindow = 0
 	}
 

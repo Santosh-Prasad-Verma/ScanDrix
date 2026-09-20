@@ -153,7 +153,7 @@ func (uc *ExecuteCliReviewUseCase) Execute(ctx context.Context, params domain.Ex
 
 	// 5. Execute Analysis / Pipeline
 	var issues []domain.CliReviewIssue
-	summaryText := fmt.Sprintf("ScanDrix CLI review analyzed %d file(s)", len(changedFiles))
+	var summaryText string
 
 	if uc.rulesEvaluator != nil {
 		for _, f := range changedFiles {

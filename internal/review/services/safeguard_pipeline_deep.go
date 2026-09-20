@@ -612,7 +612,7 @@ func (e *SafeguardPipelineEngine) VerifyErrorHandling(code, ext string) (bool, s
 
 // AnalyzeTaintFlow checks for dangerous unsanitized data flows from inputs to execution sinks.
 func (e *SafeguardPipelineEngine) AnalyzeTaintFlow(code, ext string) (bool, string) {
-	ext = strings.ToLower(strings.TrimPrefix(ext, "."))
+	_ = ext
 
 	// Dangerous sinks: SQL execution, command execution, deserialization
 	sqlSinks := []string{"fmt.Sprintf(\"SELECT", "fmt.Sprintf(\"INSERT", "fmt.Sprintf(\"UPDATE", "fmt.Sprintf(\"DELETE"}

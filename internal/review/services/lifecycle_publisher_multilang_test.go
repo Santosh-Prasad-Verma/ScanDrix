@@ -421,7 +421,7 @@ func TestSuggestionLifecycle_IllegalTransitionsRejected(t *testing.T) {
 	}
 
 	// DISCOVERED to SUPERSEDED is legal
-	ms, err = eng.Transition(context.Background(), sugID, LifecycleStateSuperseded, "rebase", "branch_rebased", "", nil)
+	_, err = eng.Transition(context.Background(), sugID, LifecycleStateSuperseded, "rebase", "branch_rebased", "", nil)
 	if err != nil {
 		t.Fatalf("expected legal transition to SUPERSEDED, got %v", err)
 	}

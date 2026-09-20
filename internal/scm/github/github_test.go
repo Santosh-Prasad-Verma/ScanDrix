@@ -20,9 +20,7 @@ func TestGitHubClientWrapper(t *testing.T) {
 	ctx := context.Background()
 	// Test error handling on missing/mock API endpoints
 	_, err := client.FetchDiff(ctx, "octocat/Hello-World", 1)
-	if err == nil {
-		// Even if network fails, error should be handled gracefully
-	}
+	_ = err // Even if network fails, error should be handled gracefully
 
 	_ = client.PostInlineComments(ctx, "octocat/Hello-World", 1, []platform.InlineCommentSpec{})
 	_ = client.PostReviewSummary(ctx, "octocat/Hello-World", 1, "test summary", platform.ConclusionSuccess)

@@ -150,9 +150,7 @@ func (uc *SignUpUseCase) Execute(ctx context.Context, input SignUpInput) (*domai
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if _, err := uc.profileRepo.Create(ctx, profile); err != nil {
-		// Log and continue, profile can be recovered
-	}
+	_, _ = uc.profileRepo.Create(ctx, profile) // Profile can be recovered if initial creation fails
 
 	if uc.notifEmitter != nil && status == domain.UserStatusPending {
 		emailToken, _ := uc.tokenService.CreateEmailToken(userUUID, input.Email)

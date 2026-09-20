@@ -28,10 +28,6 @@ func NewGetTotalIssuesUseCase(
 
 // Execute counts issues matching criteria.
 func (uc *GetTotalIssuesUseCase) Execute(ctx context.Context, filter domain.GetIssuesFilter, user domain.UserRef) (int64, error) {
-	if filter.OrganizationID == "" && user.GitID != "" {
-		// Use caller's organization if not explicitly supplied
-	}
-
 	if uc.authService != nil {
 		assignedRepoIDs, err := uc.authService.GetRepositoryScope(ctx, user, "read", "issues")
 		if err == nil && assignedRepoIDs != nil {

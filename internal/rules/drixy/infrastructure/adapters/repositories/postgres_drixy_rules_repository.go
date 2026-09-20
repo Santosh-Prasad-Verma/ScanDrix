@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/contracts"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/entities"
@@ -178,9 +177,7 @@ func (r *PostgresDrixyRulesRepository) FindByOrganizationID(ctx context.Context,
 			r.updateMemoryCache(entity)
 			return entity, nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			// Query failure: fall through to in-memory cache
-		}
+		// Query failure or not found: fall through to in-memory cache
 	}
 
 	r.mu.RLock()

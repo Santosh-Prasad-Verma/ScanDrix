@@ -131,7 +131,6 @@ func (e *SuggestionClusterEngine) ClusterFindings(
 
 		primary := group[0]
 		var related []models.CodeFinding
-		var relatedIDs []string
 		var anchors []SubLocationAnchor
 
 		anchors = append(anchors, SubLocationAnchor{
@@ -145,7 +144,6 @@ func (e *SuggestionClusterEngine) ClusterFindings(
 
 		for _, other := range group[1:] {
 			related = append(related, other)
-			relatedIDs = append(relatedIDs, other.ID.String())
 			anchors = append(anchors, SubLocationAnchor{
 				FilePath:  other.FilePath,
 				LineStart: other.StartLine,

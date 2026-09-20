@@ -371,7 +371,11 @@ func (m *SandboxLeaseManager) Release(ctx context.Context, leaseID string, opts 
 		return fmt.Errorf("failed to decrement lease: %w", err)
 	}
 
-	slog.Info("SandboxLeaseManager: released lease", "lease_id", leaseID, "pr_key", prKey, "remaining_leases", updated.LeaseCount)
+	remainingLeases := 0
+	if updated != nil {
+		remainingLeases = updated.LeaseCount
+	}
+	slog.Info("SandboxLeaseManager: released lease", "lease_id", leaseID, "pr_key", prKey, "remaining_leases", remainingLeases)
 
 	if updated != nil && updated.LeaseCount <= 0 && updated.SandboxID != "" {
 		// Local sandbox path: immediate cleanup

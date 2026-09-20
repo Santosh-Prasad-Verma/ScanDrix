@@ -244,8 +244,6 @@ func (h *MCPHandler) GetCustomIntegrations(w http.ResponseWriter, r *http.Reques
 		active = false
 	}
 
-	list, err := h.integrationsService.CreateCustomIntegration(r.Context(), orgID, models.CreateIntegrationDTO{})
-	_ = list
 	integrations, err := h.mcpService.GetIntegrations(r.Context(), models.QueryDTO{Page: 1, PageSize: 100}, orgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

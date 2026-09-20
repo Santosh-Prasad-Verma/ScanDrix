@@ -352,7 +352,7 @@ func (c *CodeManagementController) handleAuthIntegration(w http.ResponseWriter, 
 	}
 
 	// Query real user info from provider to avoid any hardcoded accounts
-	accountName := req.Username
+	var accountName string
 	repoCount := 0
 	if provider == models.ProviderGitHub {
 		accountName, repoCount = c.resolveGitHubIdentity(r.Context(), token)

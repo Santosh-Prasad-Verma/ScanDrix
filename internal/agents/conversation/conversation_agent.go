@@ -194,7 +194,8 @@ func (p *ConversationAgentProvider) Execute(ctx context.Context, req Conversatio
 
 	// 3. Assemble run input and context
 	runInput := contracts.AgentRunInput{
-		Prompt: userPrompt,
+		Prompt:       userPrompt,
+		SeedMessages: priorMessages,
 		TelemetryMetadata: map[string]any{
 			"organization_id": req.OrganizationID,
 			"team_id":         req.TeamID,

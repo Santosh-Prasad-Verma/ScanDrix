@@ -79,7 +79,8 @@ func TestLoggerWrapperService(t *testing.T) {
 	wrapper.Warn("warn message", "TestContext")
 	wrapper.Error("error message", errors.New("boom"), "TestContext")
 
-	ctx := context.WithValue(context.Background(), "trace_id", "t-1")
+	type testContextKey string
+	ctx := context.WithValue(context.Background(), testContextKey("trace_id"), "t-1")
 	ctxWrapper := wrapper.WithContext(ctx)
 	ctxWrapper.Log("contextual info", "TestContext")
 }

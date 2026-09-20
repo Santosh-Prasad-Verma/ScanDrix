@@ -104,7 +104,7 @@ func BuildGrepTool(rootDir string) contracts.AgentTool {
 				}
 			}
 
-			err = filepath.Walk(targetDir, func(p string, info os.FileInfo, walkErr error) error {
+			_ = filepath.Walk(targetDir, func(p string, info os.FileInfo, walkErr error) error {
 				if walkErr != nil || info.IsDir() {
 					if info != nil && info.IsDir() && (info.Name() == ".git" || info.Name() == "node_modules" || info.Name() == "vendor") {
 						return filepath.SkipDir
