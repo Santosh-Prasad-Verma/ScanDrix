@@ -59,6 +59,8 @@ jobs:
     name: "Publish GitHub Release & Checksums"
     runs-on: ubuntu-latest
     needs: release-matrix
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -69,11 +71,13 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate SHA-256 Checksums
+      - name: Generate SHA-256 Checksums & SLSA Subjects
+        id: hash
         run: |
           cd release-assets
-          sha256sum * > checksums.txt
+          sha256sum scandrix-cli-* > checksums.txt
           cat checksums.txt
+          echo "hashes=$(sha256sum scandrix-cli-* | base64 -w0)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -83,3 +87,16 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+  provenance:
+    name: "Generate Cryptographic SLSA Level 3 Provenance"
+    needs: [publish-release]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: "${{ needs.publish-release.outputs.hashes }}"
+      upload-assets: true
+

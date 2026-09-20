@@ -2,14 +2,22 @@ package ingestion
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/queue/relay"
 	"github.com/scandrix/backend/pkg/models"
 )
+
+// ═══════════════════════════════════════════════════════════════
+// 1. INGESTION HANDLER SCHEMA & DEPENDENCIES (Webhook verifier & outbox)
+// ═══════════════════════════════════════════════════════════════
 
 // IngestionHandler handles inbound webhook HTTP requests from Git providers.
 type IngestionHandler struct {
@@ -17,17 +25,31 @@ type IngestionHandler struct {
 	parser   *WebhookParser
 	resolver SecretResolver
 	outbox   *relay.OutboxStore
+	repo     *database.Repository
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 2. INGESTION HANDLER INITIALIZER (Component assembly & repository binding)
+// ═══════════════════════════════════════════════════════════════
+
 // NewIngestionHandler initializes the HTTP receiver.
-func NewIngestionHandler(resolver SecretResolver, outbox *relay.OutboxStore) *IngestionHandler {
+func NewIngestionHandler(resolver SecretResolver, outbox *relay.OutboxStore, repo ...*database.Repository) *IngestionHandler {
+	var r *database.Repository
+	if len(repo) > 0 {
+		r = repo[0]
+	}
 	return &IngestionHandler{
 		verifier: NewWebhookVerifier(),
 		parser:   NewWebhookParser(),
 		resolver: resolver,
 		outbox:   outbox,
+		repo:     r,
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 3. WEBHOOK INGESTION PIPELINE (Signature verification & transactional outbox)
+// ═══════════════════════════════════════════════════════════════
 
 // ServeHTTP routes and processes inbound webhook payloads.
 func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,9 +119,62 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Transactional Outbox Write
+	// Resolve owning WorkspaceID for the repository namespace
+	if h.repo != nil && event.WorkspaceID == uuid.Nil {
+		targetRepo := event.RepoNamespace
+		if targetRepo == "" {
+			targetRepo = repo
+		}
+		if targetRepo != "" {
+			if wsID, err := h.repo.GetWorkspaceIDByRepoNamespace(r.Context(), string(provider), targetRepo); err == nil && wsID != uuid.Nil {
+				event.WorkspaceID = wsID
+			}
+		}
+	}
+
+	// Ensure TaskID and EventID match event.ID for queue consumer contract alignment
+	event.TaskID = event.ID
+	event.EventID = event.ID
+
+	// 5. Transactional Outbox & Review Write
 	eventBytes, _ := json.Marshal(event)
-	if h.outbox != nil {
+	if h.repo != nil {
+		eventTypePrefix := "scm.pull_request."
+		if strings.HasPrefix(string(event.Action), "INSTALLATION_") || strings.HasPrefix(string(event.Action), "REPOS_") {
+			eventTypePrefix = "scm.lifecycle."
+		}
+		outboxEvent := &models.OutboxRecord{
+			ID:          event.ID,
+			WorkspaceID: event.WorkspaceID,
+			EventType:   eventTypePrefix + strings.ToLower(string(event.Action)),
+			Payload:     eventBytes,
+			Status:      models.OutboxPending,
+			CreatedAt:   time.Now().UTC(),
+		}
+
+		var initialReview *models.PullRequestReview
+		if event.PullRequestNumber > 0 {
+			initialReview = &models.PullRequestReview{
+				ID:             event.ID,
+				WorkspaceID:    event.WorkspaceID,
+				RepositoryID:   uuid.Nil,
+				PullNumber:     event.PullRequestNumber,
+				Title:          fmt.Sprintf("PR #%d: %s", event.PullRequestNumber, event.RepoNamespace),
+				HeadSHA:        event.HeadSHA,
+				BaseSHA:        event.BaseSHA,
+				AuthorUsername: event.Sender,
+				State:          models.ReviewStateQueued,
+				FindingsCount:  0,
+				CreatedAt:      time.Now().UTC(),
+			}
+		}
+
+		if err := h.repo.IngestWebhookEventTx(r.Context(), initialReview, outboxEvent); err != nil {
+			slog.Error("Failed inserting transactional webhook outbox event to database", "event_id", event.ID, "error", err)
+			http.Error(w, `{"error":"failed to record outbox event"}`, http.StatusInternalServerError)
+			return
+		}
+	} else if h.outbox != nil {
 		_ = h.outbox.Insert(r.Context(), relay.OutboxMessage{
 			ID:          event.ID,
 			WorkspaceID: event.WorkspaceID,
@@ -119,6 +194,10 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ReceivedAt: event.ReceivedAt,
 	})
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 4. SCM PROVIDER DETECTION (Header inspection & path fallback)
+// ═══════════════════════════════════════════════════════════════
 
 func detectProvider(r *http.Request) (models.SCMProvider, string) {
 	if r.Header.Get("X-GitHub-Event") != "" {
@@ -145,6 +224,10 @@ func detectProvider(r *http.Request) (models.SCMProvider, string) {
 	return "", ""
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5. CRYPTOGRAPHIC SIGNATURE DISPATCH (HMAC-SHA256 & provider tokens)
+// ═══════════════════════════════════════════════════════════════
+
 func (h *IngestionHandler) verifyRequest(provider models.SCMProvider, r *http.Request, body []byte, secret string) bool {
 	if secret == "" {
 		return false
@@ -169,9 +252,4 @@ func (h *IngestionHandler) verifyRequest(provider models.SCMProvider, r *http.Re
 	default:
 		return false
 	}
-}
-
-// IngestionResultUUID Helper constructor
-func NewEventID() uuid.UUID {
-	return uuid.New()
 }

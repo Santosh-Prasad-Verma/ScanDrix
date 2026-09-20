@@ -13,7 +13,7 @@ import (
 // RemoteInfo holds the parsed Git remote details.
 type RemoteInfo struct {
 	Provider      models.SCMProvider `json:"provider"`
-	NamespacePath string             `json:"namespace_path"` // e.g. "kodustech/kodus-ai"
+	NamespacePath string             `json:"namespace_path"` // e.g. "scandrix/scandrix-backend"
 	DefaultBranch string             `json:"default_branch"` // e.g. "main"
 	RemoteURL     string             `json:"remote_url"`
 }

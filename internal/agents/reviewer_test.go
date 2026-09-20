@@ -8,6 +8,7 @@ import (
 	"github.com/scandrix/backend/internal/agents"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/usecases/feedback"
 )
 
 func TestAutonomousReviewerDeliberation(t *testing.T) {
@@ -69,4 +70,39 @@ func TestAutonomousReviewerDeliberation(t *testing.T) {
 	if findings[0].Title != "Hardcoded GitHub Personal Access Token" {
 		t.Errorf("unexpected finding title: %s", findings[0].Title)
 	}
+}
+
+func TestAutonomousReviewerWithFeedbackTracker(t *testing.T) {
+	catalog := rules.DefaultCatalog()
+	evaluator, err := rules.NewEvaluator(catalog)
+	if err != nil {
+		t.Fatalf("failed initializing evaluator: %v", err)
+	}
+
+	reviewer := agents.NewAutonomousReviewer(evaluator)
+	tracker := feedback.NewFeedbackTracker()
+	wsID := uuid.New()
+
+	// Record feedback to simulate developer sentiment
+	tracker.RecordReaction(uuid.New(), wsID, uuid.New(), 1, map[feedback.ReactionType]int{
+		feedback.ReactionThumbsUp: 5,
+	})
+	reviewer.SetFeedbackTracker(tracker)
+
+	patches := []*diff.FilePatch{
+		{
+			NewPath:   "main.go",
+			Additions: 10,
+			Deletions: 2,
+		},
+	}
+
+	findings, thoughts, err := reviewer.ExecuteAgenticReview(context.Background(), uuid.New(), wsID, patches)
+	if err != nil {
+		t.Fatalf("ExecuteAgenticReview failed: %v", err)
+	}
+	if len(thoughts) == 0 {
+		t.Errorf("expected thoughts to be recorded")
+	}
+	_ = findings
 }

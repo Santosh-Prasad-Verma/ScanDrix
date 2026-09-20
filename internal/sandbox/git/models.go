@@ -20,10 +20,10 @@ type WorktreeInstance struct {
 
 // SandboxConfig specifies filesystem isolation and TTL boundaries.
 type SandboxConfig struct {
-	BaseDir        string        `json:"base_dir"`
-	MaxFileSizeMB  int64         `json:"max_file_size_mb"` // Max allowed file read/write (e.g. 20MB)
-	DefaultTTL     time.Duration `json:"default_ttl"`      // e.g. 15 minutes
-	AutoCleanup    bool          `json:"auto_cleanup"`
+	BaseDir       string        `json:"base_dir"`
+	MaxFileSizeMB int64         `json:"max_file_size_mb"` // Max allowed file read/write (e.g. 20MB)
+	DefaultTTL    time.Duration `json:"default_ttl"`      // e.g. 15 minutes
+	AutoCleanup   bool          `json:"auto_cleanup"`
 }
 
 // SecurityViolation records an attempted sandbox breakout.

@@ -1,23 +1,34 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
-	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/issues"
 )
 
+// IssuesRepository defines the data contract for issue tracking (Clean Architecture).
+type IssuesRepository interface {
+	ListTrackedIssues(ctx context.Context, wsID uuid.UUID, status issues.IssueStatus) ([]issues.TrackedIssue, error)
+	CountTrackedIssues(ctx context.Context, wsID uuid.UUID, status issues.IssueStatus) (int, error)
+	GetTrackedIssue(ctx context.Context, wsID, issueID uuid.UUID) (*issues.TrackedIssue, error)
+	UpdateTrackedIssueStatus(ctx context.Context, wsID, issueID uuid.UUID, status issues.IssueStatus) error
+}
+
 // IssuesController exposes endpoints for persistent code vulnerability issue tracking.
 type IssuesController struct {
-	repo *database.Repository
+	repo IssuesRepository
 }
 
 // NewIssuesController initializes the issue lifecycle controller.
-func NewIssuesController(repo *database.Repository) *IssuesController {
+func NewIssuesController(repo IssuesRepository) *IssuesController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &IssuesController{repo: repo}
 }
 
@@ -41,10 +52,14 @@ func (c *IssuesController) handleListIssues(w http.ResponseWriter, r *http.Reque
 	}
 
 	statusFilter := issues.IssueStatus(r.URL.Query().Get("status"))
-	list, err := c.repo.ListTrackedIssues(r.Context(), wsID, statusFilter)
-	if err != nil {
-		http.Error(w, `{"error":"failed querying issues"}`, http.StatusInternalServerError)
-		return
+	var list []issues.TrackedIssue
+	if c.repo != nil {
+		var queryErr error
+		list, queryErr = c.repo.ListTrackedIssues(r.Context(), wsID, statusFilter)
+		if queryErr != nil {
+			http.Error(w, `{"error":"failed querying issues"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if list == nil {
@@ -66,10 +81,14 @@ func (c *IssuesController) handleCountIssues(w http.ResponseWriter, r *http.Requ
 	}
 
 	statusFilter := issues.IssueStatus(r.URL.Query().Get("status"))
-	count, err := c.repo.CountTrackedIssues(r.Context(), wsID, statusFilter)
-	if err != nil {
-		http.Error(w, `{"error":"failed counting issues"}`, http.StatusInternalServerError)
-		return
+	var count int
+	if c.repo != nil {
+		var countErr error
+		count, countErr = c.repo.CountTrackedIssues(r.Context(), wsID, statusFilter)
+		if countErr != nil {
+			http.Error(w, `{"error":"failed counting issues"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -89,6 +108,11 @@ func (c *IssuesController) handleGetIssue(w http.ResponseWriter, r *http.Request
 	issueID, err := uuid.Parse(idStr)
 	if err != nil {
 		http.Error(w, `{"error":"invalid issue id"}`, http.StatusBadRequest)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"issue not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -124,9 +148,11 @@ func (c *IssuesController) handleUpdateIssue(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := c.repo.UpdateTrackedIssueStatus(r.Context(), wsID, issueID, issues.IssueStatus(body.Status)); err != nil {
-		http.Error(w, `{"error":"failed updating issue"}`, http.StatusInternalServerError)
-		return
+	if c.repo != nil {
+		if err := c.repo.UpdateTrackedIssueStatus(r.Context(), wsID, issueID, issues.IssueStatus(body.Status)); err != nil {
+			http.Error(w, `{"error":"failed updating issue"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

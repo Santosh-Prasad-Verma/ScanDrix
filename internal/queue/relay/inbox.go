@@ -7,15 +7,30 @@ import (
 	"time"
 )
 
+// InboxStore persists inbox records across distributed worker instances.
+type InboxStore interface {
+	ClaimInboxMessage(ctx context.Context, messageID, consumerID string) (bool, error)
+	GetInboxAttemptCount(ctx context.Context, messageID, consumerID string) int
+	MarkInboxCompleted(ctx context.Context, messageID, consumerID string) error
+	MarkInboxFailed(ctx context.Context, messageID, consumerID string, err error) error
+	ReleaseInboxMessage(ctx context.Context, messageID, consumerID string, attemptCount int) error
+}
+
 // InboxDeduplicator enforces idempotent execution for incoming asynchronous consumers.
 type InboxDeduplicator struct {
+	store   InboxStore
 	mu      sync.Mutex
 	records map[string]*InboxRecord // key: messageID:consumerID
 }
 
-// NewInboxDeduplicator initializes the inbox idempotency engine.
-func NewInboxDeduplicator() *InboxDeduplicator {
+// NewInboxDeduplicator initializes the inbox idempotency engine with optional persistent backend.
+func NewInboxDeduplicator(store ...InboxStore) *InboxDeduplicator {
+	var s InboxStore
+	if len(store) > 0 {
+		s = store[0]
+	}
 	return &InboxDeduplicator{
+		store:   s,
 		records: make(map[string]*InboxRecord),
 	}
 }
@@ -23,6 +38,10 @@ func NewInboxDeduplicator() *InboxDeduplicator {
 // ClaimMessage attempts to atomically claim a message for processing.
 // Returns (true, nil) if the claim succeeded, (false, nil) if already processed or processing.
 func (d *InboxDeduplicator) ClaimMessage(ctx context.Context, messageID, consumerID string) (bool, error) {
+	if d.store != nil {
+		return d.store.ClaimInboxMessage(ctx, messageID, consumerID)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -51,6 +70,10 @@ func (d *InboxDeduplicator) ClaimMessage(ctx context.Context, messageID, consume
 
 // GetAttemptCount returns the recorded attempt count for a message.
 func (d *InboxDeduplicator) GetAttemptCount(messageID, consumerID string) int {
+	if d.store != nil {
+		return d.store.GetInboxAttemptCount(context.Background(), messageID, consumerID)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -63,6 +86,10 @@ func (d *InboxDeduplicator) GetAttemptCount(messageID, consumerID string) int {
 
 // MarkCompleted transitions an inbox record to COMPLETED.
 func (d *InboxDeduplicator) MarkCompleted(ctx context.Context, messageID, consumerID string) error {
+	if d.store != nil {
+		return d.store.MarkInboxCompleted(ctx, messageID, consumerID)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -79,6 +106,10 @@ func (d *InboxDeduplicator) MarkCompleted(ctx context.Context, messageID, consum
 
 // MarkFailed transitions an inbox record to FAILED with error context.
 func (d *InboxDeduplicator) MarkFailed(ctx context.Context, messageID, consumerID string, err error) error {
+	if d.store != nil {
+		return d.store.MarkInboxFailed(ctx, messageID, consumerID, err)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -97,18 +128,22 @@ func (d *InboxDeduplicator) MarkFailed(ctx context.Context, messageID, consumerI
 
 // ReleaseMessage marks a message for retry while preserving its attempt history.
 func (d *InboxDeduplicator) ReleaseMessage(ctx context.Context, messageID, consumerID string, attemptCount ...int) error {
+	count := 0
+	if len(attemptCount) > 0 {
+		count = attemptCount[0]
+	}
+
+	if d.store != nil {
+		return d.store.ReleaseInboxMessage(ctx, messageID, consumerID, count)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	key := fmt.Sprintf("%s:%s", messageID, consumerID)
 	if rec, exists := d.records[key]; exists {
 		rec.Status = InboxRetry
-		if len(attemptCount) > 0 {
-			rec.AttemptCount = attemptCount[0]
-		}
+		rec.AttemptCount = count
 	}
 	return nil
 }
-
-
-

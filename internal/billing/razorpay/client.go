@@ -102,3 +102,93 @@ func (c *RazorpayClient) CreateOrder(ctx context.Context, req OrderRequest) (*Or
 
 	return &orderResp, nil
 }
+
+// PaymentResponse represents a fetched Razorpay payment object.
+type PaymentResponse struct {
+	ID          string            `json:"id"`
+	Entity      string            `json:"entity"`
+	Amount      int64             `json:"amount"`
+	Currency    string            `json:"currency"`
+	Status      string            `json:"status"` // "created", "authorized", "captured", "refunded", "failed"
+	OrderID     string            `json:"order_id"`
+	Method      string            `json:"method"`
+	Description string            `json:"description"`
+	Email       string            `json:"email"`
+	Contact     string            `json:"contact"`
+	Notes       map[string]string `json:"notes"`
+	CreatedAt   int64             `json:"created_at"`
+}
+
+// FetchPayment retrieves payment status directly from Razorpay API.
+func (c *RazorpayClient) FetchPayment(ctx context.Context, paymentID string) (*PaymentResponse, error) {
+	if c.keyID == "" || c.keySecret == "" {
+		return nil, errors.New("razorpay credentials not configured (RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing)")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/payments/"+paymentID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating HTTP request: %w", err)
+	}
+
+	authStr := base64.StdEncoding.EncodeToString([]byte(c.keyID + ":" + c.keySecret))
+	httpReq.Header.Set("Authorization", "Basic "+authStr)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("razorpay fetch payment request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed reading razorpay response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("razorpay fetch payment failed (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	var paymentResp PaymentResponse
+	if err := json.Unmarshal(respBytes, &paymentResp); err != nil {
+		return nil, fmt.Errorf("failed unmarshaling razorpay payment response: %w", err)
+	}
+
+	return &paymentResp, nil
+}
+
+// FetchOrder retrieves order status from Razorpay API.
+func (c *RazorpayClient) FetchOrder(ctx context.Context, orderID string) (*OrderResponse, error) {
+	if c.keyID == "" || c.keySecret == "" {
+		return nil, errors.New("razorpay credentials not configured (RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing)")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/orders/"+orderID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating HTTP request: %w", err)
+	}
+
+	authStr := base64.StdEncoding.EncodeToString([]byte(c.keyID + ":" + c.keySecret))
+	httpReq.Header.Set("Authorization", "Basic "+authStr)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("razorpay fetch order request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed reading razorpay response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("razorpay fetch order failed (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	var orderResp OrderResponse
+	if err := json.Unmarshal(respBytes, &orderResp); err != nil {
+		return nil, fmt.Errorf("failed unmarshaling razorpay order response: %w", err)
+	}
+
+	return &orderResp, nil
+}

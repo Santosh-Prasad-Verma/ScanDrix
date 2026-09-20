@@ -11,12 +11,12 @@ func Test6DRiskVectorCalculationAndAttenuation(t *testing.T) {
 
 	// High risk across security and supply chain
 	v := riskvector.Vector6D{
-		Security:    90.0,
-		Reliability: 40.0,
+		Security:     90.0,
+		Reliability:  40.0,
 		Architecture: 20.0,
-		SupplyChain: 80.0,
-		Performance: 10.0,
-		Compliance:  50.0,
+		SupplyChain:  80.0,
+		Performance:  10.0,
+		Compliance:   50.0,
 	}
 
 	// 1. Standard Assessment

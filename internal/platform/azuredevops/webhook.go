@@ -31,9 +31,9 @@ func parseAzureWebhook(eventType string, payload []byte) (*platform.WebhookEvent
 	event.RawPayload = payload
 
 	var root struct {
-		EventType    string `json:"eventType"`
-		Resource     json.RawMessage `json:"resource"`
-		ResourceVersion string `json:"resourceVersion"`
+		EventType       string          `json:"eventType"`
+		Resource        json.RawMessage `json:"resource"`
+		ResourceVersion string          `json:"resourceVersion"`
 	}
 	if err := json.Unmarshal(payload, &root); err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func parseAzureWebhook(eventType string, payload []byte) (*platform.WebhookEvent
 				CommitID string `json:"commitId"`
 			} `json:"commits"`
 			RefUpdates []struct {
-				Name    string `json:"name"`
+				Name        string `json:"name"`
 				NewObjectID string `json:"newObjectId"`
 			} `json:"refUpdates"`
 		}

@@ -1,9 +1,7 @@
 package settings
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,9 +20,7 @@ func NewBYOKConnectionTester(timeout time.Duration) *BYOKConnectionTester {
 		timeout = 15 * time.Second
 	}
 	return &BYOKConnectionTester{
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		httpClient: NewSafeHTTPClient(timeout),
 	}
 }
 
@@ -140,15 +136,8 @@ func (t *BYOKConnectionTester) buildProbeRequest(ctx context.Context, provider s
 		return req, nil
 
 	case "anthropic":
-		// Minimal 1-token probe
-		url := "https://api.anthropic.com/v1/messages"
-		payload := map[string]any{
-			"model":      "claude-3-5-haiku-20241022",
-			"max_tokens": 1,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		}
-		data, _ := json.Marshal(payload)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		url := "https://api.anthropic.com/v1/models"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
 		}

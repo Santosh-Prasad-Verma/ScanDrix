@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package skills_test
 
@@ -58,5 +58,48 @@ func TestSkillsLifecycle(t *testing.T) {
 	unRes, err := skills.Uninstall(tempDir, false)
 	if err != nil || unRes.RemovedCount == 0 {
 		t.Fatalf("uninstall failed: %v, %+v", err, unRes)
+	}
+}
+
+func TestFormatSkillsPrompt(t *testing.T) {
+	catalog := skills.BundledSkillsCatalog()
+	if len(catalog) == 0 {
+		t.Fatalf("catalog should not be empty")
+	}
+
+	// 1. XML output
+	xmlOut, err := skills.FormatSkillsPrompt(catalog, "xml", nil)
+	if err != nil {
+		t.Fatalf("XML formatting failed: %v", err)
+	}
+	if !strings.HasPrefix(xmlOut, "<skills>") || !strings.HasSuffix(xmlOut, "</skills>") {
+		t.Fatalf("unexpected XML root structure:\n%s", xmlOut)
+	}
+	if !strings.Contains(xmlOut, "scandrix-review") {
+		t.Fatalf("XML output missing scandrix-review")
+	}
+
+	// 2. JSON output
+	jsonOut, err := skills.FormatSkillsPrompt(catalog, "json", []string{"scandrix-review"})
+	if err != nil {
+		t.Fatalf("JSON formatting failed: %v", err)
+	}
+	if !strings.HasPrefix(jsonOut, "[\n") || !strings.Contains(jsonOut, `"name": "scandrix-review"`) {
+		t.Fatalf("unexpected JSON output: %s", jsonOut)
+	}
+
+	// 3. Markdown output
+	mdOut, err := skills.FormatSkillsPrompt(catalog, "markdown", []string{"scandrix-review"})
+	if err != nil {
+		t.Fatalf("Markdown formatting failed: %v", err)
+	}
+	if !strings.Contains(mdOut, "# ScanDrix Assistant Skills") || !strings.Contains(mdOut, "## 1. scandrix-review") {
+		t.Fatalf("unexpected Markdown output: %s", mdOut)
+	}
+
+	// 4. Missing skill returns descriptive error
+	_, errMissing := skills.FormatSkillsPrompt(catalog, "xml", []string{"nonexistent-custom-skill"})
+	if errMissing == nil || !strings.Contains(errMissing.Error(), "not found") {
+		t.Fatalf("expected error for nonexistent skill, got: %v", errMissing)
 	}
 }

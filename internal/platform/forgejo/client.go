@@ -330,7 +330,7 @@ func (a *Adapter) MergePullRequest(ctx context.Context, repo string, pullNumber 
 	}
 
 	payload := map[string]any{
-		"Do":                     doType,
+		"Do":                        doType,
 		"delete_branch_after_merge": true,
 	}
 

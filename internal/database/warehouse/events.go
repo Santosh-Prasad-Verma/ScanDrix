@@ -11,17 +11,17 @@ import (
 type EventType string
 
 const (
-	EventReviewTriggered   EventType = "REVIEW_TRIGGERED"
-	EventStageCompleted    EventType = "STAGE_COMPLETED"
-	EventFindingDetected   EventType = "FINDING_DETECTED"
-	EventFindingTriaged    EventType = "FINDING_TRIAGED"
-	EventFindingDismissed  EventType = "FINDING_DISMISSED"
-	EventFindingResolved   EventType = "FINDING_RESOLVED"
-	EventFindingRegressed  EventType = "FINDING_REGRESSED"
-	EventMergeBlocked      EventType = "MERGE_BLOCKED"
-	EventMergeApproved     EventType = "MERGE_APPROVED"
-	EventRuleSynced        EventType = "RULE_SYNCED"
-	EventLicenseActivated  EventType = "LICENSE_ACTIVATED"
+	EventReviewTriggered  EventType = "REVIEW_TRIGGERED"
+	EventStageCompleted   EventType = "STAGE_COMPLETED"
+	EventFindingDetected  EventType = "FINDING_DETECTED"
+	EventFindingTriaged   EventType = "FINDING_TRIAGED"
+	EventFindingDismissed EventType = "FINDING_DISMISSED"
+	EventFindingResolved  EventType = "FINDING_RESOLVED"
+	EventFindingRegressed EventType = "FINDING_REGRESSED"
+	EventMergeBlocked     EventType = "MERGE_BLOCKED"
+	EventMergeApproved    EventType = "MERGE_APPROVED"
+	EventRuleSynced       EventType = "RULE_SYNCED"
+	EventLicenseActivated EventType = "LICENSE_ACTIVATED"
 )
 
 // DomainEvent represents an immutable state change recorded in the enterprise ledger.

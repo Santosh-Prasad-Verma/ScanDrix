@@ -9,7 +9,7 @@ import (
 )
 
 func TestMCPGatewayServerAndClient(t *testing.T) {
-	ctx := context.Background()
+	ctx := gateway.WithCallerRole(context.Background(), gateway.RoleReviewer)
 
 	// 1. Initialize Server and Client
 	server := gateway.NewMCPServer()
@@ -130,5 +130,11 @@ func TestMCPGatewayRoleBasedAccessControl(t *testing.T) {
 	resReviewer, err := client.CallTool(reviewerCtx, "scandrix_catalog_search", map[string]any{"query": "OWASP"})
 	if err != nil || resReviewer.IsError {
 		t.Fatalf("expected reviewer role to succeed calling read-only tool, got: %+v, err: %v", resReviewer, err)
+	}
+
+	// 4. Fail-closed: Anonymous / roleless caller MUST be rejected from restricted tool
+	resAnon, err := client.CallTool(context.Background(), "scandrix_delete_repo_comments", map[string]any{})
+	if err == nil && !resAnon.IsError {
+		t.Fatalf("expected anonymous roleless caller to be rejected from restricted tool, got: %+v", resAnon)
 	}
 }

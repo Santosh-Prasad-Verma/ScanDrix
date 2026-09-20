@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/scandrix/backend/internal/platform"
@@ -137,5 +138,27 @@ func TestAzureDevOpsWebhookParsing(t *testing.T) {
 	}
 	if event.Repository != "infrastructure/core-api" {
 		t.Fatalf("unexpected repo: %s", event.Repository)
+	}
+}
+
+func TestGenerateTwoFilesPatch(t *testing.T) {
+	// Test addition
+	patchAdd, adds, dels := azuredevops.GenerateTwoFilesPatch("new_file.go", "new_file.go", "", "package main\n\nfunc main() {}\n", "", "sha_target")
+	if adds != 3 || dels != 0 || !strings.Contains(patchAdd, "--- /dev/null") || !strings.Contains(patchAdd, "+package main") {
+		t.Fatalf("unexpected addition patch: adds=%d, dels=%d, patch=%s", adds, dels, patchAdd)
+	}
+
+	// Test deletion
+	patchDel, addsDel, delsDel := azuredevops.GenerateTwoFilesPatch("old_file.go", "old_file.go", "package main\n\nfunc main() {}\n", "", "sha_base", "")
+	if addsDel != 0 || delsDel != 3 || !strings.Contains(patchDel, "+++ /dev/null") || !strings.Contains(patchDel, "-package main") {
+		t.Fatalf("unexpected deletion patch: adds=%d, dels=%d, patch=%s", addsDel, delsDel, patchDel)
+	}
+
+	// Test modification
+	orig := "func foo() {\n\treturn 1\n}\n"
+	mod := "func foo() {\n\treturn 2\n}\n"
+	patchMod, addsMod, delsMod := azuredevops.GenerateTwoFilesPatch("foo.go", "foo.go", orig, mod, "sha_base", "sha_target")
+	if addsMod != 1 || delsMod != 1 || !strings.Contains(patchMod, "-	return 1") || !strings.Contains(patchMod, "+	return 2") {
+		t.Fatalf("unexpected modification patch: adds=%d, dels=%d, patch=%s", addsMod, delsMod, patchMod)
 	}
 }

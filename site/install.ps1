@@ -1,3 +1,7 @@
+param(
+    [string]$TeamKey
+)
+
 # ScanDrix CLI Installer for Windows (PowerShell)
 # Usage: irm https://get.scandrix.dev/install.ps1 | iex
 
@@ -36,6 +40,11 @@ if ($UserPath -notlike "*$InstallDir*") {
 }
 
 Write-Host "✨ ScanDrix CLI installed successfully to $TargetPath!" -ForegroundColor Green
+
+if ($TeamKey -and (Test-Path $TargetPath)) {
+    Write-Host "🔐 Authenticating with team key..." -ForegroundColor Cyan
+    & $TargetPath auth team-key --key $TeamKey
+}
 
 # Synchronize bundled agent skills
 if (Test-Path $TargetPath) {

@@ -152,7 +152,7 @@ func (a *Adapter) FetchDiff(ctx context.Context, repo string, pullNumber int) (s
 func (a *Adapter) PostInlineComments(ctx context.Context, repo string, pullNumber int, comments []platform.InlineCommentSpec) error {
 	for _, c := range comments {
 		url := a.buildRepoURL(repo, fmt.Sprintf("pullrequests/%d/threads?api-version=7.1-preview.1", pullNumber))
-		
+
 		threadContext := map[string]any{
 			"filePath": c.FilePath,
 			"rightFileStart": map[string]int{
@@ -355,7 +355,7 @@ func (a *Adapter) ApprovePullRequest(ctx context.Context, repo string, pullNumbe
 func (a *Adapter) MergePullRequest(ctx context.Context, repo string, pullNumber int, mergeMethod string) error {
 	// Azure DevOps completes PRs by updating status to 3 (Completed) with completionOptions
 	url := a.buildRepoURL(repo, fmt.Sprintf("pullrequests/%d?api-version=7.1-preview.1", pullNumber))
-	
+
 	// Fetch PR first to obtain lastMergeSourceCommit ID
 	prDetails, err := a.FetchPullRequest(ctx, repo, pullNumber)
 	if err != nil {

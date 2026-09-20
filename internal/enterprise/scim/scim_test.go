@@ -128,3 +128,104 @@ func TestSCIMAuthentication(t *testing.T) {
 		t.Fatalf("expected 201 Created with valid token, got %d: %s", wValid.Code, wValid.Body.String())
 	}
 }
+
+func TestSCIMGroupLifecycle(t *testing.T) {
+	service := scim.NewSCIMService()
+	service.SetBearerToken("test-bearer-token")
+	router := service.Routes()
+	authHdr := "Bearer test-bearer-token"
+
+	// 1. Create Group
+	groupPayload := map[string]any{
+		"displayName": "Engineering Security Leads",
+		"members": []map[string]string{
+			{"value": "user-uuid-1", "display": "alice@example.com"},
+		},
+	}
+	body, _ := json.Marshal(groupPayload)
+
+	req := httptest.NewRequest(http.MethodPost, "/Groups", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/scim+json")
+	req.Header.Set("Authorization", authHdr)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for group, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var createdGroup scim.SCIMGroup
+	_ = json.NewDecoder(w.Body).Decode(&createdGroup)
+	if createdGroup.DisplayName != "Engineering Security Leads" || createdGroup.ID == "" {
+		t.Fatalf("unexpected group response: %+v", createdGroup)
+	}
+	if len(createdGroup.Members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(createdGroup.Members))
+	}
+
+	// 2. Get Group
+	reqGet := httptest.NewRequest(http.MethodGet, "/Groups/"+createdGroup.ID, nil)
+	reqGet.Header.Set("Authorization", authHdr)
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", wGet.Code)
+	}
+
+	// 3. Patch Group (Add Member)
+	patchReq := scim.SCIMPatchRequest{
+		Schemas: []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		Operations: []scim.SCIMOperation{
+			{
+				Op:   "add",
+				Path: "members",
+				Value: []any{
+					map[string]any{"value": "user-uuid-2", "display": "bob@example.com"},
+				},
+			},
+		},
+	}
+	patchBody, _ := json.Marshal(patchReq)
+	reqPatch := httptest.NewRequest(http.MethodPatch, "/Groups/"+createdGroup.ID, bytes.NewReader(patchBody))
+	reqPatch.Header.Set("Content-Type", "application/scim+json")
+	reqPatch.Header.Set("Authorization", authHdr)
+	wPatch := httptest.NewRecorder()
+	router.ServeHTTP(wPatch, reqPatch)
+
+	if wPatch.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for group patch, got %d: %s", wPatch.Code, wPatch.Body.String())
+	}
+	var patchedGroup scim.SCIMGroup
+	_ = json.NewDecoder(wPatch.Body).Decode(&patchedGroup)
+	if len(patchedGroup.Members) != 2 {
+		t.Errorf("expected 2 members after patch, got %d", len(patchedGroup.Members))
+	}
+
+	// 4. List Groups
+	reqList := httptest.NewRequest(http.MethodGet, "/Groups", nil)
+	reqList.Header.Set("Authorization", authHdr)
+	wList := httptest.NewRecorder()
+	router.ServeHTTP(wList, reqList)
+	if wList.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for list groups, got %d", wList.Code)
+	}
+
+	// 5. Delete Group
+	reqDel := httptest.NewRequest(http.MethodDelete, "/Groups/"+createdGroup.ID, nil)
+	reqDel.Header.Set("Authorization", authHdr)
+	wDel := httptest.NewRecorder()
+	router.ServeHTTP(wDel, reqDel)
+	if wDel.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content, got %d", wDel.Code)
+	}
+
+	// 6. Verify 404
+	reqGetAfter := httptest.NewRequest(http.MethodGet, "/Groups/"+createdGroup.ID, nil)
+	reqGetAfter.Header.Set("Authorization", authHdr)
+	wGetAfter := httptest.NewRecorder()
+	router.ServeHTTP(wGetAfter, reqGetAfter)
+	if wGetAfter.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found after group deletion, got %d", wGetAfter.Code)
+	}
+}
+

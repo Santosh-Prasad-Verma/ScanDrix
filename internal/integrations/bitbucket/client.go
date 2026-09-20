@@ -12,10 +12,10 @@ import (
 
 // Client interacts with Bitbucket Cloud REST API 2.0.
 type Client struct {
-	baseURL    string
-	username   string
+	baseURL     string
+	username    string
 	appPassword string
-	httpClient *http.Client
+	httpClient  *http.Client
 }
 
 // NewClient initializes a Bitbucket Cloud client.

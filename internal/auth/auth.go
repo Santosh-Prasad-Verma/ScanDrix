@@ -20,6 +20,10 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. CONTEXT KEYS & CLAIMS MODEL (Tenancy context & JWT claims)
+// ═══════════════════════════════════════════════════════════════
+
 type ContextKey string
 
 const (
@@ -56,21 +60,79 @@ func AccountProfileFromContext(ctx context.Context) (*models.AccountProfile, boo
 	return val, ok
 }
 
+const (
+	// DefaultAccessTokenTTL defines the recommended 15-minute lifetime for JWT access tokens (OWASP ASVS V3.2.1).
+	DefaultAccessTokenTTL = 15 * time.Minute
+)
+
+// ═══════════════════════════════════════════════════════════════
+// 2. AUTHENTICATOR INITIALIZATION & CONFIGURATION (JWT lifetime & verifiers)
+// ═══════════════════════════════════════════════════════════════
+
 // Authenticator verifies API tokens, CLI keys, and JWT sessions.
 type Authenticator struct {
-	jwtSecret   []byte
-	cliVerifier CLITokenVerifier
+	jwtSecret         []byte
+	cliVerifier       CLITokenVerifier
+	revocationChecker RevocationChecker
+	accessTokenTTL    time.Duration
 }
 
-// NewAuthenticator initializes the auth service.
+// RevocationChecker verifies whether an access token has been revoked before expiration.
+// Returns true if the token is revoked, false if valid.
+type RevocationChecker func(ctx context.Context, userID uuid.UUID, issuedAt int64) bool
+
+// NewAuthenticator initializes the auth service with default 15-minute access token TTL.
+// If an empty secret is provided, it generates a cryptographically secure 32-byte ephemeral key
+// rather than permitting insecure empty HMAC signing keys (Master Rule 1.1, 1.6 & 5.1).
 func NewAuthenticator(jwtSecret string) *Authenticator {
-	return &Authenticator{jwtSecret: []byte(jwtSecret)}
+	secretBytes := []byte(jwtSecret)
+	if len(secretBytes) == 0 {
+		ephemeral := make([]byte, 32)
+		if _, err := rand.Read(ephemeral); err != nil {
+			panic(fmt.Sprintf("auth: failed to generate secure ephemeral secret: %v", err))
+		}
+		secretBytes = ephemeral
+		slog.Warn("Authenticator initialized with empty secret: generated secure ephemeral key (tokens will be invalidated upon restart). Configure JWT_SECRET in environment.")
+	}
+	return &Authenticator{
+		jwtSecret:      secretBytes,
+		accessTokenTTL: DefaultAccessTokenTTL,
+	}
+}
+
+// SetAccessTokenTTL configures the access token lifetime.
+func (a *Authenticator) SetAccessTokenTTL(ttl time.Duration) {
+	if ttl > 0 {
+		a.accessTokenTTL = ttl
+	}
+}
+
+// AccessTokenTTL returns the configured access token lifetime.
+func (a *Authenticator) AccessTokenTTL() time.Duration {
+	if a == nil || a.accessTokenTTL <= 0 {
+		return DefaultAccessTokenTTL
+	}
+	return a.accessTokenTTL
+}
+
+// AccessTokenExpiresIn returns the expiration in seconds (e.g. 900 for 15m).
+func (a *Authenticator) AccessTokenExpiresIn() int64 {
+	return int64(a.AccessTokenTTL().Seconds())
 }
 
 // SetCLIVerifier injects CLI token lifecycle management.
 func (a *Authenticator) SetCLIVerifier(verifier CLITokenVerifier) {
 	a.cliVerifier = verifier
 }
+
+// SetRevocationChecker injects a revocation verification hook.
+func (a *Authenticator) SetRevocationChecker(checker RevocationChecker) {
+	a.revocationChecker = checker
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 3. MULTI-TENANCY CONTEXT HELPERS (Tenant isolation & context propagation)
+// ═══════════════════════════════════════════════════════════════
 
 // WithWorkspaceContext stores the active workspace ID into the request context.
 func WithWorkspaceContext(ctx context.Context, workspaceID uuid.UUID) context.Context {
@@ -90,7 +152,11 @@ func WorkspaceFromContext(ctx context.Context) (uuid.UUID, error) {
 	return id, nil
 }
 
-// VerifyToken decodes and validates an HMAC-SHA256 JWT, verifying cryptographic signature and expiration.
+// ═══════════════════════════════════════════════════════════════
+// 4. CRYPTOGRAPHIC TOKEN VERIFICATION (HS256 validation & replay checks)
+// ═══════════════════════════════════════════════════════════════
+
+// VerifyToken decodes and validates an HMAC-SHA256 JWT, verifying cryptographic signature, header algorithm pinning, and expiration.
 func (a *Authenticator) VerifyToken(tokenString string) (*TokenClaims, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -101,18 +167,34 @@ func (a *Authenticator) VerifyToken(tokenString string) (*TokenClaims, error) {
 	payloadB64 := parts[1]
 	providedSigB64 := parts[2]
 
-	// 1. Recompute HMAC-SHA256 signature using server secret
+	// 1. Decode and pin JWT header algorithm to prevent algorithm confusion attacks (Master Rule 5.1)
+	headerBytes, err := base64.RawURLEncoding.DecodeString(headerB64)
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Typ string `json:"typ"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, ErrInvalidToken
+	}
+	if header.Alg != "HS256" {
+		return nil, fmt.Errorf("%w: unsupported signing algorithm '%s'", ErrInvalidToken, header.Alg)
+	}
+
+	// 2. Recompute HMAC-SHA256 signature using server secret
 	mac := hmac.New(sha256.New, a.jwtSecret)
 	mac.Write([]byte(headerB64 + "." + payloadB64))
 	expectedSig := mac.Sum(nil)
 	expectedSigB64 := base64.RawURLEncoding.EncodeToString(expectedSig)
 
-	// 2. Constant-time signature comparison to eliminate side-channel timing attacks (Master Rule 5.1)
+	// 3. Constant-time signature comparison to eliminate side-channel timing attacks (Master Rule 5.1)
 	if subtle.ConstantTimeCompare([]byte(providedSigB64), []byte(expectedSigB64)) != 1 {
 		return nil, ErrInvalidToken
 	}
 
-	// 3. Decode claims payload
+	// 4. Decode claims payload
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
 		return nil, ErrInvalidToken
@@ -123,7 +205,7 @@ func (a *Authenticator) VerifyToken(tokenString string) (*TokenClaims, error) {
 		return nil, ErrInvalidToken
 	}
 
-	// 4. Enforce expiration verification
+	// 5. Enforce expiration verification
 	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
 		return nil, ErrTokenExpired
 	}
@@ -131,26 +213,22 @@ func (a *Authenticator) VerifyToken(tokenString string) (*TokenClaims, error) {
 	return &claims, nil
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5. AUTHENTICATION MIDDLEWARE & EXTRACTION (Bearer, CLI keys & query tokens)
+// ═══════════════════════════════════════════════════════════════
+
 // Middleware creates an HTTP handler that enforces valid token or API key credentials.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		apiKeyHeader := r.Header.Get("X-Workspace-Key")
-
-		var token string
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if apiKeyHeader != "" {
-			token = apiKeyHeader
-		}
+		token := extractAuthToken(r)
 
 		if token == "" {
 			http.Error(w, `{"error":"unauthorized: missing authorization header"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// Handle CLI team tokens (scandrix_ or kodus_ prefix)
-		if strings.HasPrefix(token, "scandrix_") || strings.HasPrefix(token, "kodus_") {
+		// Handle CLI team tokens (scandrix_ prefix)
+		if strings.HasPrefix(token, "scandrix_") {
 			if a.cliVerifier != nil {
 				wsID, profile, err := a.cliVerifier(r.Context(), token)
 				if err != nil {
@@ -180,6 +258,13 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Verify against revocation store (RFC 6749 / ASVS V3.5.3)
+		if a.revocationChecker != nil && a.revocationChecker(r.Context(), claims.UserID, claims.IssuedAt) {
+			slog.Warn("Rejected revoked token", "user_id", claims.UserID)
+			http.Error(w, `{"error":"unauthorized: session has been revoked"}`, http.StatusUnauthorized)
+			return
+		}
+
 		ctx := WithWorkspaceContext(r.Context(), claims.WorkspaceID)
 		ctx = WithAccountContext(ctx, &models.AccountProfile{
 			ID:          claims.UserID,
@@ -189,6 +274,37 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func extractAuthToken(r *http.Request) string {
+	// 1. Authorization: Bearer <token>
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	} else if strings.HasPrefix(authHeader, "Bearer") {
+		return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer"))
+	}
+
+	// 2. X-Team-Key header (ScanDrix CLI standard)
+	if k := r.Header.Get("X-Team-Key"); k != "" {
+		return strings.TrimSpace(k)
+	}
+
+	// 3. X-API-Key header
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		return strings.TrimSpace(k)
+	}
+
+	// 4. X-Workspace-Key header
+	if k := r.Header.Get("X-Workspace-Key"); k != "" {
+		return strings.TrimSpace(k)
+	}
+
+	// 5. Query parameter token (e.g. for SSE streams or WebSockets)
+	if q := r.URL.Query().Get("token"); q != "" {
+		return strings.TrimSpace(q)
+	}
+
+	return ""
 }
 
 // HashAPIKey generates a SHA-256 hash of an API key for safe database storage.
@@ -202,7 +318,27 @@ func ConstantTimeCompare(provided, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
-// RoleGuard ensures the authenticated user possesses the required authorization level.
+// ═══════════════════════════════════════════════════════════════
+// 6. ROLE ACCESS CONTROL & POLICY GUARDS (Least privilege enforcement)
+// ═══════════════════════════════════════════════════════════════
+
+// roleLevel returns numeric rank for hierarchical RBAC comparison.
+func roleLevel(r models.UserRole) int {
+	switch strings.ToUpper(strings.TrimSpace(string(r))) {
+	case string(models.RoleOwner):
+		return 4
+	case string(models.RoleAdmin):
+		return 3
+	case string(models.RoleMember):
+		return 2
+	case string(models.RoleViewer):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// RoleGuard ensures the authenticated user possesses at least the required authorization level.
 func RoleGuard(requiredRole models.UserRole, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := r.Context().Value(AccountContextKey).(*models.AccountProfile)
@@ -213,7 +349,7 @@ func RoleGuard(requiredRole models.UserRole, next http.HandlerFunc) http.Handler
 			return
 		}
 
-		if profile.Role != requiredRole && profile.Role != models.RoleOwner {
+		if roleLevel(profile.Role) < roleLevel(requiredRole) {
 			http.Error(w, `{"error":"forbidden: role does not satisfy policy"}`, http.StatusForbidden)
 			return
 		}
@@ -221,6 +357,10 @@ func RoleGuard(requiredRole models.UserRole, next http.HandlerFunc) http.Handler
 		next(w, r)
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 7. SECURE TOKEN ISSUANCE & KEY GENERATION (Access/refresh tokens & API keys)
+// ═══════════════════════════════════════════════════════════════
 
 // GenerateToken issues a signed access token containing tenant and user claims (expires in 24h).
 func (a *Authenticator) GenerateToken(userID, wsID uuid.UUID, role models.UserRole) (string, error) {
@@ -230,10 +370,23 @@ func (a *Authenticator) GenerateToken(userID, wsID uuid.UUID, role models.UserRo
 // GenerateTokenWithEmail issues a signed access token embedding the user's verified email.
 func (a *Authenticator) GenerateTokenWithEmail(userID, wsID uuid.UUID, role models.UserRole, email string) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payloadStr := fmt.Sprintf(`{"sub":"%s","ws":"%s","role":"%s","email":"%s","iat":%d,"exp":%d}`,
-		userID, wsID, role, email, time.Now().Unix(), time.Now().Add(24*time.Hour).Unix(),
-	)
-	payload := base64.RawURLEncoding.EncodeToString([]byte(payloadStr))
+	ttl := a.AccessTokenTTL()
+	now := time.Now().UTC()
+
+	claims := TokenClaims{
+		UserID:      userID,
+		WorkspaceID: wsID,
+		Role:        role,
+		Email:       email,
+		IssuedAt:    now.Unix(),
+		ExpiresAt:   now.Add(ttl).Unix(),
+	}
+
+	payloadBytes, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("failed marshaling jwt claims: %w", err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(payloadBytes)
 
 	mac := hmac.New(sha256.New, a.jwtSecret)
 	mac.Write([]byte(header + "." + payload))
@@ -273,5 +426,3 @@ func GenerateAPIKey() (plainKey, hashedKey string, err error) {
 	hashedKey = HashAPIKey(plainKey)
 	return plainKey, hashedKey, nil
 }
-
-

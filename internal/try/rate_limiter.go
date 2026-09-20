@@ -44,7 +44,16 @@ func (r *RateLimiter) CheckAndRecord(fingerprint string) RateLimitResult {
 	now := time.Now().UTC()
 	cutoff := now.Add(-r.window)
 
-	// Clean expired timestamps
+	// Proactive batch pruning of stale fingerprints to prevent memory leaks from one-off visits
+	if len(r.fingerprints) > 100 {
+		for fp, ts := range r.fingerprints {
+			if len(ts) == 0 || ts[len(ts)-1].Before(cutoff) {
+				delete(r.fingerprints, fp)
+			}
+		}
+	}
+
+	// Clean expired timestamps for the current fingerprint
 	timestamps := r.fingerprints[fingerprint]
 	var active []time.Time
 	for _, t := range timestamps {

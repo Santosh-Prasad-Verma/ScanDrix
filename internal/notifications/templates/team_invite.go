@@ -1,11 +1,18 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"html"
+)
 
 // RenderTeamInvite generates the email inviting a teammate to join a ScanDrix workspace.
 func RenderTeamInvite(inviterName, recipientEmail, orgName, role, inviteURL string) (subject, htmlBody string) {
-	subject = fmt.Sprintf("%s invited you to join %s on ScanDrix", inviterName, orgName)
-	preview := fmt.Sprintf("You have been invited to join %s on the ScanDrix automated code review platform.", orgName)
+	safeInviter := html.EscapeString(inviterName)
+	safeOrg := html.EscapeString(orgName)
+	safeRole := html.EscapeString(role)
+
+	subject = fmt.Sprintf("%s invited you to join %s on ScanDrix", safeInviter, safeOrg)
+	preview := fmt.Sprintf("You have been invited to join %s on the ScanDrix automated code review platform.", safeOrg)
 
 	content := fmt.Sprintf(`
 		<p>Hi there,</p>
@@ -14,7 +21,7 @@ func RenderTeamInvite(inviterName, recipientEmail, orgName, role, inviteURL stri
 		<p style="color: #4b5563;">
 			ScanDrix provides automated AI code reviews, multi-agent deliberation, and continuous security AST analysis directly on your pull requests.
 		</p>
-	`, inviterName, orgName, role)
+	`, safeInviter, safeOrg, safeRole)
 
 	htmlBody = RenderBrandLayout(preview, "Join Your Team on ScanDrix", content, "Accept Invitation", inviteURL)
 	return subject, htmlBody
@@ -22,13 +29,14 @@ func RenderTeamInvite(inviterName, recipientEmail, orgName, role, inviteURL stri
 
 // RenderPasswordReset generates a password reset email using the brand layout.
 func RenderPasswordReset(subscriberName, resetURL string) (subject, htmlBody string) {
-	subject = "Reset your ScanDrix Password"
-	preview := "A password reset request was received for your ScanDrix account."
-
 	name := subscriberName
 	if name == "" {
 		name = "there"
 	}
+	safeName := html.EscapeString(name)
+
+	subject = "Reset your ScanDrix Password"
+	preview := "A password reset request was received for your ScanDrix account."
 
 	content := fmt.Sprintf(`
 		<p>Hi <strong>%s</strong>,</p>
@@ -37,7 +45,7 @@ func RenderPasswordReset(subscriberName, resetURL string) (subject, htmlBody str
 		<p style="color: #64748b; font-size: 13px; margin-top: 20px;">
 			If you did not initiate this request, you can safely ignore this email. Your credentials remain secure.
 		</p>
-	`, name)
+	`, safeName)
 
 	htmlBody = RenderBrandLayout(preview, "Password Reset Request", content, "Reset Password", resetURL)
 	return subject, htmlBody

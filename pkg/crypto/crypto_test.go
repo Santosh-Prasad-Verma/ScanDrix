@@ -14,7 +14,7 @@ func TestAESGCMEncryptionAndDecryption(t *testing.T) {
 		t.Fatalf("failed generating key: %v", err)
 	}
 
-	plaintext := []byte("secret payload for enterprise code review: token=kodus_live_12345")
+	plaintext := []byte("secret payload for enterprise code review: token=scandrix_live_12345")
 
 	// 1. Encrypt
 	ciphertext, nonce, err := crypto.EncryptAESGCM(key, plaintext)
@@ -70,13 +70,13 @@ func TestHMACSHA256Verification(t *testing.T) {
 }
 
 func TestGenerateSecureToken(t *testing.T) {
-	token, err := crypto.GenerateSecureToken("kodus_", 24)
+	token, err := crypto.GenerateSecureToken("scandrix_", 24)
 	if err != nil {
 		t.Fatalf("failed generating token: %v", err)
 	}
 
-	if !strings.HasPrefix(token, "kodus_") {
-		t.Fatalf("expected token prefix 'kodus_', got %s", token)
+	if !strings.HasPrefix(token, "scandrix_") {
+		t.Fatalf("expected token prefix 'scandrix_', got %s", token)
 	}
 	if len(token) < 20 {
 		t.Fatalf("token too short: %s", token)
@@ -132,4 +132,3 @@ func TestReEncryptSecretAndBatch(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", len(reencrypted))
 	}
 }
-

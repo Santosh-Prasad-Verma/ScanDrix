@@ -10,6 +10,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. RUNTIME TARGETS & ENVIRONMENT CONSTANTS (Deployment environment targets)
+// ═══════════════════════════════════════════════════════════════
+
 // AppEnvironment represents the runtime target (development, staging, production).
 type AppEnvironment string
 
@@ -18,6 +22,10 @@ const (
 	EnvStaging     AppEnvironment = "staging"
 	EnvProduction  AppEnvironment = "production"
 )
+
+// ═══════════════════════════════════════════════════════════════
+// 2. CONFIG SCHEMA & SETTINGS DEFINITION (Enterprise configuration model)
+// ═══════════════════════════════════════════════════════════════
 
 // Config encapsulates all validated runtime configuration settings.
 type Config struct {
@@ -42,8 +50,10 @@ type Config struct {
 	AppwriteAPIKey    string
 
 	// Security & Auth Secrets
-	JWTSecret    string
-	KMSMasterKey string
+	JWTSecret                string
+	KMSMasterKey             string
+	SCIMBearerToken          string
+	HelpdeskJWTPrivateKeyPEM string
 
 	// Web App & OAuth Configuration
 	AppBaseURL                 string
@@ -64,43 +74,57 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
+	// Registration Anti-Abuse & Email Security
+	RequireEmailVerification bool
+	BlockedEmailDomains      []string
+	TurnstileSecretKey       string
+
 	// SCM API & Webhook Secrets
-	GitHubToken               string
-	GitHubWebhookSecret       string
-	GitLabWebhookSecret       string
-	BitbucketUsername         string
-	BitbucketPassword         string
-	BitbucketWebhookSecret     string
-	AzureDevOpsPAT            string
-	AzureDevOpsWebhookSecret  string
-	ForgejoToken              string
-	ForgejoWebhookSecret      string
-	ForgejoBaseURL            string
+	GitHubToken              string
+	GitLabToken              string
+	GitHubWebhookSecret      string
+	GitLabWebhookSecret      string
+	BitbucketUsername        string
+	BitbucketPassword        string
+	BitbucketWebhookSecret   string
+	AzureDevOpsPAT           string
+	AzureDevOpsWebhookSecret string
+	ForgejoToken             string
+	ForgejoWebhookSecret     string
+	ForgejoBaseURL           string
 
 	// AI Engine Credentials (BYOK / Enterprise Cloud)
-	AnthropicAPIKey   string
-	OpenAIAPIKey      string
-	OpenAIBaseURL     string
-	GeminiAPIKey      string
-	DeepSeekAPIKey    string
-	OpenRouterAPIKey  string
-	BedrockToken      string
-	BedrockRegion     string
-	VertexToken       string
-	VertexProject     string
-	VertexLocation    string
-	OllamaEndpoint    string
-	VLLMEndpoint      string
-	LocalLLMEndpoint  string
-	MoonshotAPIKey    string
-	AlibabaAPIKey     string
-	MiniMaxAPIKey     string
-	XAIAPIKey         string
-	MistralAPIKey     string
+	AnthropicAPIKey  string
+	OpenAIAPIKey     string
+	OpenAIBaseURL    string
+	GeminiAPIKey     string
+	DeepSeekAPIKey   string
+	OpenRouterAPIKey string
+	BedrockToken     string
+	BedrockRegion    string
+	VertexToken      string
+	VertexProject    string
+	VertexLocation   string
+	VLLMEndpoint     string
+	LocalLLMEndpoint string
+	MoonshotAPIKey   string
+	AlibabaAPIKey    string
+	MiniMaxAPIKey    string
+	XAIAPIKey        string
+	MistralAPIKey    string
+	NovitaAPIKey     string
 
 	// Ephemeral Sandbox Execution
+	SandboxProvider          string
 	E2BAPIKey                string
+	E2BDomain                string
 	E2BEndpoint              string
+	E2BTemplateID            string
+	E2BTemplateGraphID       string
+	E2BProxyHost             string
+	E2BProxyPort             string
+	E2BProxyPassword         string
+	E2BProxyMethod           string
 	ProofOfFixSandboxEnabled bool
 
 	// Multi-Model Configuration
@@ -117,13 +141,30 @@ type Config struct {
 	RazorpayKeyID         string
 	RazorpayKeySecret     string
 	RazorpayWebhookSecret string
+	BillingWebhookSecret  string
+
+	// Azure Code Management Token Crypto
+	CodeManagementSecret       string
+	CodeManagementWebhookToken string
+
+	// Asynchronous Worker Tuning
+	WorkerRole           string
+	WorkerHealthPort     int
+	WorkerDrainTimeoutMs int
+	WorkerConcurrency    int
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 3. ENVIRONMENT VARIABLE LOADER (.env discovery & runtime mapping)
+// ═══════════════════════════════════════════════════════════════
 
 // Load reads and validates configuration from environment variables and local .env files.
 // In accordance with Master Rule 1.6, it fails fast if critical variables are missing.
 func Load() (*Config, error) {
-	// Attempt to load .env if present (non-fatal if missing in production)
+	// Cascade: .env.local (per-dev overrides) wins, .env provides team baseline defaults.
+	_ = godotenv.Load(".env.local")
 	_ = godotenv.Load(".env")
+	_ = godotenv.Load("../.env.local")
 	_ = godotenv.Load("../.env")
 
 	envStr := strings.ToLower(getEnvOrDefault("APP_ENV", "development"))
@@ -149,12 +190,26 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid PORT / API_PORT value: %w", err)
 	}
 
-	webhooksPort, err := strconv.Atoi(getEnvOrDefault("WEBHOOKS_PORT", "8081"))
+	webhooksPort, err := strconv.Atoi(getEnvOrDefault("WEBHOOKS_PORT", getEnvOrDefault("API_WEBHOOKS_PORT", "8081")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid WEBHOOKS_PORT value: %w", err)
 	}
 
 	smtpPort, _ := strconv.Atoi(getEnvOrDefault("SMTP_PORT", "587"))
+
+	workerRole := strings.ToLower(getEnvOrDefault("WORKER_ROLE", "all"))
+	workerHealthPort, _ := strconv.Atoi(getEnvOrDefault("WORKER_HEALTH_PORT", getEnvOrDefault("API_WORKER_PORT", "8082")))
+	if workerHealthPort <= 0 {
+		workerHealthPort = 8082
+	}
+	workerDrainTimeoutMs, _ := strconv.Atoi(getEnvOrDefault("API_WORKER_DRAIN_TIMEOUT_MS", getEnvOrDefault("WORKER_DRAIN_TIMEOUT_MS", "25000")))
+	if workerDrainTimeoutMs <= 0 {
+		workerDrainTimeoutMs = 25000
+	}
+	workerConcurrency, _ := strconv.Atoi(getEnvOrDefault("WORKER_CONCURRENCY", "8"))
+	if workerConcurrency <= 0 {
+		workerConcurrency = 8
+	}
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -176,88 +231,111 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Environment:               appEnv,
-		APIPort:                   apiPort,
-		WebhooksPort:              webhooksPort,
-		DatabaseURL:               dbURL,
-		RabbitMQURL:               rmqURL,
-		RedisURL:                  getEnvOrDefault("REDIS_URL", "redis://localhost:6379"),
-		AppwriteEndpoint:          getEnvOrDefault("APPWRITE_ENDPOINT", "https://sgp.cloud.appwrite.io/v1"),
-		AppwriteProjectID:         os.Getenv("APPWRITE_PROJECT_ID"),
-		AppwriteAPIKey:            os.Getenv("APPWRITE_API_KEY"),
-		GitHubToken:               os.Getenv("GITHUB_TOKEN"),
-		GitHubWebhookSecret:       os.Getenv("GITHUB_WEBHOOK_SECRET"),
-		GitLabWebhookSecret:       os.Getenv("GITLAB_WEBHOOK_SECRET"),
-		BitbucketUsername:         os.Getenv("BITBUCKET_USERNAME"),
-		BitbucketPassword:         os.Getenv("BITBUCKET_PASSWORD"),
-		BitbucketWebhookSecret:    os.Getenv("BITBUCKET_WEBHOOK_SECRET"),
-		AzureDevOpsPAT:            os.Getenv("AZURE_DEVOPS_PAT"),
-		AzureDevOpsWebhookSecret:  os.Getenv("AZURE_DEVOPS_WEBHOOK_SECRET"),
-		ForgejoToken:              os.Getenv("FORGEJO_TOKEN"),
-		ForgejoWebhookSecret:      os.Getenv("FORGEJO_WEBHOOK_SECRET"),
-		ForgejoBaseURL:            getEnvOrDefault("FORGEJO_BASE_URL", "https://codeberg.org"),
-		JWTSecret:                 os.Getenv("JWT_SECRET"),
-		KMSMasterKey:              os.Getenv("KMS_MASTER_KEY"),
-		AppBaseURL:                getEnvOrDefault("APP_BASE_URL", "http://localhost:3000"),
-		GitHubOAuthClientID:       os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
-		GitHubOAuthClientSecret:   os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
-		GitLabOAuthClientID:       os.Getenv("GITLAB_OAUTH_CLIENT_ID"),
-		GitLabOAuthClientSecret:   os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"),
-		BitbucketOAuthClientID:    os.Getenv("BITBUCKET_OAUTH_CLIENT_ID"),
+		Environment:                appEnv,
+		APIPort:                    apiPort,
+		WebhooksPort:               webhooksPort,
+		DatabaseURL:                dbURL,
+		RabbitMQURL:                rmqURL,
+		RedisURL:                   getEnvOrDefault("REDIS_URL", "redis://localhost:6379"),
+		AppwriteEndpoint:           getEnvOrDefault("APPWRITE_ENDPOINT", "https://sgp.cloud.appwrite.io/v1"),
+		AppwriteProjectID:          os.Getenv("APPWRITE_PROJECT_ID"),
+		AppwriteAPIKey:             os.Getenv("APPWRITE_API_KEY"),
+		GitHubToken:                os.Getenv("GITHUB_TOKEN"),
+		GitLabToken:                os.Getenv("GITLAB_TOKEN"),
+		GitHubWebhookSecret:        os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		GitLabWebhookSecret:        os.Getenv("GITLAB_WEBHOOK_SECRET"),
+		BitbucketUsername:          os.Getenv("BITBUCKET_USERNAME"),
+		BitbucketPassword:          os.Getenv("BITBUCKET_PASSWORD"),
+		BitbucketWebhookSecret:     os.Getenv("BITBUCKET_WEBHOOK_SECRET"),
+		AzureDevOpsPAT:             os.Getenv("AZURE_DEVOPS_PAT"),
+		AzureDevOpsWebhookSecret:   os.Getenv("AZURE_DEVOPS_WEBHOOK_SECRET"),
+		ForgejoToken:               os.Getenv("FORGEJO_TOKEN"),
+		ForgejoWebhookSecret:       os.Getenv("FORGEJO_WEBHOOK_SECRET"),
+		ForgejoBaseURL:             getEnvOrDefault("FORGEJO_BASE_URL", "https://codeberg.org"),
+		JWTSecret:                  os.Getenv("JWT_SECRET"),
+		KMSMasterKey:               os.Getenv("KMS_MASTER_KEY"),
+		SCIMBearerToken:            os.Getenv("SCIM_BEARER_TOKEN"),
+		HelpdeskJWTPrivateKeyPEM:   os.Getenv("HELPDESK_JWT_PRIVATE_KEY_PEM"),
+		AppBaseURL:                 getEnvOrDefault("APP_BASE_URL", "http://localhost:3000"),
+		GitHubOAuthClientID:        os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
+		GitHubOAuthClientSecret:    os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
+		GitLabOAuthClientID:        os.Getenv("GITLAB_OAUTH_CLIENT_ID"),
+		GitLabOAuthClientSecret:    os.Getenv("GITLAB_OAUTH_CLIENT_SECRET"),
+		BitbucketOAuthClientID:     os.Getenv("BITBUCKET_OAUTH_CLIENT_ID"),
 		BitbucketOAuthClientSecret: os.Getenv("BITBUCKET_OAUTH_CLIENT_SECRET"),
 		GitHubOAuthRedirectURI:     os.Getenv("GITHUB_OAUTH_REDIRECT_URI"),
 		GitLabOAuthRedirectURI:     getEnvOrDefault("GITLAB_OAUTH_REDIRECT_URI", os.Getenv("GLOBAL_GITLAB_REDIRECT_URL")),
 		BitbucketOAuthRedirectURI:  os.Getenv("BITBUCKET_OAUTH_REDIRECT_URI"),
-		SMTPHost:                  os.Getenv("SMTP_HOST"),
-		SMTPPort:                  smtpPort,
-		SMTPUsername:              os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:              os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:                  getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"),
-		AnthropicAPIKey:           os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:              getEnvOrDefault("OPENAI_API_KEY", os.Getenv("API_OPEN_AI_API_KEY")),
-		OpenAIBaseURL:             getEnvOrDefault("OPENAI_BASE_URL", getEnvOrDefault("API_OPENAI_FORCE_BASE_URL", "https://api.openai.com/v1")),
-		GeminiAPIKey:              os.Getenv("GEMINI_API_KEY"),
-		DeepSeekAPIKey:            os.Getenv("DEEPSEEK_API_KEY"),
-		OpenRouterAPIKey:          os.Getenv("OPENROUTER_API_KEY"),
-		BedrockToken:              os.Getenv("BEDROCK_BEARER_TOKEN"),
-		BedrockRegion:             getEnvOrDefault("BEDROCK_REGION", "us-east-1"),
-		VertexToken:               os.Getenv("VERTEX_ACCESS_TOKEN"),
-		VertexProject:             os.Getenv("VERTEX_PROJECT_ID"),
-		VertexLocation:            getEnvOrDefault("VERTEX_LOCATION", "us-central1"),
-		OllamaEndpoint:            getEnvOrDefault("OLLAMA_ENDPOINT", "http://localhost:11434"),
-		VLLMEndpoint:              getEnvOrDefault("VLLM_ENDPOINT", "http://localhost:8000"),
-		LocalLLMEndpoint:          os.Getenv("VLLM_ENDPOINT"),
-		MoonshotAPIKey:            os.Getenv("MOONSHOT_API_KEY"),
-		AlibabaAPIKey:             os.Getenv("ALIBABA_API_KEY"),
-		MiniMaxAPIKey:             os.Getenv("MINIMAX_API_KEY"),
-		XAIAPIKey:                 os.Getenv("XAI_API_KEY"),
-		MistralAPIKey:             os.Getenv("MISTRAL_API_KEY"),
-		E2BAPIKey:                 os.Getenv("E2B_API_KEY"),
-		E2BEndpoint:               os.Getenv("E2B_ENDPOINT"),
-		ProofOfFixSandboxEnabled:  os.Getenv("PROOFOFFIX_SANDBOX_ENABLED") == "true",
-		AIModelTriage:             getEnvOrDefault("AI_MODEL_TRIAGE", "free/gemini-3.7-flash"), // prev: "minimax/minimax-m3:free"
-		AIModelLogic:              getEnvOrDefault("AI_MODEL_LOGIC", "free/deepseek-v4-pro-0813"), // prev: "nvidia/nemotron-3-ultra-550b-a55b:free"
-		AIModelSecurity:           getEnvOrDefault("AI_MODEL_SECURITY", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
-		AIModelThreatModel:        getEnvOrDefault("AI_MODEL_THREAT_MODEL", "free/deepseek-v4-pro-0813"), // prev: "thinkingmachines/inkling:free"
-		AIModelArbiter:            getEnvOrDefault("AI_MODEL_ARBITER", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
-		AIModelSynthesizer:        getEnvOrDefault("AI_MODEL_SYNTHESIZER", "free/deepseek-v4-pro-0813"), // prev: "thinkingmachines/inkling:free"
-		AIModelDefault:            getEnvOrDefault("AI_MODEL_DEFAULT", "free/deepseek-v4-pro-0813"), // prev: "stealth/ox-alpha"
-		AIModelFallback:           getEnvOrDefault("AI_MODEL_FALLBACK", "free/gemini-3.7-flash"),
-		RazorpayKeyID:             os.Getenv("RAZORPAY_KEY_ID"),
-		RazorpayKeySecret:         os.Getenv("RAZORPAY_KEY_SECRET"),
-		RazorpayWebhookSecret:     os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
+		SMTPHost:                   os.Getenv("SMTP_HOST"),
+		SMTPPort:                   smtpPort,
+		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                   getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"),
+		RequireEmailVerification:   os.Getenv("REQUIRE_EMAIL_VERIFICATION") == "true",
+		BlockedEmailDomains:        parseCommaSeparated(os.Getenv("BLOCKED_EMAIL_DOMAINS")),
+		TurnstileSecretKey:         os.Getenv("TURNSTILE_SECRET_KEY"),
+		AnthropicAPIKey:            getEnvOrDefault("ANTHROPIC_API_KEY", os.Getenv("API_ANTHROPIC_API_KEY")),
+		OpenAIAPIKey:               getEnvOrDefault("OPENAI_API_KEY", os.Getenv("API_OPEN_AI_API_KEY")),
+		OpenAIBaseURL:              getEnvOrDefault("OPENAI_BASE_URL", getEnvOrDefault("API_OPENAI_FORCE_BASE_URL", "https://api.openai.com/v1")),
+		GeminiAPIKey:               getEnvOrDefault("GEMINI_API_KEY", os.Getenv("API_GOOGLE_AI_API_KEY")),
+		DeepSeekAPIKey:             getEnvOrDefault("DEEPSEEK_API_KEY", os.Getenv("API_DEEPSEEK_API_KEY")),
+		OpenRouterAPIKey:           getEnvOrDefault("OPENROUTER_API_KEY", os.Getenv("API_OPEN_ROUTER_API_KEY")),
+		BedrockToken:               os.Getenv("BEDROCK_BEARER_TOKEN"),
+		BedrockRegion:              getEnvOrDefault("BEDROCK_REGION", "us-east-1"),
+		VertexToken:                os.Getenv("VERTEX_ACCESS_TOKEN"),
+		VertexProject:              os.Getenv("VERTEX_PROJECT_ID"),
+		VertexLocation:             getEnvOrDefault("VERTEX_LOCATION", "us-central1"),
+		VLLMEndpoint:               getEnvOrDefault("VLLM_ENDPOINT", "http://localhost:8000"),
+		LocalLLMEndpoint:           os.Getenv("VLLM_ENDPOINT"),
+		MoonshotAPIKey:             getEnvOrDefault("MOONSHOT_API_KEY", os.Getenv("API_MOONSHOT_API_KEY")),
+		AlibabaAPIKey:              os.Getenv("ALIBABA_API_KEY"),
+		MiniMaxAPIKey:              os.Getenv("MINIMAX_API_KEY"),
+		XAIAPIKey:                  os.Getenv("XAI_API_KEY"),
+		MistralAPIKey:              os.Getenv("MISTRAL_API_KEY"),
+		NovitaAPIKey:               getEnvOrDefault("NOVITA_API_KEY", os.Getenv("API_NOVITA_AI_API_KEY")),
+		SandboxProvider:            getEnvOrDefault("SANDBOX_PROVIDER", "auto"),
+		E2BAPIKey:                  getEnvOrDefault("E2B_API_KEY", os.Getenv("API_E2B_KEY")),
+		E2BDomain:                  getEnvOrDefault("E2B_DOMAIN", "e2b.dev"),
+		E2BEndpoint:                getEnvOrDefault("E2B_ENDPOINT", os.Getenv("E2B_API_URL")),
+		E2BTemplateID:              getEnvOrDefault("E2B_TEMPLATE_ID", os.Getenv("API_E2B_TEMPLATE_ID")),
+		E2BTemplateGraphID:         getEnvOrDefault("E2B_TEMPLATE_GRAPH_ID", os.Getenv("API_E2B_TEMPLATE_GRAPH_ID")),
+		E2BProxyHost:               os.Getenv("E2B_PROXY_HOST"),
+		E2BProxyPort:               getEnvOrDefault("E2B_PROXY_PORT", "8388"),
+		E2BProxyPassword:           os.Getenv("E2B_PROXY_PASSWORD"),
+		E2BProxyMethod:             getEnvOrDefault("E2B_PROXY_METHOD", "aes-256-gcm"),
+		AIModelTriage:              os.Getenv("AI_MODEL_TRIAGE"),
+		AIModelLogic:               os.Getenv("AI_MODEL_LOGIC"),
+		AIModelSecurity:            os.Getenv("AI_MODEL_SECURITY"),
+		AIModelThreatModel:         os.Getenv("AI_MODEL_THREAT_MODEL"),
+		AIModelArbiter:             os.Getenv("AI_MODEL_ARBITER"),
+		AIModelSynthesizer:         os.Getenv("AI_MODEL_SYNTHESIZER"),
+		AIModelDefault:             getEnvOrDefault("AI_MODEL_DEFAULT", os.Getenv("API_LLM_PROVIDER_MODEL")),
+		AIModelFallback:            os.Getenv("AI_MODEL_FALLBACK"),
+		RazorpayKeyID:              os.Getenv("RAZORPAY_KEY_ID"),
+		RazorpayKeySecret:          os.Getenv("RAZORPAY_KEY_SECRET"),
+		RazorpayWebhookSecret:      os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
+		BillingWebhookSecret:       getBillingWebhookSecret(),
+		CodeManagementSecret:       os.Getenv("CODE_MANAGEMENT_SECRET"),
+		CodeManagementWebhookToken: os.Getenv("CODE_MANAGEMENT_WEBHOOK_TOKEN"),
+		WorkerRole:                 workerRole,
+		WorkerHealthPort:           workerHealthPort,
+		WorkerDrainTimeoutMs:       workerDrainTimeoutMs,
+		WorkerConcurrency:          workerConcurrency,
 	}
 
-	// Validate required variables
+	// ═══════════════════════════════════════════════════════════════
+	// 4. ENTERPRISE INTEGRITY & SECRET VALIDATION (Fail-fast security rules)
+	// ═══════════════════════════════════════════════════════════════
+
 	var validationErrors []string
 
 	if cfg.DatabaseURL == "" && appEnv == EnvProduction {
 		validationErrors = append(validationErrors, "DATABASE_URL is required (Master Rule 1.6)")
 	}
 
-	if appEnv == EnvProduction {
-		if cfg.JWTSecret == "" {
-			validationErrors = append(validationErrors, "JWT_SECRET is required in production (Master Rule 1.1 & 1.6)")
+	if appEnv == EnvProduction || appEnv == EnvStaging {
+		if strings.TrimSpace(cfg.JWTSecret) == "" {
+			validationErrors = append(validationErrors, "JWT_SECRET is required in production and staging (Master Rule 1.1 & 1.6)")
 		}
 		if cfg.AppwriteProjectID == "" {
 			validationErrors = append(validationErrors, "APPWRITE_PROJECT_ID is required in production")
@@ -267,7 +345,7 @@ func Load() (*Config, error) {
 		}
 		if cfg.AnthropicAPIKey == "" && cfg.OpenAIAPIKey == "" && cfg.GeminiAPIKey == "" &&
 			cfg.DeepSeekAPIKey == "" && cfg.OpenRouterAPIKey == "" && cfg.BedrockToken == "" && cfg.VertexToken == "" &&
-			cfg.OllamaEndpoint == "" && cfg.VLLMEndpoint == "" {
+			cfg.VLLMEndpoint == "" {
 			validationErrors = append(validationErrors, "At least one AI provider key or local LLM endpoint must be configured in environment variables")
 		}
 	}
@@ -279,9 +357,37 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5. TYPE CONVERSION & SANITIZATION HELPERS (Fallback strings & slices)
+// ═══════════════════════════════════════════════════════════════
+
 func getEnvOrDefault(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
 	}
 	return fallback
+}
+
+func getBillingWebhookSecret() string {
+	if val := os.Getenv("API_BILLING_WEBHOOK_SECRET"); val != "" {
+		return val
+	}
+	if val := os.Getenv("BILLING_WEBHOOK_SECRET"); val != "" {
+		return val
+	}
+	return os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+}
+
+func parseCommaSeparated(val string) []string {
+	trimmed := strings.TrimSpace(val)
+	if trimmed == "" {
+		return nil
+	}
+	var res []string
+	for _, part := range strings.Split(trimmed, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			res = append(res, p)
+		}
+	}
+	return res
 }

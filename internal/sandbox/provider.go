@@ -1,44 +1,57 @@
 package sandbox
 
 import (
-	"context"
-	"time"
-
-	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/sandbox/contracts"
 )
 
-// SandboxTier identifies the isolation technology tier.
-type SandboxTier string
+type (
+	SandboxTier         = contracts.SandboxTier
+	ProviderType        = contracts.ProviderType
+	CreateSandboxParams = contracts.CreateSandboxParams
+	SandboxRunResult    = contracts.SandboxRunResult
+	RemoteCommands      = contracts.RemoteCommands
+	SandboxInstance     = contracts.SandboxInstance
+	ISandboxProvider    = contracts.ISandboxProvider
+	CommandRequest      = contracts.CommandRequest
+	CommandResult       = contracts.CommandResult
+	ISandbox            = contracts.ISandbox
+
+	// Lease management
+	ISandboxLeaseManager = contracts.ISandboxLeaseManager
+	AcquireResult        = contracts.AcquireResult
+	ReleaseOptions       = contracts.ReleaseOptions
+	DecomposedPrKey      = contracts.DecomposedPrKey
+)
+
+type (
+	SandboxInvalidatedError     = contracts.SandboxInvalidatedError
+	SandboxCreateTimeoutError   = contracts.SandboxCreateTimeoutError
+	SandboxStaleConnectionError = contracts.SandboxStaleConnectionError
+)
 
 const (
-	TierWorktree SandboxTier = "WORKTREE"   // Fast local ephemeral checkout
-	TierMicroVM  SandboxTier = "E2B_MICROVM" // Isolated remote container/VM
+	TierWorktree = contracts.TierWorktree
+	TierMicroVM  = contracts.TierMicroVM
+	TierNull     = contracts.TierNull
+
+	ProviderAuto  = contracts.ProviderAuto
+	ProviderE2B   = contracts.ProviderE2B
+	ProviderLocal = contracts.ProviderLocal
+	ProviderNull  = contracts.ProviderNull
+
+	RoutingKeySandboxInvalidate = contracts.RoutingKeySandboxInvalidate
+	ReasonPRClosed              = contracts.ReasonPRClosed
+	ReasonForcePushed           = contracts.ReasonForcePushed
 )
 
-// CommandRequest specifies an executable command to run inside a sandbox.
-type CommandRequest struct {
-	Command    string            `json:"command"`
-	Args       []string          `json:"args"`
-	WorkDir    string            `json:"work_dir"`
-	Env        map[string]string `json:"env"`
-	TimeoutSec int               `json:"timeout_sec"`
-}
+var (
+	ResolveRepoPath = contracts.ResolveRepoPath
+	ShSingleQuote   = contracts.ShSingleQuote
+	BuildAuthHeader = contracts.BuildAuthHeader
+	GetPRRefspec    = contracts.GetPRRefspec
 
-// CommandResult reports the outcome of a command executed in a sandbox.
-type CommandResult struct {
-	Stdout   string        `json:"stdout"`
-	Stderr   string        `json:"stderr"`
-	ExitCode int           `json:"exit_code"`
-	Duration time.Duration `json:"duration"`
-	TimedOut bool          `json:"timed_out"`
-}
+	BuildPrKey      = contracts.BuildPrKey
+	AssertValidPrKey = contracts.AssertValidPrKey
+	DecomposePrKey   = contracts.DecomposePrKey
+)
 
-// ISandbox defines unified sandbox capabilities across local worktree and microVM.
-type ISandbox interface {
-	GetID() uuid.UUID
-	GetTier() SandboxTier
-	WriteFile(relPath string, data []byte) error
-	ReadFile(relPath string) ([]byte, error)
-	RunCommand(ctx context.Context, req CommandRequest) (*CommandResult, error)
-	Destroy(ctx context.Context) error
-}

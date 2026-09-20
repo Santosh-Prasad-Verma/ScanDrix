@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	awsKeyRegex    = regexp.MustCompile(`AKIA[0-9A-Z]{16}`)
-	bearerRegex    = regexp.MustCompile(`(?i)Bearer\s+[a-zA-Z0-9_\-\.]{16,}`)
+	awsKeyRegex      = regexp.MustCompile(`AKIA[0-9A-Z]{16}`)
+	bearerRegex      = regexp.MustCompile(`(?i)Bearer\s+[a-zA-Z0-9_\-\.]{16,}`)
 	secretParamRegex = regexp.MustCompile(`(?i)(password|secret|token|api_key)=([^\s&]+)`)
 )
 

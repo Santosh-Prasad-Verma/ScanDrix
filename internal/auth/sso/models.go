@@ -45,12 +45,12 @@ type FederatedIdentity struct {
 
 // SAMLAssertion represents parsed SAML XML attributes.
 type SAMLAssertion struct {
-	Issuer         string
-	NameID         string
-	Recipient      string
-	Audience       string
-	NotBefore      time.Time
-	NotOnOrAfter   time.Time
-	Attributes     map[string]string
+	Issuer          string
+	NameID          string
+	Recipient       string
+	Audience        string
+	NotBefore       time.Time
+	NotOnOrAfter    time.Time
+	Attributes      map[string]string
 	GroupMembership []string
 }

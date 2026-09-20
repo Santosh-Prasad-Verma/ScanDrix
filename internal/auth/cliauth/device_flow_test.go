@@ -2,6 +2,7 @@ package cliauth_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +136,115 @@ func TestCLIDeviceFlowExpiration(t *testing.T) {
 	pollRes, _ := manager.PollDeviceLogin(ctx, initRes.DeviceCode)
 	if pollRes.Status != cliauth.StatusExpired {
 		t.Fatalf("expected expired status, got %s", pollRes.Status)
+	}
+}
+
+func TestCLIDeviceFlowSlowDown(t *testing.T) {
+	ctx := context.Background()
+	store := cliauth.NewInMemorySessionStore()
+	manager := cliauth.NewDeviceFlowManager(store, "https://app.scandrix.dev")
+
+	initRes, err := manager.InitiateDeviceLogin(ctx, "ScanDrix-CLI/v1.0")
+	if err != nil {
+		t.Fatalf("failed initiating: %v", err)
+	}
+
+	// First poll should succeed with pending
+	res1, err := manager.PollDeviceLogin(ctx, initRes.DeviceCode)
+	if err != nil {
+		t.Fatalf("unexpected error on first poll: %v", err)
+	}
+	if res1.Status != cliauth.StatusPending {
+		t.Fatalf("expected pending, got %s", res1.Status)
+	}
+
+	// Second poll immediately after (<5s) should return slow_down per RFC 8628 §3.5
+	res2, err := manager.PollDeviceLogin(ctx, initRes.DeviceCode)
+	if err != cliauth.ErrSlowDown {
+		t.Fatalf("expected ErrSlowDown, got: %v", err)
+	}
+	if res2.Status != "slow_down" {
+		t.Fatalf("expected status slow_down, got %s", res2.Status)
+	}
+	if res2.Interval <= initRes.Interval {
+		t.Fatalf("expected interval to increase, got %d (initial %d)", res2.Interval, initRes.Interval)
+	}
+}
+
+func TestCLIDeviceFlowBruteForceProtection(t *testing.T) {
+	ctx := context.Background()
+	store := cliauth.NewInMemorySessionStore()
+	manager := cliauth.NewDeviceFlowManager(store, "https://app.scandrix.dev")
+
+	fakeProfile := &models.AccountProfile{
+		ID:    uuid.New(),
+		Email: "test@example.com",
+	}
+
+	userCode := "TEST-CODE"
+	// Attempt 5 invalid complete attempts
+	for i := 1; i <= 5; i++ {
+		err := manager.CompleteDeviceLogin(ctx, userCode, "access", "refresh", fakeProfile)
+		if err != cliauth.ErrSessionNotFound {
+			t.Fatalf("attempt %d: expected ErrSessionNotFound, got %v", i, err)
+		}
+	}
+
+	// 6th attempt should be blocked with ErrTooManyAttempts
+	err := manager.CompleteDeviceLogin(ctx, userCode, "access", "refresh", fakeProfile)
+	if err != cliauth.ErrTooManyAttempts {
+		t.Fatalf("expected ErrTooManyAttempts, got: %v", err)
+	}
+}
+
+func TestCLIDeviceFlowBruteForceDifferentCodes(t *testing.T) {
+	ctx := context.Background()
+	store := cliauth.NewInMemorySessionStore()
+	manager := cliauth.NewDeviceFlowManager(store, "https://app.scandrix.dev")
+
+	fakeProfile := &models.AccountProfile{
+		ID:    uuid.New(),
+		Email: "attacker@example.com",
+	}
+
+	// Try 5 different codes - should still lock out by user identity
+	for i := 1; i <= 5; i++ {
+		code := fmt.Sprintf("CODE-%04d", i)
+		err := manager.CompleteDeviceLogin(ctx, code, "access", "refresh", fakeProfile)
+		if err != cliauth.ErrSessionNotFound {
+			t.Fatalf("attempt %d: expected ErrSessionNotFound, got %v", i, err)
+		}
+	}
+
+	// 6th attempt with yet another code must be blocked by user lockout
+	err := manager.CompleteDeviceLogin(ctx, "CODE-9999", "access", "refresh", fakeProfile)
+	if err != cliauth.ErrTooManyAttempts {
+		t.Fatalf("expected ErrTooManyAttempts when scanning different codes, got: %v", err)
+	}
+}
+
+func TestCLIDeviceFlowBruteForceClientIPLockout(t *testing.T) {
+	store := cliauth.NewInMemorySessionStore()
+	manager := cliauth.NewDeviceFlowManager(store, "https://app.scandrix.dev")
+
+	ctx := cliauth.WithClientIP(context.Background(), "198.51.100.24")
+	// Try 5 different codes with anonymous/changing profiles from the same client IP
+	for i := 1; i <= 5; i++ {
+		profile := &models.AccountProfile{
+			ID:    uuid.New(),
+			Email: fmt.Sprintf("random-%d@example.com", i),
+		}
+		code := fmt.Sprintf("SCAN-%04d", i)
+		err := manager.CompleteDeviceLogin(ctx, code, "access", "refresh", profile)
+		if err != cliauth.ErrSessionNotFound {
+			t.Fatalf("attempt %d: expected ErrSessionNotFound, got %v", i, err)
+		}
+	}
+
+	// 6th attempt from same client IP must be locked out even with a new profile and code
+	newProfile := &models.AccountProfile{ID: uuid.New(), Email: "fresh@example.com"}
+	err := manager.CompleteDeviceLogin(ctx, "SCAN-9999", "access", "refresh", newProfile)
+	if err != cliauth.ErrTooManyAttempts {
+		t.Fatalf("expected ErrTooManyAttempts on client IP lockout, got %v", err)
 	}
 }

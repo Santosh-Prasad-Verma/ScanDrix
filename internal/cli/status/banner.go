@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package status
 
@@ -25,13 +25,13 @@ const (
 	ColorMuted    = "\033[38;5;248m"
 )
 
-const AsciiLogo = `
-  ███████╗ ██████╗ █████╗ ███╗   ██╗██████╗ ██████╗ ██╗██╗  ██╗
-  ██╔════╝██╔════╝██╔══██╗████╗  ██║██╔══██╗██╔══██╗██║╚██╗██╔╝
-  ███████╗██║     ███████║██╔██╗ ██║██║  ██║██████╔╝██║ ╚███╔╝ 
-  ╚════██║██║     ██╔══██║██║╚██╗██║██║  ██║██╔══██╗██║ ██╔██╗ 
-  ███████║╚██████╗██║  ██║██║ ╚████║██████╔╝██║  ██║██║██╔╝ ██╗
-  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝`
+const AsciiLogo = "\n" +
+	"  ███████╗ ██████╗ █████╗ ███╗   ██╗██████╗ ██████╗ ██╗██╗  ██╗\n" +
+	"  ██╔\u2550\u2550\u2550\u2550╝██╔\u2550\u2550\u2550\u2550╝██╔\u2550\u2550██╗████╗  ██║██╔\u2550\u2550██╗██╔\u2550\u2550██╗██║╚██╗██╔╝\n" +
+	"  ███████╗██║     ███████║██╔██╗ ██║██║  ██║██████╔╝██║ ╚███╔╝ \n" +
+	"  ╚\u2550\u2550\u2550\u2550██║██║     ██╔\u2550\u2550██║██║╚██╗██║██║  ██║██╔\u2550\u2550██╗██║ ██╔██╗ \n" +
+	"  ███████║╚██████╗██║  ██║██║ ╚████║██████╔╝██║  ██║██║██╔╝ ██╗\n" +
+	"  ╚\u2550\u2550\u2550\u2550\u2550\u2550╝ ╚\u2550\u2550\u2550\u2550\u2550╝╚═╝  ╚═╝╚═╝  ╚\u2550\u2550\u2550╝╚\u2550\u2550\u2550\u2550\u2550╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝"
 
 // PrintBanner prints the rich 2-column developer cockpit overview to terminal.
 func PrintBanner(workDir string) {
@@ -104,11 +104,11 @@ func PrintBanner(workDir string) {
 			right: fmt.Sprintf("%sscandrix pr suggestions%s  %sTriage PRs%s", ColorCyan, ColorReset, ColorMuted, ColorReset),
 		},
 		{
-			left:  fmt.Sprintf("Pre-commit: %s", st.PreCommitHook),
+			left:  fmt.Sprintf("Pre-commit: %s", colorHook(st.PreCommitHook)),
 			right: fmt.Sprintf("%sscandrix pr business-validation%s  %sTask check%s", ColorCyan, ColorReset, ColorMuted, ColorReset),
 		},
 		{
-			left:  fmt.Sprintf("Pre-push: %s", st.PrePushHook),
+			left:  fmt.Sprintf("Pre-push: %s", colorHook(st.PrePushHook)),
 			right: fmt.Sprintf("%sscandrix trace <paths>%s  %sDecision memory%s", ColorCyan, ColorReset, ColorMuted, ColorReset),
 		},
 		{
@@ -167,4 +167,11 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func colorHook(h string) string {
+	if strings.Contains(h, "Active") {
+		return ColorGreen + h + ColorReset
+	}
+	return ColorGray + h + ColorReset
 }

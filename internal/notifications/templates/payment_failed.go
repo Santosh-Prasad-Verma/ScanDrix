@@ -1,11 +1,20 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"html"
+)
 
 // RenderPaymentFailed generates the notification when a subscription payment or renewal fails.
 func RenderPaymentFailed(subscriberName, orgName, planTier, orderID, failureReason, retryURL string) (subject, htmlBody string) {
-	subject = fmt.Sprintf("Action Required: Payment failed for ScanDrix %s", orgName)
-	preview := fmt.Sprintf("We were unable to process payment for your ScanDrix %s subscription. Please update your payment details.", planTier)
+	safeSubscriber := html.EscapeString(subscriberName)
+	safeOrg := html.EscapeString(orgName)
+	safeTier := html.EscapeString(planTier)
+	safeOrderID := html.EscapeString(orderID)
+	safeReason := html.EscapeString(failureReason)
+
+	subject = fmt.Sprintf("Action Required: Payment failed for ScanDrix %s", safeOrg)
+	preview := fmt.Sprintf("We were unable to process payment for your ScanDrix %s subscription. Please update your payment details.", safeTier)
 
 	content := fmt.Sprintf(`
 		<p>Hi <strong>%s</strong>,</p>
@@ -22,7 +31,7 @@ func RenderPaymentFailed(subscriberName, orgName, planTier, orderID, failureReas
 		<p style="color: #4b5563;">
 			To prevent disruption to your team's pull request reviews and to maintain access to frontier AI models, please update your payment method or retry the checkout below.
 		</p>
-	`, subscriberName, planTier, orgName, orderID, failureReason)
+	`, safeSubscriber, safeTier, safeOrg, safeOrderID, safeReason)
 
 	htmlBody = RenderBrandLayout(preview, "Payment Failed — Update Billing Info", content, "Retry Payment Now", retryURL)
 	return subject, htmlBody

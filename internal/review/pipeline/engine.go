@@ -21,6 +21,9 @@ func (e *PipelineEngine) Execute(ctx context.Context, pCtx *PipelineContext) err
 	pCtx.StartTime = time.Now().UTC()
 	defer func() {
 		pCtx.EndTime = time.Now().UTC()
+		if pCtx.SandboxHandle != nil {
+			_ = pCtx.SandboxHandle.Cleanup(ctx)
+		}
 	}()
 
 	for _, stage := range e.stages {

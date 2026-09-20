@@ -6,22 +6,43 @@ import (
 	"github.com/google/uuid"
 )
 
+// PrAuthor represents the pull request creator.
+type PrAuthor struct {
+	Login     string `json:"login"`
+	AvatarURL string `json:"avatarUrl"`
+	HTMLURL   string `json:"htmlUrl"`
+}
+
+// PrGrouping groups changed files logically (e.g. Core, Tests, Docs).
+type PrGrouping struct {
+	Title       string   `json:"title"`
+	Explanation string   `json:"explanation,omitempty"`
+	Files       []string `json:"files"`
+}
+
 // PrInfo encapsulates public pull request metadata.
 type PrInfo struct {
-	Owner           string `json:"owner"`
-	Repo            string `json:"repo"`
-	PRNumber        int    `json:"prNumber"`
-	Title           string `json:"title"`
-	State           string `json:"state,omitempty"`
-	HeadSHA         string `json:"headSha"`
-	BaseSHA         string `json:"baseSha"`
-	Additions       int    `json:"additions"`
-	Deletions       int    `json:"deletions"`
-	ChangedFiles    int    `json:"changedFiles"`
-	HTMLURL         string `json:"htmlUrl"`
-	AuthorUsername  string `json:"authorUsername,omitempty"`
-	AuthorAvatarURL string `json:"authorAvatarUrl,omitempty"`
-	Body            string `json:"body,omitempty"`
+	Owner           string       `json:"owner"`
+	Repo            string       `json:"repo"`
+	PRNumber        int          `json:"prNumber"`
+	Title           string       `json:"title"`
+	State           string       `json:"state,omitempty"`
+	Merged          bool         `json:"merged,omitempty"`
+	IsDraft         bool         `json:"isDraft,omitempty"`
+	HeadSHA         string       `json:"headSha"`
+	HeadRef         string       `json:"headRef,omitempty"`
+	BaseSHA         string       `json:"baseSha"`
+	BaseRef         string       `json:"baseRef,omitempty"`
+	Additions       int          `json:"additions"`
+	Deletions       int          `json:"deletions"`
+	ChangedFiles    int          `json:"changedFiles"`
+	HTMLURL         string       `json:"htmlUrl"`
+	AuthorUsername  string       `json:"authorUsername,omitempty"`
+	AuthorAvatarURL string       `json:"authorAvatarUrl,omitempty"`
+	Author          *PrAuthor    `json:"author,omitempty"`
+	Body            string       `json:"body,omitempty"`
+	AIAnalysis      string       `json:"aiAnalysis,omitempty"`
+	Groupings       []PrGrouping `json:"groupings,omitempty"`
 }
 
 // ReviewIssue represents an actionable bug or security defect finding.
@@ -35,6 +56,19 @@ type ReviewIssue struct {
 	Suggestion     string `json:"suggestion,omitempty"`
 	Recommendation string `json:"recommendation,omitempty"`
 	RuleID         string `json:"ruleId,omitempty"`
+}
+
+// JobStatusResponse represents the HTTP status response for an async review job.
+type JobStatusResponse struct {
+	JobID       string        `json:"jobId"`
+	Status      string        `json:"status"`
+	StartedAt   *string       `json:"startedAt,omitempty"`
+	CompletedAt *string       `json:"completedAt,omitempty"`
+	CreatedAt   string        `json:"createdAt"`
+	Error       string        `json:"error,omitempty"`
+	Result      *ReviewResult `json:"result,omitempty"`
+	PublicPR    *PrInfo       `json:"publicPr,omitempty"`
+	PublicDiff  string        `json:"publicDiff,omitempty"`
 }
 
 // ReviewResult encapsulates the output of a completed review analysis.
@@ -110,3 +144,79 @@ type EnqueueResponse struct {
 	PR        PrInfo    `json:"pr"`
 	Diff      string    `json:"diff"`
 }
+
+// DiffLineType represents line categorization in a unified diff hunk.
+type DiffLineType string
+
+const (
+	DiffLineAdd     DiffLineType = "add"
+	DiffLineDel     DiffLineType = "del"
+	DiffLineContext DiffLineType = "context"
+	DiffLineHunk    DiffLineType = "hunk"
+)
+
+// DiffLine models an individual line in a diff hunk.
+type DiffLine struct {
+	Type    DiffLineType `json:"type"`
+	Text    string       `json:"text"`
+	NewLine *int         `json:"newLine"`
+	OldLine *int         `json:"oldLine"`
+}
+
+// DiffHunk models a unified diff hunk header and lines.
+type DiffHunk struct {
+	Header string     `json:"header"`
+	Lines  []DiffLine `json:"lines"`
+}
+
+// FileStatus represents file modification status in a PR diff.
+type FileStatus string
+
+const (
+	FileStatusAdded    FileStatus = "added"
+	FileStatusDeleted  FileStatus = "deleted"
+	FileStatusRenamed  FileStatus = "renamed"
+	FileStatusModified FileStatus = "modified"
+)
+
+// DiffFile models a single file changed in a pull request.
+type DiffFile struct {
+	Path      string     `json:"path"`
+	OldPath   *string    `json:"oldPath,omitempty"`
+	Status    FileStatus `json:"status"`
+	Additions int        `json:"additions"`
+	Deletions int        `json:"deletions"`
+	Hunks     []DiffHunk `json:"hunks"`
+}
+
+// DiffStyle configures diff viewer layout.
+type DiffStyle string
+
+const (
+	DiffStyleSplit   DiffStyle = "split"
+	DiffStyleUnified DiffStyle = "unified"
+)
+
+// FileTreeMode configures file list presentation.
+type FileTreeMode string
+
+const (
+	FileTreeModeTree    FileTreeMode = "tree"
+	FileTreeModeGrouped FileTreeMode = "grouped"
+)
+
+// Preferences stores user viewing preferences.
+type Preferences struct {
+	DiffStyle         DiffStyle    `json:"diffStyle"`
+	HideHighlights    bool         `json:"hideHighlights"`
+	CollapseByDefault bool         `json:"collapseByDefault"`
+	FileTreeHidden    bool         `json:"fileTreeHidden"`
+	FileTreeMode      FileTreeMode `json:"fileTreeMode"`
+}
+
+// ReviewSnapshot encapsulates PR metadata and unified diff for caching.
+type ReviewSnapshot struct {
+	PR   PrInfo `json:"pr"`
+	Diff string `json:"diff"`
+}
+

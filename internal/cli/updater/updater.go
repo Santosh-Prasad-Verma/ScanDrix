@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,16 +12,20 @@ import (
 )
 
 type UpdateInfo struct {
-	CurrentVersion string `json:"current_version"`
-	LatestVersion  string `json:"latest_version"`
-	UpdateAvailable bool  `json:"update_available"`
-	DownloadURL    string `json:"download_url"`
+	CurrentVersion  string `json:"current_version"`
+	LatestVersion   string `json:"latest_version"`
+	UpdateAvailable bool   `json:"update_available"`
+	DownloadURL     string `json:"download_url"`
 }
 
 // CheckUpdate queries the latest ScanDrix CLI release version.
 func CheckUpdate(currentVersion, serverURL string) (*UpdateInfo, error) {
 	if serverURL == "" {
-		serverURL = "https://api.github.com/repos/scandrix/backend/releases/latest"
+		repo := os.Getenv("SCANDRIX_UPDATE_REPO")
+		if repo == "" {
+			repo = "scandrix/backend"
+		}
+		serverURL = fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	}
 
 	info := &UpdateInfo{
@@ -29,14 +34,20 @@ func CheckUpdate(currentVersion, serverURL string) (*UpdateInfo, error) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(serverURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, serverURL, nil)
 	if err != nil {
-		return info, nil // Non-blocking check
+		return info, fmt.Errorf("failed creating request: %w", err)
+	}
+	req.Header.Set("User-Agent", "scandrix-cli/"+currentVersion)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return info, fmt.Errorf("failed reaching update server: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return info, nil
+		return info, fmt.Errorf("update server returned HTTP %d", resp.StatusCode)
 	}
 
 	var ghRelease struct {
@@ -47,19 +58,24 @@ func CheckUpdate(currentVersion, serverURL string) (*UpdateInfo, error) {
 		} `json:"assets"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&ghRelease); err == nil && ghRelease.TagName != "" {
-		info.LatestVersion = ghRelease.TagName
-		if info.LatestVersion != currentVersion && currentVersion != "dev" {
-			info.UpdateAvailable = true
-			expectedAsset := fmt.Sprintf("scandrix-cli-%s-%s", runtime.GOOS, runtime.GOARCH)
-			if runtime.GOOS == "windows" {
-				expectedAsset += ".exe"
-			}
-			for _, asset := range ghRelease.Assets {
-				if asset.Name == expectedAsset {
-					info.DownloadURL = asset.BrowserDownloadURL
-					break
-				}
+	if err := json.NewDecoder(resp.Body).Decode(&ghRelease); err != nil {
+		return info, fmt.Errorf("failed decoding release data: %w", err)
+	}
+	if ghRelease.TagName == "" {
+		return info, fmt.Errorf("no tag found in latest release")
+	}
+
+	info.LatestVersion = ghRelease.TagName
+	if info.LatestVersion != currentVersion && currentVersion != "dev" {
+		info.UpdateAvailable = true
+		expectedAsset := fmt.Sprintf("scandrix-cli-%s-%s", runtime.GOOS, runtime.GOARCH)
+		if runtime.GOOS == "windows" {
+			expectedAsset += ".exe"
+		}
+		for _, asset := range ghRelease.Assets {
+			if asset.Name == expectedAsset {
+				info.DownloadURL = asset.BrowserDownloadURL
+				break
 			}
 		}
 	}
@@ -78,7 +94,11 @@ func ApplyUpdate(downloadURL string) error {
 		return fmt.Errorf("failed locating current executable: %w", err)
 	}
 
-	resp, err := http.Get(downloadURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed creating download request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed downloading update: %w", err)
 	}

@@ -189,7 +189,7 @@ func main() {
 		_, _ = w.Write([]byte(html))
 	})
 
-	// Public API Endpoints (Kodus API-Parity)
+	// Public API Endpoints
 
 	// 1. GET /cli/public/featured-reviews
 	r.Get("/cli/public/featured-reviews", func(w http.ResponseWriter, r *http.Request) {

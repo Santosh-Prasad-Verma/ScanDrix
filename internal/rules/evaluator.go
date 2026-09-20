@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/pkg/models"
 )
+
+// ═══════════════════════════════════════════════════════════════
+// 1. RULE SPECIFICATIONS & STRATEGIES (Regex patterns & rule metadata)
+// ═══════════════════════════════════════════════════════════════
 
 // RuleType defines the evaluation strategy.
 type RuleType string
@@ -31,6 +36,10 @@ type RuleSpec struct {
 	Remediation string
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 2. COMPILED RULE REGISTRY (Precompiled regex map for high performance)
+// ═══════════════════════════════════════════════════════════════
+
 // Evaluator checks git diff patches against active workspace policy rules.
 type Evaluator struct {
 	compiledRules map[uuid.UUID]*compiledRule
@@ -40,6 +49,10 @@ type compiledRule struct {
 	spec  RuleSpec
 	regex *regexp.Regexp
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 3. EVALUATOR COMPILATION (Rule validation & regex compilation)
+// ═══════════════════════════════════════════════════════════════
 
 // NewEvaluator compiles and validates custom policy rules.
 func NewEvaluator(specs []RuleSpec) (*Evaluator, error) {
@@ -56,6 +69,10 @@ func NewEvaluator(specs []RuleSpec) (*Evaluator, error) {
 	}
 	return &Evaluator{compiledRules: compiled}, nil
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 4. DIFF PATCH RULE ENGINE (Diff hunks traversal & finding fingerprinting)
+// ═══════════════════════════════════════════════════════════════
 
 // EvaluatePatches runs all active rules against changed hunks in a pull request.
 func (e *Evaluator) EvaluatePatches(reviewID, workspaceID uuid.UUID, patches []*diff.FilePatch) []models.CodeFinding {
@@ -80,6 +97,17 @@ func (e *Evaluator) EvaluatePatches(reviewID, workspaceID uuid.UUID, patches []*
 			for _, hunk := range patch.Hunks {
 				for _, line := range hunk.Lines {
 					if line.Type != diff.LineAddition {
+						continue
+					}
+
+					trimmed := strings.TrimSpace(line.Content)
+					// Skip comments and docstrings
+					if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
+						continue
+					}
+
+					// Skip rule definitions, prompt strings, and log message literals
+					if strings.Contains(line.Content, "Prompt:") || strings.Contains(line.Content, "Description:") || strings.Contains(line.Content, "Remediation:") || strings.Contains(line.Content, "CodeFinding{") || strings.Contains(line.Content, "RegexRule:") {
 						continue
 					}
 

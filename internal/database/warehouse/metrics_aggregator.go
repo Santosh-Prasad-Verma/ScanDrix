@@ -11,19 +11,19 @@ import (
 
 // WorkspaceQualityMetrics summarizes aggregate security and quality health over a time window.
 type WorkspaceQualityMetrics struct {
-	WorkspaceID          uuid.UUID              `json:"workspace_id"`
-	WindowStart          time.Time              `json:"window_start"`
-	WindowEnd            time.Time              `json:"window_end"`
-	TotalReviews         int                    `json:"total_reviews"`
-	ApprovedReviews      int                    `json:"approved_reviews"`
-	BlockedReviews       int                    `json:"blocked_reviews"`
-	ApprovalRate         float64                `json:"approval_rate"`
-	TotalFindings        int                    `json:"total_findings"`
-	SeverityCounts       map[string]int         `json:"severity_counts"`
-	CategoryCounts       map[string]int         `json:"category_counts"`
-	DismissedCount       int                    `json:"dismissed_count"`
-	ResolvedCount        int                    `json:"resolved_count"`
-	MeanTimeToRemediate  time.Duration          `json:"mean_time_to_remediate"`
+	WorkspaceID         uuid.UUID      `json:"workspace_id"`
+	WindowStart         time.Time      `json:"window_start"`
+	WindowEnd           time.Time      `json:"window_end"`
+	TotalReviews        int            `json:"total_reviews"`
+	ApprovedReviews     int            `json:"approved_reviews"`
+	BlockedReviews      int            `json:"blocked_reviews"`
+	ApprovalRate        float64        `json:"approval_rate"`
+	TotalFindings       int            `json:"total_findings"`
+	SeverityCounts      map[string]int `json:"severity_counts"`
+	CategoryCounts      map[string]int `json:"category_counts"`
+	DismissedCount      int            `json:"dismissed_count"`
+	ResolvedCount       int            `json:"resolved_count"`
+	MeanTimeToRemediate time.Duration  `json:"mean_time_to_remediate"`
 }
 
 // MetricsAggregator queries the event store to derive actionable executive quality dashboards.

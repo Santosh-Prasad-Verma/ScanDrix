@@ -2,9 +2,13 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -134,7 +138,6 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	if usage.TotalTokens < 0 || usage.EstimatedCostUSD < 0 {
 		t.Fatalf("unexpected usage response: %+v", usage)
 	}
-
 
 	// 7. Test Teams API (expects 503 without DB)
 	teamBody, _ := json.Marshal(dtos.CreateTeamRequest{
@@ -276,3 +279,160 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 		t.Fatalf("expected authorization_url and state in OAuth response, got %+v", oauthResp)
 	}
 }
+
+func TestSecondaryAuthRoutesRateLimiting(t *testing.T) {
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
+	streamHub := review.NewStreamHub()
+	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
+	inMemStore := cliauth.NewInMemorySessionStore()
+	deviceFlow := cliauth.NewDeviceFlowManager(inMemStore, "https://app.scandrix.dev")
+	oauthService := oauth.NewOAuthService(
+		oauth.ProviderConfig{ClientID: "mock-gh-client-id", ClientSecret: "mock-gh-secret"},
+		oauth.ProviderConfig{ClientID: "mock-gl-client-id", ClientSecret: "mock-gl-secret"},
+	)
+	mockMailer := mailer.NewNoopSender()
+
+	router := api.BuildRouter(api.RouterConfig{
+		Repo:         nil,
+		AuthService:  authService,
+		StreamHub:    streamHub,
+		Evaluator:    evaluator,
+		DeviceFlow:   deviceFlow,
+		OAuthService: oauthService,
+		Mailer:       mockMailer,
+		AppBaseURL:   "https://app.scandrix.dev",
+		JWTSecret:    jwtSecret,
+	})
+
+	// 1. Verify GET /user/email returns response under normal rate
+	reqEmail := httptest.NewRequest(http.MethodGet, "/user/email?email=test@example.com", nil)
+	reqEmail.RemoteAddr = "192.0.2.1:12345"
+	wEmail := httptest.NewRecorder()
+	router.ServeHTTP(wEmail, reqEmail)
+	if wEmail.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /user/email under normal conditions, got %d: %s", wEmail.Code, wEmail.Body.String())
+	}
+
+	// 2. Verify POST /cli/authorize/approve is protected (repo is nil -> 503 rather than panic or 404)
+	approveBody := `{"user_code":"ABCD-EFGH","email":"test@example.com","password":"secretpassword","action":"login"}`
+	reqApprove := httptest.NewRequest(http.MethodPost, "/cli/authorize/approve", bytes.NewBufferString(approveBody))
+	reqApprove.RemoteAddr = "192.0.2.1:12345"
+	wApprove := httptest.NewRecorder()
+	router.ServeHTTP(wApprove, reqApprove)
+	if wApprove.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for /cli/authorize/approve when repo is nil, got %d: %s", wApprove.Code, wApprove.Body.String())
+	}
+}
+
+func TestAPIWebhooksIngressRouting(t *testing.T) {
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
+	billingSecret := "test-billing-wh-secret"
+	ghSecret := "test-gh-wh-secret"
+
+	router := api.BuildRouter(api.RouterConfig{
+		AuthService:          authService,
+		BillingWebhookSecret: billingSecret,
+		GitHubWebhookSecret:  ghSecret,
+	})
+
+	// 1. Test Billing Webhook route via /billing/webhook/payment-failed
+	body := []byte(`{"workspaceId":"` + uuid.New().String() + `","amount":9900,"currency":"USD","failureReason":"card_declined"}`)
+	mac := hmac.New(sha256.New, []byte(billingSecret))
+	mac.Write(body)
+	sig := hex.EncodeToString(mac.Sum(nil))
+
+	req1 := httptest.NewRequest(http.MethodPost, "/billing/webhook/payment-failed", bytes.NewReader(body))
+	req1.Header.Set("X-Scandrix-Signature", sig)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /billing/webhook/payment-failed, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// 2. Test Billing Webhook route via /api/v1/billing/webhook/payment-failed
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhook/payment-failed", bytes.NewReader(body))
+	req2.Header.Set("X-ScanDrix-Signature", sig)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /api/v1/billing/webhook/payment-failed, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// 3. Test Git Webhook route via /github/webhook with invalid sig -> 401
+	ghBody := []byte(`{"action":"opened","repository":{"full_name":"owner/repo"}}`)
+	req3 := httptest.NewRequest(http.MethodPost, "/github/webhook", bytes.NewReader(ghBody))
+	req3.Header.Set("X-GitHub-Event", "pull_request")
+	req3.Header.Set("X-Hub-Signature-256", "sha256=invalid")
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthorized /github/webhook, got %d", w3.Code)
+	}
+
+	// 4. Test Git Webhook route via /api/v1/webhooks/github with invalid sig -> 401
+	req4 := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(ghBody))
+	req4.Header.Set("X-GitHub-Event", "pull_request")
+	req4.Header.Set("X-Hub-Signature-256", "sha256=invalid")
+	w4 := httptest.NewRecorder()
+	router.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthorized /api/v1/webhooks/github, got %d", w4.Code)
+	}
+}
+
+func TestAPIRouterMCPEndToEnd(t *testing.T) {
+	os.Setenv("SCANDRIX_MCP_SERVER_ENABLED", "true")
+	defer os.Unsetenv("SCANDRIX_MCP_SERVER_ENABLED")
+
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
+
+	router := api.BuildRouter(api.RouterConfig{
+		Repo:        nil,
+		AuthService: authService,
+		AppBaseURL:  "https://app.scandrix.dev",
+		JWTSecret:   jwtSecret,
+	})
+
+	// 1. GET /api/v1/mcp must return 405 Method Not Allowed with Allow: POST
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/mcp", nil)
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET /api/v1/mcp, got %d: %s", wGet.Code, wGet.Body.String())
+	}
+	if wGet.Header().Get("Allow") != "POST" {
+		t.Fatalf("expected Allow: POST, got %s", wGet.Header().Get("Allow"))
+	}
+
+	// 2. POST /api/v1/mcp with initialize must return 200 OK
+	initPayload := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", bytes.NewReader(initPayload))
+	reqPost.Header.Set("Content-Type", "application/json")
+	wPost := httptest.NewRecorder()
+	router.ServeHTTP(wPost, reqPost)
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("expected 200 for POST /api/v1/mcp, got %d: %s", wPost.Code, wPost.Body.String())
+	}
+
+	// 3. POST /api/v1/mcp/issues with tools/list must return 200 OK
+	listPayload := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	reqIssues := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/issues", bytes.NewReader(listPayload))
+	reqIssues.Header.Set("Content-Type", "application/json")
+	wIssues := httptest.NewRecorder()
+	router.ServeHTTP(wIssues, reqIssues)
+	if wIssues.Code != http.StatusOK {
+		t.Fatalf("expected 200 for POST /api/v1/mcp/issues, got %d: %s", wIssues.Code, wIssues.Body.String())
+	}
+
+	// 4. GET /api/v1/mcp/issues must return 405 Method Not Allowed
+	reqIssuesGet := httptest.NewRequest(http.MethodGet, "/api/v1/mcp/issues", nil)
+	wIssuesGet := httptest.NewRecorder()
+	router.ServeHTTP(wIssuesGet, reqIssuesGet)
+	if wIssuesGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET /api/v1/mcp/issues, got %d", wIssuesGet.Code)
+	}
+}
+

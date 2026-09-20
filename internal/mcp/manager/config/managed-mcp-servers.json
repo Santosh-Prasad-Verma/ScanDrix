@@ -1,0 +1,170 @@
+[
+  {
+    "id": "scandrix-docs-default",
+    "name": "ScanDrix Docs",
+    "category": "documentation",
+    "baseUrl": "https://docs.scandrix.io/mcp",
+    "protocol": "http",
+    "logoUrl": "https://scandrix.io/assets/logo.png",
+    "headers": {},
+    "authMethods": [{ "id": "none", "type": "none", "default": true }]
+  },
+  {
+    "id": "scandrix-issues-default",
+    "name": "Git Issues",
+    "category": "task-management",
+    "baseUrl": "/mcp/issues",
+    "protocol": "http",
+    "logoUrl": "https://scandrix.io/assets/logo.png",
+    "headers": {},
+    "authMethods": [{ "id": "none", "type": "none", "default": true }]
+  },
+  {
+    "id": "sentry-default",
+    "name": "Sentry",
+    "category": "observability",
+    "baseUrl": "https://mcp.sentry.dev/mcp",
+    "protocol": "http",
+    "logoUrl": "https://cdn.jsdelivr.net/gh/devicons/devicon/icons/sentry/sentry-original.svg",
+    "headers": {},
+    "authMethods": [
+      {
+        "id": "oauth",
+        "label": "OAuth",
+        "type": "oauth2",
+        "dynamicRegistration": true,
+        "default": true
+      }
+    ]
+  },
+  {
+    "id": "exa-default",
+    "name": "Exa Search",
+    "category": "search",
+    "baseUrl": "https://mcp.exa.ai/mcp?tools=web_search_exa,get_code_context_exa,crawling_exa,company_research_exa,linkedin_search_exa,deep_researcher_start,deep_researcher_check",
+    "protocol": "http",
+    "logoUrl": "https://exa.ai/images/favicon-32x32.png",
+    "headers": {},
+    "authMethods": [{ "id": "none", "type": "none", "default": true }]
+  },
+  {
+    "id": "scandrix-osv-default",
+    "name": "ScanDrix OSV",
+    "category": "security",
+    "baseUrl": "https://mcp-osv.scandrix.io/mcp",
+    "protocol": "http",
+    "logoUrl": "https://scandrix.io/assets/logo.png",
+    "headers": {},
+    "authMethods": [{ "id": "none", "type": "none", "default": true }]
+  },
+  {
+    "id": "linear-default",
+    "name": "Linear",
+    "category": "task-management",
+    "baseUrl": "https://mcp.linear.app/mcp",
+    "protocol": "http",
+    "logoUrl": "https://static.linear.app/client/assets/newAppIcon-256x256-full.NvjGn2GI.png",
+    "headers": {},
+    "authMethods": [
+      {
+        "id": "oauth",
+        "label": "OAuth",
+        "type": "oauth2",
+        "dynamicRegistration": true,
+        "default": true
+      },
+      {
+        "id": "token",
+        "label": "API key",
+        "type": "bearer_token",
+        "userFields": [
+          {
+            "name": "apiKey",
+            "label": "Linear API key",
+            "required": true,
+            "secret": true
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "atlassian-rovo-default",
+    "name": "Atlassian Rovo",
+    "category": "task-management",
+    "baseUrl": "https://mcp.atlassian.com/v1/mcp",
+    "protocol": "http",
+    "logoUrl": "https://avatars.githubusercontent.com/u/21215?s=200&v=4",
+    "headers": {},
+    "authMethods": [
+      {
+        "id": "oauth",
+        "label": "OAuth",
+        "type": "oauth2",
+        "dynamicRegistration": true,
+        "default": true
+      },
+      {
+        "id": "token",
+        "label": "API token",
+        "type": "basic",
+        "userFields": [
+          {
+            "name": "email",
+            "label": "Atlassian account email",
+            "required": true
+          },
+          {
+            "name": "apiToken",
+            "label": "API token",
+            "required": true,
+            "secret": true
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "notion-default",
+    "name": "Notion",
+    "category": "task-management",
+    "baseUrl": "https://mcp.notion.com/mcp",
+    "protocol": "http",
+    "logoUrl": "https://www.notion.so/images/favicon.ico",
+    "headers": {},
+    "authMethods": [
+      {
+        "id": "oauth",
+        "label": "OAuth",
+        "type": "oauth2",
+        "dynamicRegistration": true,
+        "default": true
+      }
+    ]
+  },
+  {
+    "id": "fireflies-default",
+    "name": "Fireflies",
+    "category": "meetings",
+    "baseUrl": "https://api.fireflies.ai/mcp",
+    "protocol": "http",
+    "logoUrl": "https://fireflies.ai/favicon.ico",
+    "headers": {},
+    "authMethods": [
+      {
+        "id": "token",
+        "label": "API key",
+        "type": "bearer_token",
+        "default": true,
+        "userFields": [
+          {
+            "name": "apiKey",
+            "label": "Fireflies API key",
+            "required": true,
+            "secret": true
+          }
+        ]
+      }
+    ]
+  }
+]

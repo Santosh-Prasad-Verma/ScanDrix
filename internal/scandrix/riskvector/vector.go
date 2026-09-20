@@ -7,33 +7,33 @@ import (
 
 // Vector6D models the 6-dimensional risk vector space R^6 in [0.0, 100.0].
 type Vector6D struct {
-	Security    float64 `json:"security"`
-	Reliability float64 `json:"reliability"`
+	Security     float64 `json:"security"`
+	Reliability  float64 `json:"reliability"`
 	Architecture float64 `json:"architecture"`
-	SupplyChain float64 `json:"supply_chain"`
-	Performance float64 `json:"performance"`
-	Compliance  float64 `json:"compliance"`
+	SupplyChain  float64 `json:"supply_chain"`
+	Performance  float64 `json:"performance"`
+	Compliance   float64 `json:"compliance"`
 }
 
 // Weights contains normalized weights summing to 1.0 across the 6 dimensions.
 type Weights struct {
-	Security    float64
-	Reliability float64
+	Security     float64
+	Reliability  float64
 	Architecture float64
-	SupplyChain float64
-	Performance float64
-	Compliance  float64
+	SupplyChain  float64
+	Performance  float64
+	Compliance   float64
 }
 
 // DefaultWeights defines standard enterprise risk domain weight distribution.
 func DefaultWeights() Weights {
 	return Weights{
-		Security:    0.35,
-		Reliability: 0.20,
+		Security:     0.35,
+		Reliability:  0.20,
 		Architecture: 0.10,
-		SupplyChain: 0.15,
-		Performance: 0.10,
-		Compliance:  0.10,
+		SupplyChain:  0.15,
+		Performance:  0.10,
+		Compliance:   0.10,
 	}
 }
 
@@ -124,7 +124,10 @@ func (e *RiskEngine) ComputeComposite(v Vector6D, ctx AssessmentContext) float64
 func AttenuateWithControls(baseScore float64, controlEfficacies []float64) float64 {
 	residual := baseScore
 	for _, eff := range controlEfficacies {
-		if eff > 0 && eff < 1.0 {
+		if eff >= 1.0 {
+			return 0.0
+		}
+		if eff > 0 {
 			residual *= (1.0 - eff)
 		}
 	}

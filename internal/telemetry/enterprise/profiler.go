@@ -78,14 +78,14 @@ func (p *Profiler) CaptureSnapshot() (map[string]any, []byte, error) {
 	runtime.ReadMemStats(&m)
 
 	stats := map[string]any{
-		"goroutines":    runtime.NumGoroutine(),
-		"heap_alloc":    m.HeapAlloc,
-		"heap_inuse":    m.HeapInuse,
-		"total_alloc":   m.TotalAlloc,
-		"num_gc":        m.NumGC,
-		"service":       p.cfg.ServiceName,
-		"environment":   p.cfg.Environment,
-		"captured_at":   time.Now().UTC(),
+		"goroutines":  runtime.NumGoroutine(),
+		"heap_alloc":  m.HeapAlloc,
+		"heap_inuse":  m.HeapInuse,
+		"total_alloc": m.TotalAlloc,
+		"num_gc":      m.NumGC,
+		"service":     p.cfg.ServiceName,
+		"environment": p.cfg.Environment,
+		"captured_at": time.Now().UTC(),
 	}
 
 	var buf bytes.Buffer

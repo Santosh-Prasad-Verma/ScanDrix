@@ -8,22 +8,22 @@ import (
 
 // SCIM Schemas URNs
 const (
-	UserSchemaURN  = "urn:ietf:params:scim:schemas:core:2.0:User"
-	GroupSchemaURN = "urn:ietf:params:scim:schemas:core:2.0:Group"
+	UserSchemaURN   = "urn:ietf:params:scim:schemas:core:2.0:User"
+	GroupSchemaURN  = "urn:ietf:params:scim:schemas:core:2.0:Group"
 	ListResponseURN = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 	ErrorSchemaURN  = "urn:ietf:params:scim:api:messages:2.0:Error"
 )
 
 // SCIMUser represents a SCIM 2.0 User resource.
 type SCIMUser struct {
-	Schemas    []string       `json:"schemas"`
-	ID         string         `json:"id"`
-	UserName   string         `json:"userName"`
-	Name       SCIMName       `json:"name"`
-	Emails     []SCIMEmail    `json:"emails"`
-	Active     bool           `json:"active"`
-	Meta       SCIMMeta       `json:"meta"`
-	Groups     []SCIMGroupRef `json:"groups,omitempty"`
+	Schemas  []string       `json:"schemas"`
+	ID       string         `json:"id"`
+	UserName string         `json:"userName"`
+	Name     SCIMName       `json:"name"`
+	Emails   []SCIMEmail    `json:"emails"`
+	Active   bool           `json:"active"`
+	Meta     SCIMMeta       `json:"meta"`
+	Groups   []SCIMGroupRef `json:"groups,omitempty"`
 }
 
 // SCIMName models structured person name components.

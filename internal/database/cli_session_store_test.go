@@ -19,14 +19,14 @@ func TestPostgresCLISessionStoreAdapter(t *testing.T) {
 	var _ cliauth.SessionStore = store
 
 	session := &cliauth.CLIDeviceSession{
-		UUID:        uuid.New(),
-		State:       "test-state",
-		DeviceCode:  "dc-12345",
-		UserCode:    "ABCD-EFGH",
-		Status:      cliauth.StatusPending,
-		ExpiresAt:   time.Now().Add(10 * time.Minute),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		UUID:       uuid.New(),
+		State:      "test-state",
+		DeviceCode: "dc-12345",
+		UserCode:   "ABCD-EFGH",
+		Status:     cliauth.StatusPending,
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	// 1. Create session (nil client guard returns nil)

@@ -1,746 +1,275 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>ScanDrix CLI — Autonomous AI Code Review & Security Gate</title>
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScanDrix CLI — Installation Guide &amp; Core Reference</title>
+  <meta name="description" content="Install the ScanDrix CLI and bundled skills for Claude Code, Cursor, Codex, Windsurf, and AGY agents from a single source of truth.">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 
-            :root {
-                --bg: #090d16;
-                --surface: #111827;
-                --surface-2: #1a2234;
-                --surface-card: #131d2e;
-                --border: #1e293b;
-                --border-bright: #334155;
-                --text: #f8fafc;
-                --text-secondary: #cbd5e1;
-                --text-muted: rgba(248, 250, 252, 0.55);
-                --accent: #38bdf8;
-                --accent-hover: #7dd3fc;
-                --accent-dim: rgba(56, 189, 248, 0.12);
-                --accent-glow: 0 0 25px rgba(56, 189, 248, 0.25);
-                --secondary: #a78bfa;
-                --secondary-dark: rgba(167, 139, 250, 0.14);
-                --success: #34d399;
-                --danger: #f87171;
-            }
+  <!-- Preload Local Typography (Geist Sans, Geist Mono) -->
+  <link rel="preload" href="assets/fonts/geist-sans/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/geist-mono/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
 
-            body {
-                font-family:
-                    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-                background: var(--bg);
-                background-image: 
-                    radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.08) 0%, transparent 60%),
-                    radial-gradient(circle at 80% 20%, rgba(167, 139, 250, 0.05) 0%, transparent 40%);
-                color: var(--text);
-                line-height: 1.6;
-                min-height: 100vh;
-                -webkit-font-smoothing: antialiased;
-            }
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 1. HEADER & BRAND IDENTITY (Logo glyph, title and subtitle)     -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <header>
+      <div class="logo-area">
+        <a href="#" class="logo-link" aria-label="ScanDrix Home">
+          <div class="logo-wrapper">
+            <svg viewBox="0 0 24 24" width="34" height="34" fill="none">
+              <defs>
+                <linearGradient id="scandrixGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#FF6B2B"/>
+                  <stop offset="35%" stop-color="#FF571A"/>
+                  <stop offset="70%" stop-color="#D43800"/>
+                  <stop offset="100%" stop-color="#8A1F00"/>
+                </linearGradient>
+              </defs>
+              <rect width="24" height="24" fill="#000000"/>
+              <!-- Row 1 -->
+              <rect x="2" y="2" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+              <rect x="7.5" y="2" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="13" y="2" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="18.5" y="2" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+              <!-- Row 2 -->
+              <rect x="2" y="7.5" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="13" y="7.5" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+              <rect x="18.5" y="7.5" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <!-- Row 3 -->
+              <rect x="2" y="13" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="7.5" y="13" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+              <rect x="18.5" y="13" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <!-- Row 4 -->
+              <rect x="2" y="18.5" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+              <rect x="7.5" y="18.5" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="13" y="18.5" width="4.5" height="4.5" fill="#FFFFFF"/>
+              <rect x="18.5" y="18.5" width="4.5" height="4.5" fill="url(#scandrixGrad)"/>
+            </svg>
+          </div>
+        </a>
+      </div>
 
-            .container {
-                max-width: 860px;
-                margin: 0 auto;
-                padding: 4rem 1.5rem;
-            }
+      <h1>Scan<span>Drix</span> CLI</h1>
+      <p class="subtitle">
+        Autonomous AI code review, AST security assurance, and bundled skills for Claude Code,
+        Cursor, Codex, Windsurf, and AGY agents from a single high-performance Go binary.
+      </p>
+    </header>
 
-            header {
-                text-align: center;
-                margin-bottom: 3.5rem;
-            }
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 2. QUICK INSTALLATION BOX (Platform tabs and copy action)       -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div class="install-box">
+      <div class="install-header">
+        <div class="install-label">Installation</div>
+        <div class="tabs" role="tablist" aria-label="Install command tabs">
+          <button class="tab active" data-platform="unix" type="button">macOS / Linux</button>
+          <button class="tab" data-platform="windows" type="button">Windows PowerShell</button>
+        </div>
+      </div>
 
-            .logo-wrapper {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 64px;
-                height: 64px;
-                border-radius: 18px;
-                background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(167, 139, 250, 0.2));
-                border: 1px solid rgba(56, 189, 248, 0.3);
-                box-shadow: var(--accent-glow);
-                margin-bottom: 1.25rem;
-            }
+      <div class="install-cmd">
+        <code id="install-command"></code>
+        <button class="copy-btn" id="copyInstallBtn" title="Copy install command" aria-label="Copy install command">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
 
-            .logo-svg {
-                width: 36px;
-                height: 36px;
-                color: var(--accent);
-            }
+      <p class="install-note">
+        The installer downloads the native static binary, places <code>scandrix</code> in your PATH, and synchronizes bundled skills into detected local agent roots.
+      </p>
+      <p class="alt-install">
+        Alternative: <code>brew install scandrix/tap/scandrix</code> or <code>go install github.com/scandrix/backend/cmd/scandrix@latest</code>.
+      </p>
+    </div>
 
-            h1 {
-                font-size: 3rem;
-                font-weight: 800;
-                letter-spacing: -0.04em;
-                margin-bottom: 0.75rem;
-                background: linear-gradient(135deg, #ffffff 30%, var(--accent) 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 3. CORE CLI COMMANDS (Review, triage, trace and skills)         -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2>Core Commands</h2>
 
-            .subtitle {
-                max-width: 650px;
-                margin: 0 auto;
-                color: var(--text-secondary);
-                font-size: 1.1rem;
-                font-weight: 400;
-            }
-
-            .install-box,
-            .command,
-            .feature,
-            .tool,
-            .stat-badge {
-                background: var(--surface);
-                border: 1px solid var(--border);
-                border-radius: 14px;
-                transition: border-color 0.2s ease, transform 0.2s ease;
-            }
-
-            .install-box:hover,
-            .command:hover,
-            .feature:hover {
-                border-color: var(--border-bright);
-            }
-
-            .install-box {
-                padding: 1.5rem;
-                margin: 2.5rem 0 3.5rem;
-                box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.6);
-                background: linear-gradient(180deg, var(--surface-card) 0%, var(--surface) 100%);
-            }
-
-            .install-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 1rem;
-                margin-bottom: 1.1rem;
-            }
-
-            .install-label {
-                font-size: 0.78rem;
-                text-transform: uppercase;
-                letter-spacing: 0.12em;
-                font-weight: 700;
-                color: var(--accent);
-                display: flex;
-                align-items: center;
-                gap: 0.4rem;
-            }
-
-            .install-label::before {
-                content: '';
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: var(--accent);
-                box-shadow: 0 0 8px var(--accent);
-            }
-
-            .tabs {
-                display: inline-flex;
-                gap: 0.4rem;
-                background: var(--bg);
-                border: 1px solid var(--border);
-                padding: 0.25rem;
-                border-radius: 999px;
-            }
-
-            .tab {
-                border: 0;
-                background: transparent;
-                color: var(--text-secondary);
-                border-radius: 999px;
-                padding: 0.45rem 0.9rem;
-                cursor: pointer;
-                font-size: 0.825rem;
-                font-weight: 500;
-                transition: all 0.2s ease;
-            }
-
-            .tab:hover {
-                color: var(--text);
-            }
-
-            .tab.active {
-                background: var(--surface-2);
-                color: var(--accent);
-                font-weight: 600;
-                border: 1px solid rgba(56, 189, 248, 0.2);
-            }
-
-            .install-cmd {
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                background: #030712;
-                border: 1px solid #1e293b;
-                border-radius: 10px;
-                padding: 1.1rem 1.25rem;
-                overflow-x: auto;
-                font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
-                font-size: 0.9rem;
-            }
-
-            .install-cmd code {
-                flex: 1;
-                color: var(--accent);
-                white-space: pre-wrap;
-                word-break: break-word;
-            }
-
-            .copy-btn {
-                background: rgba(255, 255, 255, 0.05);
-                color: var(--text-muted);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 8px;
-                cursor: pointer;
-                padding: 0.5rem;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                transition: all 0.2s;
-            }
-
-            .copy-btn:hover {
-                background: rgba(255, 255, 255, 0.12);
-                color: var(--text);
-                border-color: rgba(255, 255, 255, 0.2);
-            }
-
-            .install-note {
-                margin-top: 1rem;
-                color: var(--text-muted);
-                font-size: 0.92rem;
-            }
-
-            .alt-install {
-                color: var(--text-muted);
-                font-size: 0.88rem;
-                margin-top: 0.5rem;
-            }
-
-            .alt-install code {
-                color: var(--secondary);
-                font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
-                background: rgba(167, 139, 250, 0.1);
-                padding: 0.15rem 0.4rem;
-                border-radius: 4px;
-            }
-
-            section {
-                margin-bottom: 3.5rem;
-            }
-
-            h2 {
-                font-size: 1.35rem;
-                font-weight: 700;
-                margin-bottom: 1.25rem;
-                display: flex;
-                align-items: center;
-                gap: 0.65rem;
-                letter-spacing: -0.02em;
-            }
-
-            h2::before {
-                content: '';
-                width: 4px;
-                height: 1.2rem;
-                background: linear-gradient(180deg, var(--accent), var(--secondary));
-                border-radius: 999px;
-            }
-
-            .commands,
-            .features {
-                display: grid;
-                gap: 1.1rem;
-            }
-
-            .command,
-            .feature {
-                padding: 1.35rem;
-            }
-
-            .command-header {
-                display: flex;
-                align-items: baseline;
-                justify-content: space-between;
-                flex-wrap: wrap;
-                gap: 0.5rem;
-                margin-bottom: 0.5rem;
-            }
-
-            .command-name {
-                display: inline-block;
-                color: var(--accent);
-                font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
-                font-size: 1.05rem;
-                font-weight: 700;
-            }
-
-            .command-badge {
-                font-size: 0.72rem;
-                padding: 0.2rem 0.5rem;
-                border-radius: 6px;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                background: rgba(56, 189, 248, 0.1);
-                color: var(--accent);
-                border: 1px solid rgba(56, 189, 248, 0.2);
-            }
-
-            .command-desc,
-            .feature p {
-                color: var(--text-secondary);
-                font-size: 0.95rem;
-                margin-bottom: 1rem;
-            }
-
-            .command-flags {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 0.5rem;
-            }
-
-            .flag {
-                font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
-                font-size: 0.76rem;
-                background: var(--secondary-dark);
-                border: 1px solid rgba(167, 139, 250, 0.25);
-                border-radius: 7px;
-                padding: 0.3rem 0.6rem;
-                color: var(--secondary);
-            }
-
-            .tools {
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-                gap: 0.85rem;
-            }
-
-            .tool {
-                padding: 0.9rem 1rem;
-                text-align: center;
-                color: var(--text-secondary);
-                font-size: 0.92rem;
-                font-weight: 500;
-                background: var(--surface-card);
-            }
-
-            .tool:hover {
-                border-color: var(--accent);
-                color: var(--text);
-                transform: translateY(-2px);
-            }
-
-            .feature {
-                display: flex;
-                align-items: flex-start;
-                gap: 1.25rem;
-            }
-
-            .feature-icon {
-                width: 36px;
-                height: 36px;
-                border-radius: 10px;
-                background: var(--accent-dim);
-                border: 1px solid rgba(56, 189, 248, 0.3);
-                color: var(--accent);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                flex-shrink: 0;
-                font-size: 1rem;
-                font-weight: 800;
-            }
-
-            .feature h3 {
-                font-size: 1.05rem;
-                margin-bottom: 0.3rem;
-                color: #ffffff;
-            }
-
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 1rem;
-                margin-top: 1.5rem;
-            }
-
-            .stat-badge {
-                padding: 1.25rem;
-                text-align: center;
-                background: var(--surface-card);
-            }
-
-            .stat-num {
-                font-size: 1.75rem;
-                font-weight: 800;
-                color: var(--accent);
-                font-family: 'SF Mono', 'Fira Code', monospace;
-            }
-
-            .stat-label {
-                font-size: 0.82rem;
-                color: var(--text-muted);
-                margin-top: 0.25rem;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-            }
-
-            footer {
-                margin-top: 4rem;
-                padding-top: 2rem;
-                border-top: 1px solid var(--border);
-                color: var(--text-muted);
-                text-align: center;
-                font-size: 0.9rem;
-            }
-
-            footer a {
-                color: var(--accent);
-                text-decoration: none;
-            }
-
-            footer a:hover {
-                text-decoration: underline;
-            }
-
-            @media (max-width: 640px) {
-                .container {
-                    padding: 2.5rem 1rem;
-                }
-                h1 {
-                    font-size: 2.2rem;
-                }
-                .install-header {
-                    flex-direction: column;
-                    align-items: flex-start;
-                }
-                .tabs {
-                    width: 100%;
-                }
-                .tab {
-                    flex: 1;
-                    text-align: center;
-                }
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <header>
-                <div class="logo-wrapper">
-                    <svg class="logo-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                        <path d="M9 12l2 2 4-4"/>
-                    </svg>
-                </div>
-                <h1>ScanDrix CLI</h1>
-                <p class="subtitle">
-                    Autonomous AI code review, OWASP security assurance, and bundled skills for Claude Code, Cursor, Codex, and AGY agents from a single high-performance Go binary.
-                </p>
-            </header>
-
-            <div class="install-box">
-                <div class="install-header">
-                    <div class="install-label">Quick Install</div>
-                    <div
-                        class="tabs"
-                        role="tablist"
-                        aria-label="Install command tabs"
-                    >
-                        <button
-                            class="tab active"
-                            data-platform="unix"
-                            type="button"
-                        >
-                            macOS / Linux
-                        </button>
-                        <button
-                            class="tab"
-                            data-platform="windows"
-                            type="button"
-                        >
-                            Windows PowerShell
-                        </button>
-                    </div>
-                </div>
-                <div class="install-cmd">
-                    <code id="install-command"></code>
-                    <button
-                        class="copy-btn"
-                        onclick="copyInstall()"
-                        title="Copy install command"
-                        aria-label="Copy install command"
-                    >
-                        <svg
-                            width="18"
-                            height="18"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                        >
-                            <rect
-                                x="9"
-                                y="9"
-                                width="13"
-                                height="13"
-                                rx="2"
-                                ry="2"
-                            ></rect>
-                            <path
-                                d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                            ></path>
-                        </svg>
-                    </button>
-                </div>
-                <p class="install-note">
-                    Installs the self-contained <code>scandrix</code> binary globally and synchronizes bundled agent skills into detected local agent roots.
-                </p>
-                <p class="alt-install">
-                    Alternative: <code>go install github.com/scandrix/backend/cmd/cli@latest</code> or run <code>scandrix skills install</code>.
-                </p>
-            </div>
-
-            <section>
-                <h2>Core Commands</h2>
-                <div class="commands">
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix review</span>
-                            <span class="command-badge">Local Code Review</span>
-                        </div>
-                        <p class="command-desc">
-                            Review workspace changes, enforce security baselines, gate commits/merges, and optionally emit prompt-friendly markdown or auto-apply diff patches.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">--prompt-only</span>
-                            <span class="flag">--staged</span>
-                            <span class="flag">--fix</span>
-                            <span class="flag">--branch &lt;name&gt;</span>
-                            <span class="flag">--commit &lt;sha&gt;</span>
-                            <span class="flag">--fast</span>
-                            <span class="flag">--heavy</span>
-                            <span class="flag">--agent</span>
-                            <span class="flag">--fields &lt;csv&gt;</span>
-                        </div>
-                    </div>
-
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix pr suggestions</span>
-                            <span class="command-badge">Remote PR Resolver</span>
-                        </div>
-                        <p class="command-desc">
-                            Fetch and triage AI review suggestions from remote pull requests, with structured output for agent auto-resolution.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">--pr-url &lt;url&gt;</span>
-                            <span class="flag">--pr-number &lt;n&gt;</span>
-                            <span class="flag">--fields &lt;csv&gt;</span>
-                            <span class="flag">--agent</span>
-                        </div>
-                    </div>
-
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix pr business-validation</span>
-                            <span class="command-badge">Acceptance Criteria Gate</span>
-                        </div>
-                        <p class="command-desc">
-                            Validate local code implementations against project management acceptance criteria (Jira, Linear, GitHub Issues) before opening PRs.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">--task-id &lt;id&gt;</span>
-                            <span class="flag">--task-url &lt;url&gt;</span>
-                            <span class="flag">--staged</span>
-                            <span class="flag">--branch &lt;name&gt;</span>
-                        </div>
-                    </div>
-
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix trace</span>
-                            <span class="command-badge">Decision Memory</span>
-                        </div>
-                        <p class="command-desc">
-                            Query, pin, or forget architectural tradeoffs and decision context across codebase paths before modifying unfamiliar packages.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">&lt;paths...&gt;</span>
-                            <span class="flag">--format json</span>
-                            <span class="flag">pin &lt;id&gt;</span>
-                            <span class="flag">forget &lt;id&gt;</span>
-                            <span class="flag">ui</span>
-                        </div>
-                    </div>
-
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix skills install</span>
-                            <span class="command-badge">Agent Ecosystem</span>
-                        </div>
-                        <p class="command-desc">
-                            Synchronize bundled ScanDrix agent skills into local IDE and coding agent configuration directories.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">install</span>
-                            <span class="flag">sync</span>
-                            <span class="flag">resync</span>
-                            <span class="flag">uninstall</span>
-                            <span class="flag">prompt</span>
-                            <span class="flag">--dry-run</span>
-                        </div>
-                    </div>
-
-                    <div class="command">
-                        <div class="command-header">
-                            <span class="command-name">scandrix config centralized</span>
-                            <span class="command-badge">Enterprise Compliance</span>
-                        </div>
-                        <p class="command-desc">
-                            Manage centralized configuration and synchronize organization-wide security rules across all engineering teams.
-                        </p>
-                        <div class="command-flags">
-                            <span class="flag">status</span>
-                            <span class="flag">init</span>
-                            <span class="flag">sync</span>
-                            <span class="flag">disable</span>
-                            <span class="flag">remote add</span>
-                            <span class="flag">remote list</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <section>
-                <h2>Supported Tools & Coding Agents</h2>
-                <div class="tools">
-                    <div class="tool">Claude Code</div>
-                    <div class="tool">Cursor</div>
-                    <div class="tool">Codex</div>
-                    <div class="tool">Windsurf</div>
-                    <div class="tool">OpenCode</div>
-                    <div class="tool">Goose</div>
-                    <div class="tool">Gemini CLI</div>
-                    <div class="tool">Google AGY</div>
-                    <div class="tool">Kilo Code</div>
-                    <div class="tool">Roo Code</div>
-                    <div class="tool">AiderDesk</div>
-                    <div class="tool">Hunk TUI</div>
-                </div>
-            </section>
-
-            <section>
-                <h2>Engine Architecture</h2>
-                <div class="features">
-                    <div class="feature">
-                        <div class="feature-icon">1</div>
-                        <div>
-                            <h3>Single Static Binary — Zero Dependencies</h3>
-                            <p>
-                                Compiled in Go with zero external runtime requirements (no Node.js or Python runtime required). Instant cold-start under 15ms.
-                            </p>
-                        </div>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">2</div>
-                        <div>
-                            <h3>Autonomous Auto-Remediation (<code>--fix</code>)</h3>
-                            <p>
-                                Produces line-accurate diff replacements and applies verified security and style fixes directly to source files.
-                            </p>
-                        </div>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">3</div>
-                        <div>
-                            <h3>Interactive 3-Panel TUI Cockpit</h3>
-                            <p>
-                                Built on Bubbletea with syntax-highlighted diffs, instant finding navigation, and one-click patch application.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="stats-grid">
-                    <div class="stat-badge">
-                        <div class="stat-num">&lt;15ms</div>
-                        <div class="stat-label">Cold Start Time</div>
-                    </div>
-                    <div class="stat-badge">
-                        <div class="stat-num">100%</div>
-                        <div class="stat-label">OWASP Top 10 Coverage</div>
-                    </div>
-                    <div class="stat-badge">
-                        <div class="stat-num">0MB</div>
-                        <div class="stat-label">Runtime Dependencies</div>
-                    </div>
-                </div>
-            </section>
-
-            <footer>
-                <p>
-                    Built with 🛡️ by
-                    <a href="https://scandrix.dev" target="_blank" rel="noreferrer"
-                        >ScanDrix Security</a
-                    > &bull; Licensed under Apache 2.0
-                </p>
-            </footer>
+      <div class="commands">
+        <!-- Command 1: review -->
+        <div class="command">
+          <div class="command-header">
+            <span class="command-name">scandrix review</span>
+            <span class="command-badge">Code Review &amp; Security Gate</span>
+          </div>
+          <p class="command-desc">
+            Review local git changes, staged diffs, or PR branches. Executes AST security rules, detects regressions, and outputs prompt-friendly JSON for coding agents.
+          </p>
+          <div class="command-flags">
+            <span class="flag">--prompt-only</span>
+            <span class="flag">--staged</span>
+            <span class="flag">--commit &lt;sha&gt;</span>
+            <span class="flag">--branch &lt;name&gt;</span>
+            <span class="flag">--fast</span>
+            <span class="flag">--agent</span>
+            <span class="flag">--fix</span>
+          </div>
         </div>
 
-        <script>
-            const origin = window.location.origin || 'https://get.scandrix.dev';
-            const commands = {
-                unix: `curl -fsSL ${origin}/install | sh`,
-                windows: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$tmp = Join-Path $env:TEMP 'scandrix-install.ps1'; Invoke-WebRequest ${origin}/install.ps1 -OutFile $tmp; & $tmp"`,
-            };
+        <!-- Command 2: pr suggestions -->
+        <div class="command">
+          <div class="command-header">
+            <span class="command-name">scandrix pr suggestions</span>
+            <span class="command-badge">PR Triage &amp; Remediation</span>
+          </div>
+          <p class="command-desc">
+            Fetch and triage AI code review suggestions from remote pull requests, with line-accurate AST diff patches and automated verification.
+          </p>
+          <div class="command-flags">
+            <span class="flag">--pr-url &lt;url&gt;</span>
+            <span class="flag">--pr-number &lt;n&gt;</span>
+            <span class="flag">--repo-id &lt;id&gt;</span>
+            <span class="flag">--fields &lt;csv&gt;</span>
+            <span class="flag">--apply</span>
+            <span class="flag">--agent</span>
+          </div>
+        </div>
 
-            let currentPlatform = /Windows/i.test(navigator.userAgent)
-                ? 'windows'
-                : 'unix';
+        <!-- Command 3: trace -->
+        <div class="command">
+          <div class="command-header">
+            <span class="command-name">scandrix trace</span>
+            <span class="command-badge">Risk Vector &amp; Call-Path</span>
+          </div>
+          <p class="command-desc">
+            Deep dependency vulnerability graphing and AST taint tracing. Pinpoints exact execution paths from untrusted input to sensitive database or system sinks.
+          </p>
+          <div class="command-flags">
+            <span class="flag">&lt;paths...&gt;</span>
+            <span class="flag">--format json</span>
+            <span class="flag">pin &lt;id&gt;</span>
+            <span class="flag">forget &lt;id&gt;</span>
+            <span class="flag">ui</span>
+          </div>
+        </div>
 
-            function renderInstall() {
-                document.getElementById('install-command').textContent =
-                    commands[currentPlatform];
-                document.querySelectorAll('.tab').forEach((button) => {
-                    button.classList.toggle(
-                        'active',
-                        button.dataset.platform === currentPlatform,
-                    );
-                });
-            }
+        <!-- Command 4: skills install -->
+        <div class="command">
+          <div class="command-header">
+            <span class="command-name">scandrix skills install</span>
+            <span class="command-badge">Agent Ecosystem</span>
+          </div>
+          <p class="command-desc">
+            Synchronize bundled ScanDrix agent skills into local IDE and coding agent configuration directories (Claude Code, Cursor, Codex, Windsurf, AGY).
+          </p>
+          <div class="command-flags">
+            <span class="flag">install</span>
+            <span class="flag">sync</span>
+            <span class="flag">resync</span>
+            <span class="flag">uninstall</span>
+            <span class="flag">prompt</span>
+            <span class="flag">--dry-run</span>
+          </div>
+        </div>
 
-            async function copyInstall() {
-                const button = document.querySelector('.copy-btn');
-                await navigator.clipboard.writeText(commands[currentPlatform]);
-                button.innerHTML =
-                    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-                setTimeout(() => {
-                    button.innerHTML =
-                        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-                }, 1500);
-            }
+        <!-- Command 5: config centralized -->
+        <div class="command">
+          <div class="command-header">
+            <span class="command-name">scandrix config centralized</span>
+            <span class="command-badge">Enterprise Compliance</span>
+          </div>
+          <p class="command-desc">
+            Manage centralized configuration and synchronize organization-wide security rules and compliance policies across engineering teams.
+          </p>
+          <div class="command-flags">
+            <span class="flag">status</span>
+            <span class="flag">init</span>
+            <span class="flag">sync</span>
+            <span class="flag">disable</span>
+            <span class="flag">remote add</span>
+            <span class="flag">remote list</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
-            document.querySelectorAll('.tab').forEach((button) => {
-                button.addEventListener('click', () => {
-                    currentPlatform = button.dataset.platform;
-                    renderInstall();
-                });
-            });
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 4. SUPPORTED TOOLS & AGENTS (Compatibility ecosystem matrix)    -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2>Supported Tools &amp; Coding Agents</h2>
 
-            renderInstall();
-        </script>
-    </body>
+      <div class="tools">
+        <div class="tool">Claude Code</div>
+        <div class="tool">Cursor</div>
+        <div class="tool">Codex</div>
+        <div class="tool">Windsurf</div>
+        <div class="tool">OpenCode</div>
+        <div class="tool">Goose</div>
+        <div class="tool">Gemini CLI</div>
+        <div class="tool">Google AGY</div>
+        <div class="tool">Kilo Code</div>
+        <div class="tool">Roo Code</div>
+        <div class="tool">AiderDesk</div>
+        <div class="tool">Hunk TUI</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 5. ARCHITECTURE & HOW IT WORKS (Zero deps, auto-fix, TUI)       -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2>How It Works</h2>
+
+      <div class="features">
+        <div class="feature">
+          <div class="feature-icon">1</div>
+          <div>
+            <h3>Single Static Binary &mdash; Zero Dependencies</h3>
+            <p>
+              Compiled in Go with zero external runtime requirements (no Node.js or Python runtime required). Instant cold-start with minimal memory overhead.
+            </p>
+          </div>
+        </div>
+
+        <div class="feature">
+          <div class="feature-icon">2</div>
+          <div>
+            <h3>Autonomous Auto-Remediation (<code>--fix</code>)</h3>
+            <p>
+              Produces line-accurate diff replacements and applies verified security and style fixes directly to source files.
+            </p>
+          </div>
+        </div>
+
+        <div class="feature">
+          <div class="feature-icon">3</div>
+          <div>
+            <h3>Interactive 3-Panel TUI Cockpit</h3>
+            <p>
+              Built on Bubbletea with syntax-highlighted diffs, instant finding navigation, and one-click patch application.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 6. FOOTER & SECURITY BADGE (Security shield and license)        -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <footer>
+      <p class="footer-security-line">
+        <img src="assets/security-shield.svg" alt="ScanDrix Security Shield" class="footer-shield-img">
+        Built by
+        <a href="https://scandrix.dev" target="_blank" rel="noreferrer">ScanDrix Security</a>
+        &bull; Licensed under Apache 2.0
+      </p>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
 </html>

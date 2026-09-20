@@ -31,16 +31,17 @@ type TeamCLIToken struct {
 	IsRevoked   bool         `json:"is_revoked"`
 	CreatedBy   uuid.UUID    `json:"created_by"`
 	CreatedAt   time.Time    `json:"created_at"`
+	CachedAt    time.Time    `json:"-"`
 }
 
 // MintTokenRequest specifies the parameters for creating a new team or personal CLI key.
 type MintTokenRequest struct {
-	WorkspaceID uuid.UUID    `json:"workspace_id"`
-	TeamID      uuid.UUID    `json:"team_id"`
-	Name        string       `json:"name"`
-	Scopes      []TokenScope `json:"scopes"`
+	WorkspaceID uuid.UUID     `json:"workspace_id"`
+	TeamID      uuid.UUID     `json:"team_id"`
+	Name        string        `json:"name"`
+	Scopes      []TokenScope  `json:"scopes"`
 	TTL         time.Duration `json:"ttl,omitempty"` // 0 = never expires
-	CreatedBy   uuid.UUID    `json:"created_by"`
+	CreatedBy   uuid.UUID     `json:"created_by"`
 }
 
 // MintTokenResponse delivers the plaintext key once upon generation.

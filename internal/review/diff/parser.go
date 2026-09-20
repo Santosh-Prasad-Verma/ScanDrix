@@ -54,18 +54,15 @@ var (
 )
 
 const (
-	MaxDiffLines     = 100000
-	MaxDiffFiles     = 1000
-	MaxHunksPerFile  = 1000
-	MaxTotalHunks    = 10000
+	MaxDiffLines    = 100000
+	MaxDiffFiles    = 1000
+	MaxHunksPerFile = 1000
+	MaxTotalHunks   = 10000
 )
 
 // ParseUnifiedDiff parses a multi-file unified git diff stream into structured FilePatch slices.
 func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
-	scanner := bufio.NewScanner(r)
-	// Support long lines in generated files or minified bundles up to 1MB
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	reader := bufio.NewReaderSize(r, 64*1024)
 
 	var patches []*FilePatch
 	var currentPatch *FilePatch
@@ -74,13 +71,28 @@ func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
 	totalLines := 0
 	totalHunks := 0
 
-	for scanner.Scan() {
+	for {
+		lineBytes, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("error reading diff stream: %w", err)
+		}
+
+		// If line exceeds buffer (e.g. minified bundle or data URI > 64KB), drain the remainder safely
+		if isPrefix {
+			for isPrefix && err == nil {
+				_, isPrefix, err = reader.ReadLine()
+			}
+		}
+
 		totalLines++
 		if totalLines > MaxDiffLines {
 			break // Ceil processing to prevent memory exhaustion on extreme files
 		}
 
-		line := scanner.Text()
+		line := string(lineBytes)
 
 		// Check for diff header
 		if matches := diffHeaderRegex.FindStringSubmatch(line); len(matches) == 3 {
@@ -210,10 +222,6 @@ func ParseUnifiedDiff(r io.Reader) ([]*FilePatch, error) {
 			// "\ No newline at end of file" - ignore
 			continue
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading diff stream: %w", err)
 	}
 
 	if currentHunk != nil && currentPatch != nil {

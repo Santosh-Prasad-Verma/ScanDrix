@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/scandrix/backend/internal/cache/limiter"
 )
 
 // AppInstallationToken represents a scoped short-lived GitHub App installation token.
@@ -22,13 +23,15 @@ type AppInstallationToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// AppTokenRotator manages GitHub App private keys, generating JWTs and auto-refreshing installation tokens.
+// AppTokenRotator manages GitHub App private keys, generating JWTs, auto-refreshing installation tokens,
+// and enforcing per-installation API rate limiting (§16.5).
 type AppTokenRotator struct {
-	appID          string
-	privateKey     *rsa.PrivateKey
-	httpClient     *http.Client
-	mu             sync.RWMutex
-	cachedTokens   map[int64]*AppInstallationToken
+	appID        string
+	privateKey   *rsa.PrivateKey
+	httpClient   *http.Client
+	mu           sync.RWMutex
+	cachedTokens map[int64]*AppInstallationToken
+	limiters     map[int64]*limiter.TokenBucketLimiter
 }
 
 // NewAppTokenRotator initializes a token rotator from PEM-encoded RSA private key bytes.
@@ -57,7 +60,27 @@ func NewAppTokenRotator(appID string, privateKeyPEM []byte) (*AppTokenRotator, e
 		privateKey:   key,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
 		cachedTokens: make(map[int64]*AppInstallationToken),
+		limiters:     make(map[int64]*limiter.TokenBucketLimiter),
 	}, nil
+}
+
+// AllowInstallationRequest verifies that an installation has not exhausted its API request allocation (§16.5).
+func (r *AppTokenRotator) AllowInstallationRequest(ctx context.Context, installationID int64) bool {
+	r.mu.Lock()
+	l, exists := r.limiters[installationID]
+	if !exists {
+		// GitHub App rate limit baseline: 5000 req/hr = ~1.4 req/sec, burst capacity 100
+		l = limiter.NewTokenBucketLimiter(limiter.RateLimitConfig{
+			Capacity:          100,
+			RefillRatePerSec:  1.4,
+			ExpirationTimeout: 2 * time.Hour,
+		})
+		r.limiters[installationID] = l
+	}
+	r.mu.Unlock()
+
+	res, err := l.Allow(ctx, fmt.Sprintf("gh:inst:%d", installationID), 1)
+	return err == nil && res != nil && res.Allowed
 }
 
 // GenerateAppJWT creates a signed RS256 JWT valid for 10 minutes to authenticate as the GitHub App.

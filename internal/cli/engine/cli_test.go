@@ -71,7 +71,7 @@ func TestCLIRunnerAndOutputFormats(t *testing.T) {
 		t.Fatalf("table formatting failed: %v", err)
 	}
 	tableOutput := tableBuf.String()
-	if !strings.Contains(tableOutput, "ScanDrix Code Review Summary") || !strings.Contains(tableOutput, "CRITICAL") {
+	if !strings.Contains(tableOutput, "ScanDrix Security & Review Summary") || !strings.Contains(tableOutput, "CRITICAL") {
 		t.Fatalf("unexpected table output: %s", tableOutput)
 	}
 
@@ -109,6 +109,19 @@ func TestCLIRunnerAndOutputFormats(t *testing.T) {
 	mdOutput := mdBuf.String()
 	if !strings.Contains(mdOutput, "## 🛡️ ScanDrix Automated Security & Quality Review") || !strings.Contains(mdOutput, "<details>") {
 		t.Fatalf("unexpected markdown output: %s", mdOutput)
+	}
+
+	// 8. Test CSV Formatter
+	var csvBuf bytes.Buffer
+	if err := formatter.Render(&csvBuf, vulnResult, engine.FormatCSV); err != nil {
+		t.Fatalf("csv formatting failed: %v", err)
+	}
+	csvOutput := csvBuf.String()
+	if !strings.Contains(csvOutput, "ID,Severity,Category,File,StartLine,EndLine,Title,Description,Remediation") {
+		t.Fatalf("unexpected csv header output: %s", csvOutput)
+	}
+	if !strings.Contains(csvOutput, "CRITICAL") {
+		t.Fatalf("expected CSV to contain CRITICAL finding, got: %s", csvOutput)
 	}
 
 	// 8. Test Agent Mode Formatter
@@ -185,5 +198,72 @@ func main() {}
 	}
 	if !strings.Contains(string(updated), `const ApiKey = os.Getenv("AWS_API_KEY")`) {
 		t.Errorf("suggested fix was not written to file: %s", string(updated))
+	}
+}
+
+func TestApplyBatchFixesDescending(t *testing.T) {
+	tempDir := t.TempDir()
+	testFile := "multi_vuln.go"
+	fullPath := tempDir + "/" + testFile
+
+	initialCode := `package main
+
+// Issue 1
+const Secret1 = "HARDCODED_SECRET_1"
+
+// Issue 2
+const Secret2 = "HARDCODED_SECRET_2"
+
+func main() {}
+`
+	if err := os.WriteFile(fullPath, []byte(initialCode), 0644); err != nil {
+		t.Fatalf("failed writing test file: %v", err)
+	}
+
+	findings := []models.CodeFinding{
+		{
+			FilePath:      testFile,
+			StartLine:     4,
+			EndLine:       4,
+			SuggestedDiff: `const Secret1 = os.Getenv("SECRET_1")`,
+		},
+		{
+			FilePath:      testFile,
+			StartLine:     7,
+			EndLine:       7,
+			SuggestedDiff: `const Secret2 = os.Getenv("SECRET_2")`,
+		},
+	}
+
+	res, err := engine.ApplyBatchFixes(tempDir, findings)
+	if err != nil {
+		t.Fatalf("ApplyBatchFixes failed: %v", err)
+	}
+	if res.Applied != 2 || res.Failed != 0 {
+		t.Fatalf("expected 2 applied, 0 failed, got %+v", res)
+	}
+
+	updated, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("failed reading updated file: %v", err)
+	}
+
+	content := string(updated)
+	if strings.Contains(content, "HARDCODED_SECRET_1") || strings.Contains(content, "HARDCODED_SECRET_2") {
+		t.Errorf("secrets not removed: %s", content)
+	}
+	if !strings.Contains(content, `const Secret1 = os.Getenv("SECRET_1")`) || !strings.Contains(content, `const Secret2 = os.Getenv("SECRET_2")`) {
+		t.Errorf("remediations not applied cleanly: %s", content)
+	}
+
+	// Verify preview generator
+	preview := engine.GenerateDiffPreview(findings[0])
+	if !strings.Contains(preview, "File: multi_vuln.go") {
+		t.Errorf("unexpected preview: %s", preview)
+	}
+
+	// Verify CanApplyFix
+	if !engine.CanApplyFix(tempDir, findings[0]) {
+		t.Errorf("expected CanApplyFix to return true")
 	}
 }

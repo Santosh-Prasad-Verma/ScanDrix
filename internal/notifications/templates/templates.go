@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Brand Color Palette (matching Kodus AI / ScanDrix enterprise brand system)
+// Brand Color Palette (ScanDrix enterprise brand system)
 const (
 	ColorPrimaryLight = "#f8b76d" // Brand primary light accent / buttons
 	ColorPrimaryDark  = "#443024" // Button text contrast on primary-light

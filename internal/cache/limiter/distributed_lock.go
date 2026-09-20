@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	ErrLockHeld         = errors.New("resource lock already held by another worker")
-	ErrLockNotFound     = errors.New("lock does not exist or has expired")
-	ErrLockNotOwner     = errors.New("cannot release lock owned by another worker")
+	ErrLockHeld     = errors.New("resource lock already held by another worker")
+	ErrLockNotFound = errors.New("lock does not exist or has expired")
+	ErrLockNotOwner = errors.New("cannot release lock owned by another worker")
 )
 
 // DistributedLockManager coordinates distributed mutual exclusion leases.

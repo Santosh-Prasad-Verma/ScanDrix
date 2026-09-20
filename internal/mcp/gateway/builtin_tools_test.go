@@ -7,11 +7,15 @@ import (
 
 func TestGetBuiltinTools(t *testing.T) {
 	tools, handlers := GetBuiltinTools()
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 builtin tools, got %d", len(tools))
+	if len(tools) < 8 {
+		t.Fatalf("expected at least 8 builtin tools, got %d", len(tools))
 	}
 
 	expectedNames := map[string]bool{
+		"scandrix_scan":                     false,
+		"scandrix_review":                   false,
+		"scandrix_apply_fix":                false,
+		"scandrix_trace_recall":             false,
 		"scandrix_analyze_snippet":          false,
 		"scandrix_catalog_search":           false,
 		"scandrix_validate_syntax":          false,

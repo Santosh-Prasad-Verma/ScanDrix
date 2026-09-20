@@ -1,23 +1,33 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
-	"github.com/scandrix/backend/internal/database"
 )
+
+// WebhookHealthRepository defines the data access contract for webhook delivery and outbox metrics (Clean Architecture).
+type WebhookHealthRepository interface {
+	GetOutboxMetrics(ctx context.Context, wsID uuid.UUID) (totalDelivered, pending, retrying, dlq int64, lastEventAt *time.Time, err error)
+	RetryDeadLetterOutboxEvents(ctx context.Context, limit int) (int, error)
+}
 
 // WebhookHealthController inspects webhook delivery reliability and outbox message backlog.
 type WebhookHealthController struct {
-	repo *database.Repository
+	repo WebhookHealthRepository
 }
 
-// NewWebhookHealthController initializes the webhook health controller with database repository.
-func NewWebhookHealthController(repo *database.Repository) *WebhookHealthController {
+// NewWebhookHealthController initializes the webhook health controller with repository dependency.
+func NewWebhookHealthController(repo WebhookHealthRepository) *WebhookHealthController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &WebhookHealthController{repo: repo}
 }
 
@@ -39,10 +49,15 @@ func (c *WebhookHealthController) handleGetWebhookHealth(w http.ResponseWriter, 
 		return
 	}
 
-	delivered, pending, retrying, dlq, lastEventAt, err := c.repo.GetOutboxMetrics(r.Context(), wsID)
-	if err != nil {
-		http.Error(w, `{"error":"failed querying webhook health"}`, http.StatusInternalServerError)
-		return
+	var delivered, pending, retrying, dlq int64
+	var lastEventAt *time.Time
+	if c.repo != nil {
+		var err error
+		delivered, pending, retrying, dlq, lastEventAt, err = c.repo.GetOutboxMetrics(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed querying webhook health"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	total := delivered + pending + retrying + dlq
@@ -73,10 +88,15 @@ func (c *WebhookHealthController) handleGetOutboxLag(w http.ResponseWriter, r *h
 		return
 	}
 
-	_, pending, retrying, dlq, lastEventAt, err := c.repo.GetOutboxMetrics(r.Context(), wsID)
-	if err != nil {
-		http.Error(w, `{"error":"failed querying outbox lag"}`, http.StatusInternalServerError)
-		return
+	var pending, retrying, dlq int64
+	var lastEventAt *time.Time
+	if c.repo != nil {
+		var err error
+		_, pending, retrying, dlq, lastEventAt, err = c.repo.GetOutboxMetrics(r.Context(), wsID)
+		if err != nil {
+			http.Error(w, `{"error":"failed querying outbox lag"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	oldest := time.Now().UTC()

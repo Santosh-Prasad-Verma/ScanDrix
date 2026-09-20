@@ -25,8 +25,7 @@ func BenchmarkHMACVerification(b *testing.B) {
 	mac.Write(payload)
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if !verifier.VerifyGitHub(sig, payload, secret) {
 			b.Fatal("hmac verification failed")
 		}
@@ -47,8 +46,7 @@ func Compute(x int) int {
 	return x
 }
 `
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rep, err := analyzer.Analyze("sample.go", sampleSrc)
 		if err != nil || len(rep.Functions) == 0 {
 			b.Fatal("ast analysis failed")
@@ -65,8 +63,7 @@ func Factorial(n int) int {
 	return n * Factorial(n-1)
 }
 `
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		metrics := ast.CalculateHalstead(sampleSrc)
 		if metrics.Volume <= 0 {
 			b.Fatal("halstead volume computation failed")
@@ -76,7 +73,7 @@ func Factorial(n int) int {
 
 func BenchmarkTokenBucket(b *testing.B) {
 	tb := limiter.NewTokenBucketLimiter(limiter.RateLimitConfig{
-		Capacity:        100000,
+		Capacity:         100000,
 		RefillRatePerSec: 100000,
 	})
 	ctx := context.Background()
@@ -93,8 +90,7 @@ func BenchmarkOutboxInboxClaim(b *testing.B) {
 	inbox := relay.NewInboxDeduplicator()
 	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		msgID := uuid.New().String()
 		claimed, err := inbox.ClaimMessage(ctx, msgID, "worker-bench")
 		if err != nil || !claimed {
@@ -122,8 +118,7 @@ func BenchmarkConsensusAdjudication(b *testing.B) {
 	cands := []deliberation.CandidateFinding{cand1}
 	crits := []deliberation.PeerCritique{crit1}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		findings, decisions := deliberator.DeliberateExec(ctx, cands, crits)
 		if len(findings) != 1 || len(decisions) != 1 {
 			b.Fatal("deliberation failed")

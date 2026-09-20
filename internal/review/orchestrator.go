@@ -11,18 +11,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/codeanalysis/ast"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/integrations/github"
 	"github.com/scandrix/backend/internal/integrations/pm"
 	"github.com/scandrix/backend/internal/llm"
+	"github.com/scandrix/backend/internal/llm/byok"
+	"github.com/scandrix/backend/internal/llm/embedding"
 	"github.com/scandrix/backend/internal/platform"
 	"github.com/scandrix/backend/internal/provenance/intoto"
 	"github.com/scandrix/backend/internal/review/diff"
+	"github.com/scandrix/backend/internal/review/feedback"
+	"github.com/scandrix/backend/internal/review/pipeline"
+	"github.com/scandrix/backend/internal/review/pipeline/stages"
+	"github.com/scandrix/backend/internal/review/priority"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/sandbox/contracts"
+	"github.com/scandrix/backend/internal/sandbox/syntax"
 	"github.com/scandrix/backend/internal/storage"
 	"github.com/scandrix/backend/pkg/crypto"
 	"github.com/scandrix/backend/pkg/models"
 )
+
+// 1. REVIEW ORCHESTRATOR MODEL & SCM CONTRACTS (Pipeline state & dependencies)
 
 // SCMPublisher publishes inline reviews and updates commit checks on SCM providers.
 type SCMPublisher interface {
@@ -40,7 +51,12 @@ type Orchestrator struct {
 	platformAdapter platform.SCMAdapter
 	attestor        *intoto.ProvenanceAttestor
 	autoTicketMgr   *pm.AutoTicketManager
+	streamHub       *StreamHub
+	feedbackService *feedback.SemanticFeedbackService
+	sandboxLeaseMgr contracts.ISandboxLeaseManager
 }
+
+// 2. DEPENDENCY INJECTION BINDINGS (Streaming hub, adapters & attestors)
 
 // NewOrchestrator initializes the review orchestration engine.
 func NewOrchestrator(
@@ -49,12 +65,27 @@ func NewOrchestrator(
 	artifactClient *storage.ArtifactClient,
 	rulesEvaluator *rules.Evaluator,
 ) *Orchestrator {
-	return &Orchestrator{
-		repo:           repo,
-		llmGateway:     llmGateway,
-		artifactClient: artifactClient,
-		rulesEvaluator: rulesEvaluator,
+	var fbService *feedback.SemanticFeedbackService
+	if repo != nil {
+		fbService = feedback.NewSemanticFeedbackService(repo, embedding.NewDeterministicSemanticEmbedder())
 	}
+	return &Orchestrator{
+		repo:            repo,
+		llmGateway:      llmGateway,
+		artifactClient:  artifactClient,
+		rulesEvaluator:  rulesEvaluator,
+		feedbackService: fbService,
+	}
+}
+
+// SetFeedbackService configures a custom semantic feedback learning service.
+func (o *Orchestrator) SetFeedbackService(fb *feedback.SemanticFeedbackService) {
+	o.feedbackService = fb
+}
+
+// SetStreamHub binds an active SSE streaming hub to broadcast review lifecycle events.
+func (o *Orchestrator) SetStreamHub(hub *StreamHub) {
+	o.streamHub = hub
 }
 
 // SetSCMPublisher binds an active SCM client for publishing reviews back to GitHub/GitLab.
@@ -72,10 +103,59 @@ func (o *Orchestrator) SetProvenanceAttestor(attestor *intoto.ProvenanceAttestor
 	o.attestor = attestor
 }
 
+// LLMGateway returns the orchestrator's LLM gateway instance.
+func (o *Orchestrator) LLMGateway() *llm.Gateway {
+	if o == nil {
+		return nil
+	}
+	return o.llmGateway
+}
+
 // SetAutoTicketManager attaches a project management auto-ticketing manager.
 func (o *Orchestrator) SetAutoTicketManager(mgr *pm.AutoTicketManager) {
 	o.autoTicketMgr = mgr
 }
+
+// SetSandboxLeaseManager attaches the sandbox lease manager for isolated VM/container reviews.
+func (o *Orchestrator) SetSandboxLeaseManager(lm contracts.ISandboxLeaseManager) {
+	o.sandboxLeaseMgr = lm
+}
+
+// SandboxLeaseManager returns the orchestrator's sandbox lease manager instance.
+func (o *Orchestrator) SandboxLeaseManager() contracts.ISandboxLeaseManager {
+	if o == nil {
+		return nil
+	}
+	return o.sandboxLeaseMgr
+}
+
+// BuildPipelineEngine constructs a fully configured 10-stage review pipeline.
+func (o *Orchestrator) BuildPipelineEngine(evaluator *rules.Evaluator) *pipeline.PipelineEngine {
+	if evaluator == nil {
+		evaluator = o.rulesEvaluator
+	}
+	return pipeline.NewPipelineEngine(
+		stages.NewPrerequisitesStage(),
+		stages.NewExternalContextStage(),
+		stages.NewFileFilterStage(),
+		stages.NewASTAnalysisStage(evaluator),
+		stages.NewCreateSandboxStage(o.sandboxLeaseMgr),
+		stages.NewAgentDeliberationStage(evaluator),
+		stages.NewSuggestionValidatorStage(),
+		stages.NewSemanticSuppressorStage(o.feedbackService),
+		stages.NewHunkFormatterStage(),
+		stages.NewPRSummaryStage(),
+		stages.NewSCMPublisherStage(500*time.Millisecond),
+	)
+}
+
+// ProcessReviewWithPipeline executes the complete 10-stage pipeline with context lifecycle tracking.
+func (o *Orchestrator) ProcessReviewWithPipeline(ctx context.Context, pCtx *pipeline.PipelineContext) error {
+	engine := o.BuildPipelineEngine(o.rulesEvaluator)
+	return engine.Execute(ctx, pCtx)
+}
+
+// 3. EXECUTION TASK SCHEMA (Job parameters & raw diff payload)
 
 // ExecutionTask represents the input job submitted to the review pipeline.
 type ExecutionTask struct {
@@ -95,6 +175,8 @@ type ExecutionTask struct {
 	SCMAdapter    platform.SCMAdapter
 }
 
+// 4. REVIEW LIFECYCLE & DIFF INGESTION (Stage tracking & patch parsing)
+
 // ProcessReview executes all analysis stages, records findings, and uploads scan artifacts.
 func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) error {
 	slog.Info("Starting pull request review execution",
@@ -103,60 +185,273 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		"pr", task.PullNumber,
 	)
 
-	// Update state to PROCESSING
+	// Update state to PROCESSING (and ensure review record exists)
 	if o.repo != nil {
-		_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateProcessing, 0)
+		existing, _ := o.repo.GetReview(ctx, task.WorkspaceID, task.ReviewID)
+		if existing == nil {
+			_ = o.repo.CreateReview(ctx, &models.PullRequestReview{
+				ID:             task.ReviewID,
+				WorkspaceID:    task.WorkspaceID,
+				RepositoryID:   task.RepositoryID,
+				PullNumber:     task.PullNumber,
+				Title:          task.Title,
+				HeadSHA:        task.HeadSHA,
+				BaseSHA:        task.BaseSHA,
+				AuthorUsername: task.Author,
+				State:          models.ReviewStateProcessing,
+				FindingsCount:  0,
+			})
+		} else {
+			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateProcessing, 0)
+		}
 	}
 
 	// Step 1: Parse git unified diff stream
+	if o.streamHub != nil {
+		o.streamHub.Broadcast(task.ReviewID, "stage_started", "PARSING_DIFF", map[string]string{"title": task.Title})
+	}
 	patches, err := diff.ParseUnifiedDiff(strings.NewReader(task.RawDiff))
 	if err != nil {
 		slog.Error("Failed to parse unified diff", "error", err)
 		if o.repo != nil {
 			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateFailed, 0)
 		}
+		if o.streamHub != nil {
+			o.streamHub.Broadcast(task.ReviewID, "review_failed", "FAILED", map[string]string{"error": err.Error()})
+		}
 		return fmt.Errorf("diff parse failed: %w", err)
 	}
 
 	var allFindings []models.CodeFinding
 
+	// Ephemeral microVM / container sandbox lease acquisition
+	var leaseID string
+	var sandboxHandle contracts.SandboxInstance
+	if o.sandboxLeaseMgr != nil && task.PullNumber > 0 && task.RepoNamespace != "" {
+		if prKey, err := contracts.BuildPrKey(task.WorkspaceID.String(), task.RepositoryID.String(), task.PullNumber); err == nil {
+			cloneURL := fmt.Sprintf("https://github.com/%s.git", task.RepoNamespace)
+			token := ""
+			if o.repo != nil && task.WorkspaceID != uuid.Nil {
+				token, _ = o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, task.Provider)
+			}
+			cloneParams := contracts.CreateSandboxParams{
+				CloneURL:        cloneURL,
+				AuthToken:       token,
+				Platform:        task.Provider,
+				PRNumber:        task.PullNumber,
+				CheckoutSHA:     task.HeadSHA,
+				UnifiedDiff:     task.RawDiff,
+				SandboxMetadata: map[string]string{"stage": "review"},
+			}
+			if acq, err := o.sandboxLeaseMgr.Acquire(ctx, prKey, "review", 0, &cloneParams); err == nil && acq != nil {
+				leaseID = acq.LeaseID
+				sandboxHandle = acq.Sandbox
+				slog.Info("Acquired sandbox lease for review", "pr_key", prKey, "lease_id", leaseID)
+				defer func() {
+					if leaseID != "" {
+						_ = o.sandboxLeaseMgr.Release(ctx, leaseID, &contracts.ReleaseOptions{
+							IdleTimeout: 30 * time.Second,
+						})
+					} else if sandboxHandle != nil {
+						_ = sandboxHandle.Cleanup(ctx)
+					}
+				}()
+			} else if err != nil {
+				slog.Warn("Sandbox lease acquisition skipped or failed, continuing review self-contained", "pr_key", prKey, "error", err)
+			}
+		}
+	}
+
+	// 5. STATIC RULES & BLAST-RADIUS CALL GRAPH (AST smells & file prioritization)
+
 	// Step 2: Evaluate deterministic custom workspace rules
 	if o.rulesEvaluator != nil {
+		if o.streamHub != nil {
+			o.streamHub.Broadcast(task.ReviewID, "stage_started", "EVALUATING_RULES", nil)
+		}
 		ruleFindings := o.rulesEvaluator.EvaluatePatches(task.ReviewID, task.WorkspaceID, patches)
 		allFindings = append(allFindings, ruleFindings...)
 		slog.Info("Rule evaluation finished", "findings", len(ruleFindings))
 	}
 
+	// Step 2.1: Run AST structural complexity and code smell analysis
+	complexityAnalyzer := ast.NewASTComplexityAnalyzer()
+	for _, patch := range patches {
+		if patch.NewPath != "" && len(patch.Hunks) > 0 {
+			var patchContent strings.Builder
+			for _, h := range patch.Hunks {
+				for _, line := range h.Lines {
+					if line.Type != diff.LineDeletion {
+						patchContent.WriteString(line.Content)
+						patchContent.WriteString("\n")
+					}
+				}
+			}
+			if report, err := complexityAnalyzer.Analyze(patch.NewPath, patchContent.String()); err == nil && report != nil {
+				for _, cf := range report.Findings {
+					cf.ReviewID = task.ReviewID
+					cf.WorkspaceID = task.WorkspaceID
+					if cf.Fingerprint == "" {
+						cf.Fingerprint = crypto.FingerprintSHA256(patch.NewPath + ":" + cf.Title + ":" + cf.Category)
+					}
+					allFindings = append(allFindings, cf)
+				}
+			}
+		}
+	}
+
+	// Step 2.2: Blast-Radius Call-Graph Scoring & File Prioritization
+	var fileChanges []priority.ScoredFileChange
+	patchMap := make(map[string]*diff.FilePatch)
+	for _, p := range patches {
+		filePath := p.NewPath
+		if filePath == "" {
+			filePath = p.OldPath
+		}
+		status := priority.StatusModified
+		if p.IsNew {
+			status = priority.StatusAdded
+		} else if p.IsDeleted {
+			status = priority.StatusRemoved
+		} else if p.OldPath != "" && p.NewPath != "" && p.OldPath != p.NewPath {
+			status = priority.StatusRenamed
+		}
+
+		fileChanges = append(fileChanges, priority.ScoredFileChange{
+			FilePath:  filePath,
+			Status:    status,
+			Additions: p.Additions,
+			Deletions: p.Deletions,
+		})
+		patchMap[filePath] = p
+	}
+
+	// Extract import/call relationships across changed files to construct call graph edges
+	var graphEdges []priority.GraphEdge
+	for _, f1 := range fileChanges {
+		for _, f2 := range fileChanges {
+			if f1.FilePath != f2.FilePath {
+				base2 := f2.FilePath
+				if idx := strings.LastIndex(base2, "/"); idx >= 0 {
+					base2 = base2[idx+1:]
+				}
+				if extIdx := strings.LastIndex(base2, "."); extIdx > 0 {
+					base2 = base2[:extIdx]
+				}
+				if p, ok := patchMap[f1.FilePath]; ok && len(base2) > 2 {
+					for _, h := range p.Hunks {
+						for _, line := range h.Lines {
+							if line.Type != diff.LineDeletion && strings.Contains(line.Content, base2) {
+								graphEdges = append(graphEdges, priority.GraphEdge{
+									Kind:       priority.EdgeCalls,
+									SourceFile: f1.FilePath,
+									TargetFile: f2.FilePath,
+								})
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	scoredFiles := priority.ScoreAndPrioritizeFiles(fileChanges, graphEdges)
+	slog.Info("Computed blast-radius call-graph scores for review",
+		"review_id", task.ReviewID,
+		"files_scored", len(scoredFiles),
+	)
+
+	// 6. AI GATEWAY DEEP SEMANTIC SYNTHESIS (Multi-model analysis & BYOK keys)
+
 	// Step 3: Run AI Gateway deep semantic analysis
+	aiSynthesisFailed := false
+	var aiErrorMsg string
+	diffTruncated := false
+	const MaxDiffBytesForLLM = 250 * 1024 // 250 KB
+
 	if o.llmGateway != nil && len(task.RawDiff) > 0 {
+		if o.streamHub != nil {
+			o.streamHub.Broadcast(task.ReviewID, "stage_started", "AI_SYNTHESIS", nil)
+		}
+
+		diffForLLM := task.RawDiff
+		if len(diffForLLM) > MaxDiffBytesForLLM {
+			// Reassemble diff prioritizing high blast-radius files first
+			var b strings.Builder
+			for _, sf := range scoredFiles {
+				if p, ok := patchMap[sf.FilePath]; ok {
+					var patchBuf strings.Builder
+					patchBuf.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", p.OldPath, p.NewPath))
+					for _, h := range p.Hunks {
+						patchBuf.WriteString(h.Header + "\n")
+						for _, line := range h.Lines {
+							prefix := " "
+							if line.Type == diff.LineAddition {
+								prefix = "+"
+							} else if line.Type == diff.LineDeletion {
+								prefix = "-"
+							}
+							patchBuf.WriteString(prefix + line.Content + "\n")
+						}
+					}
+					if b.Len()+patchBuf.Len() > MaxDiffBytesForLLM {
+						diffTruncated = true
+						break
+					}
+					b.WriteString(patchBuf.String())
+				}
+			}
+			if b.Len() > 0 {
+				diffForLLM = b.String() + "\n\n[... Diff truncated by ScanDrix: prioritized high blast-radius files within 250KB threshold ...]\n"
+			} else {
+				diffForLLM = diffForLLM[:MaxDiffBytesForLLM] + "\n\n[... Diff truncated by ScanDrix: exceeded 250KB context threshold ...]\n"
+				diffTruncated = true
+			}
+		}
+
 		llmReq := llm.ReviewRequest{
+			WorkspaceID:   task.WorkspaceID,
 			RepoNamespace: task.RepoNamespace,
 			PullTitle:     task.Title,
-			DiffContent:   task.RawDiff,
+			DiffContent:   diffForLLM,
 			CustomRules:   task.CustomRules,
 		}
 
 		if o.repo != nil {
-			if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("anthropic")); tok != "" {
-				llmReq.BYOKAnthropicKey = tok
+			if param, err := o.repo.GetOrganizationParameter(ctx, task.WorkspaceID, "byok_config"); err == nil && param != nil {
+				if migrated, err := byok.MigrateLegacyToV2(param.ConfigValue); err == nil && migrated != nil && len(migrated.Models) > 0 {
+					llmReq.BYOKConfig = migrated
+				}
 			}
-			if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("openai")); tok != "" {
-				llmReq.BYOKOpenAIKey = tok
-			}
-			if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("gemini")); tok != "" {
-				llmReq.BYOKGeminiKey = tok
-			}
-			if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("deepseek")); tok != "" {
-				llmReq.BYOKDeepSeekKey = tok
-			}
-			if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("openrouter")); tok != "" {
-				llmReq.BYOKOpenRouterKey = tok
+			if llmReq.BYOKConfig == nil {
+				if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("anthropic")); tok != "" {
+					llmReq.BYOKAnthropicKey = tok
+				}
+				if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("openai")); tok != "" {
+					llmReq.BYOKOpenAIKey = tok
+				}
+				if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("gemini")); tok != "" {
+					llmReq.BYOKGeminiKey = tok
+				}
+				if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("deepseek")); tok != "" {
+					llmReq.BYOKDeepSeekKey = tok
+				}
+				if tok, _ := o.repo.GetDecryptedIntegrationToken(ctx, task.WorkspaceID, models.SCMProvider("openrouter")); tok != "" {
+					llmReq.BYOKOpenRouterKey = tok
+				}
 			}
 		}
 
 		aiResp, err := o.llmGateway.AnalyzeDiff(ctx, llmReq)
 		if err != nil {
-			slog.Warn("AI review synthesis warning", "error", err)
+			aiSynthesisFailed = true
+			classified := llm.ClassifyLLMError(err, 0)
+			aiErrorMsg = classified.BuildReviewErrorMessage()
+			slog.Error("AI review synthesis failed", "review_id", task.ReviewID, "error", err, "diagnostics", aiErrorMsg)
+			if o.streamHub != nil {
+				o.streamHub.Broadcast(task.ReviewID, "stage_failed", "AI_SYNTHESIS", map[string]string{"error": aiErrorMsg})
+			}
 		} else {
 			for _, f := range aiResp.Findings {
 				sev := models.SeverityMedium
@@ -191,9 +486,11 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 	}
 
+	// 7. ARTIFACT ARCHIVAL & RLS FINDINGS PERSISTENCE (Memory suppression & state updates)
+
 	// Step 4: Archive diff and audit report to Appwrite Storage
 	if o.artifactClient != nil {
-		artifactID := fmt.Sprintf("diff-%s", task.ReviewID.String())
+		artifactID := uuid.New().String()
 		_, err := o.artifactClient.UploadArtifact(
 			ctx,
 			"review-artifacts",
@@ -206,14 +503,29 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 	}
 
-	// Step 5: Semantic Memory check and Batch insert findings into PostgreSQL with Row-Level Security
+	// Step 5: Two-Tier Semantic Memory & Feedback Suppressor (Fingerprint + pgvector Cosine Distance)
 	if o.repo != nil {
 		var activeFindings []models.CodeFinding
 		for _, f := range allFindings {
 			isSuppressed := false
-			if mem, err := o.repo.GetSecurityMemoryByFingerprint(ctx, task.WorkspaceID, f.Fingerprint); err == nil && mem != nil {
-				slog.Info("Suppressing repeat finding matching false-positive fingerprint memory", "fingerprint", f.Fingerprint, "title", f.Title)
-				isSuppressed = true
+			if o.feedbackService != nil {
+				decision := o.feedbackService.CheckSuppression(ctx, task.WorkspaceID, &f)
+				if decision.ShouldSuppress {
+					slog.Info("Suppressing code review finding based on developer feedback memory",
+						"workspace_id", task.WorkspaceID,
+						"fingerprint", f.Fingerprint,
+						"title", f.Title,
+						"is_exact", decision.IsExactMatch,
+						"similarity", decision.SimilarityScore,
+						"reason", decision.Reason,
+					)
+					isSuppressed = true
+				}
+			} else {
+				if mem, err := o.repo.GetSecurityMemoryByFingerprint(ctx, task.WorkspaceID, f.Fingerprint); err == nil && mem != nil {
+					slog.Info("Suppressing repeat finding matching false-positive fingerprint memory", "fingerprint", f.Fingerprint, "title", f.Title)
+					isSuppressed = true
+				}
 			}
 			if !isSuppressed {
 				activeFindings = append(activeFindings, f)
@@ -221,15 +533,40 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 		allFindings = activeFindings
 
+		// Multi-language syntax verification on proposed suggestions
+		syntaxValidator := syntax.NewSandboxSyntaxValidator()
+		for i := range allFindings {
+			if allFindings[i].SuggestedDiff != "" {
+				res := syntaxValidator.ValidateSuggestion(allFindings[i].FilePath, allFindings[i].SuggestedDiff)
+				if !res.IsValid {
+					slog.Debug("Suggestion syntax verification noted issues", "file", allFindings[i].FilePath, "error", res.ErrorMessage)
+				}
+			}
+		}
+
 		if err := o.repo.BatchInsertFindings(ctx, task.WorkspaceID, allFindings); err != nil {
 			slog.Error("Failed saving review findings", "error", err)
 			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateFailed, 0)
 			return fmt.Errorf("failed persisting findings: %w", err)
 		}
 
-		// Step 6: Transition review state to COMPLETED
-		if err := o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateCompleted, len(allFindings)); err != nil {
+		// Step 6: Transition review state to COMPLETED or FAILED
+		finalState := models.ReviewStateCompleted
+		if aiSynthesisFailed {
+			finalState = models.ReviewStateFailed
+		}
+		if err := o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, finalState, len(allFindings)); err != nil {
 			return fmt.Errorf("failed finalizing review: %w", err)
+		}
+
+		if o.streamHub != nil {
+			event := "review_completed"
+			status := "COMPLETED"
+			if aiSynthesisFailed {
+				event = "review_failed"
+				status = "FAILED"
+			}
+			o.streamHub.Broadcast(task.ReviewID, event, status, map[string]any{"total_findings": len(allFindings)})
 		}
 
 		// Step 6.1: Evaluate findings for automated PM ticket generation (Jira, Linear, Azure Boards)
@@ -238,11 +575,9 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 			if task.RepoNamespace != "" && task.PullNumber > 0 {
 				prURL = fmt.Sprintf("https://github.com/%s/pull/%d", task.RepoNamespace, task.PullNumber)
 			}
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-				defer cancel()
-				_, _ = o.autoTicketMgr.ProcessFindingsForAutoTicket(bgCtx, task.WorkspaceID, task.RepositoryID, allFindings, prURL)
-			}()
+			ticketCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_, _ = o.autoTicketMgr.ProcessFindingsForAutoTicket(ticketCtx, task.WorkspaceID, task.RepositoryID, allFindings, prURL)
+			cancel()
 		}
 	}
 
@@ -259,6 +594,21 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 	}
 
+	// Mid-flight commit race check: verify this review hasn't been superseded by a newer push
+	if o.repo != nil && task.WorkspaceID != uuid.Nil && task.ReviewID != uuid.Nil {
+		if isSuperseded, err := o.repo.HasNewerReviewForPR(ctx, task.WorkspaceID, task.ReviewID); err == nil && isSuperseded {
+			slog.Warn("Review superseded by newer commit push, skipping comment dispatch to avoid PR race condition",
+				"review_id", task.ReviewID,
+				"repo", task.RepoNamespace,
+				"pr", task.PullNumber,
+			)
+			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateCompleted, len(allFindings))
+			return nil
+		}
+	}
+
+	// 8. SCM INLINE REVIEW & CHECK-RUN PUBLISHING (GitHub / GitLab feedback loops)
+
 	// Step 7: Dispatch Inline Review Comments and Check Run update to SCM Provider
 	adapter := o.platformAdapter
 	if adapter == nil && task.SCMAdapter != nil {
@@ -269,10 +619,21 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 	commitStatusState := platform.StatusSuccess
 	summaryText := "ScanDrix automated security review passed with zero critical findings."
 
-	if hasCriticalOrHigh {
+	if aiSynthesisFailed {
+		conclusion = platform.ConclusionFailure
+		commitStatusState = platform.StatusFailure
+		summaryText = fmt.Sprintf("⚠️ **ScanDrix AI Review Incomplete:** Deep semantic review could not be completed.\n\n%s\n\nPlease trigger a re-scan via `@scandrix review`.", aiErrorMsg)
+		if len(allFindings) > 0 {
+			summaryText += fmt.Sprintf("\n\nScanDrix AST and static rule checks identified %d actionable findings before failure.", len(allFindings))
+		}
+	} else if hasCriticalOrHigh {
 		conclusion = platform.ConclusionFailure
 		commitStatusState = platform.StatusFailure
 		summaryText = fmt.Sprintf("ScanDrix detected %d actionable findings requiring resolution.", len(allFindings))
+	}
+
+	if diffTruncated {
+		summaryText += "\n\n> ℹ️ **Notice:** PR diff size exceeded the 250KB context threshold; high blast-radius files and critical call-graph paths were prioritized."
 	}
 
 	if adapter != nil && task.RepoNamespace != "" && task.PullNumber > 0 {
@@ -332,7 +693,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 			}
 
 			event := "APPROVE"
-			if hasCriticalOrHigh {
+			if hasCriticalOrHigh || aiSynthesisFailed {
 				event = "REQUEST_CHANGES"
 			}
 
@@ -368,6 +729,8 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 	}
 
+	// 9. CRYPTOGRAPHIC PROVENANCE & SLSA ATTESTATIONS (In-toto DSSE signatures)
+
 	// Step 8: Generate and sign cryptographic in-toto DSSE and SLSA v1.0 provenance attestations
 	attestor := o.attestor
 	var keyID string
@@ -382,7 +745,9 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 	}
 
 	decision := intoto.DecisionApproved
-	if criticalCount > 0 {
+	if aiSynthesisFailed {
+		decision = intoto.DecisionBlockedCritical
+	} else if criticalCount > 0 {
 		decision = intoto.DecisionBlockedCritical
 	} else if highCount > 0 {
 		decision = intoto.DecisionChangesRequested
@@ -419,7 +784,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 		if o.artifactClient != nil {
 			if envJSON, err := json.Marshal(env); err == nil {
-				_, _ = o.artifactClient.UploadArtifact(ctx, "attestations", task.ReviewID.String(), fmt.Sprintf("attestation-intoto-%s.json", task.ReviewID.String()), bytes.NewReader(envJSON))
+				_, _ = o.artifactClient.UploadArtifact(ctx, "attestations", uuid.New().String(), fmt.Sprintf("attestation-intoto-%s.json", task.ReviewID.String()), bytes.NewReader(envJSON))
 			}
 		}
 	}
@@ -442,7 +807,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 		if o.artifactClient != nil {
 			if envJSON, err := json.Marshal(slsaEnv); err == nil {
-				_, _ = o.artifactClient.UploadArtifact(ctx, "attestations", task.ReviewID.String(), fmt.Sprintf("attestation-slsa-%s.json", task.ReviewID.String()), bytes.NewReader(envJSON))
+				_, _ = o.artifactClient.UploadArtifact(ctx, "attestations", uuid.New().String(), fmt.Sprintf("attestation-slsa-%s.json", task.ReviewID.String()), bytes.NewReader(envJSON))
 			}
 		}
 	}
@@ -454,6 +819,8 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 
 	return nil
 }
+
+// 10. COMMENT SANITIZATION & MARKDOWN FORMATTERS (XSS prevention & suggestions)
 
 func sanitizeMarkdownComment(input string) string {
 	// Neutralize dangerous HTML tags & event handlers in PR comments

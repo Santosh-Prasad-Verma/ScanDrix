@@ -2,9 +2,10 @@ package llm
 
 import (
 	"context"
+	crand "crypto/rand"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"sync"
 	"time"
 )
@@ -13,9 +14,9 @@ import (
 type CircuitState int
 
 const (
-	StateClosed CircuitState = iota // Normal operations
-	StateHalfOpen                   // Probing provider recovery
-	StateOpen                       // Failing fast, blocking upstream calls
+	StateClosed   CircuitState = iota // Normal operations
+	StateHalfOpen                     // Probing provider recovery
+	StateOpen                         // Failing fast, blocking upstream calls
 )
 
 // CircuitBreaker guards AI API calls from cascade failures during provider outages.
@@ -99,7 +100,11 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, maxRetries int, fn func(c
 
 		// Calculate exponential backoff with jitter
 		if attempt < maxRetries {
-			backoff := time.Duration(1<<attempt)*500*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond
+			jitter := int64(0)
+			if n, err := crand.Int(crand.Reader, big.NewInt(250)); err == nil && n != nil {
+				jitter = n.Int64()
+			}
+			backoff := time.Duration(1<<attempt)*500*time.Millisecond + time.Duration(jitter)*time.Millisecond
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -211,4 +216,3 @@ func (r *ProviderBreakerRegistry) GetOrCreate(providerName string) *CircuitBreak
 	r.breakers[providerName] = cb
 	return cb
 }
-

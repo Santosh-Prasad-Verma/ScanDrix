@@ -24,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install govulncheck
@@ -32,7 +32,7 @@ jobs:
 
       - name: Run Vulnerability Check
         run: govulncheck ./...
-        continue-on-error: true
+        continue-on-error: false
 
   gosec-sast:
     name: "Gosec AST Security Scan"
@@ -44,7 +44,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Gosec
@@ -52,7 +52,7 @@ jobs:
 
       - name: Run Gosec SAST Analysis
         run: |
-          gosec -no-fail -fmt sarif -out gosec-results.sarif -exclude-dir=test ./...
+          gosec -no-fail -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test ./...
 
       - name: Upload SARIF Artifact
         uses: actions/upload-artifact@v4

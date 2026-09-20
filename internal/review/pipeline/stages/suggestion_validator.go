@@ -2,20 +2,25 @@ package stages
 
 import (
 	"context"
-	"go/parser"
-	"go/token"
 	"strings"
 
+	"github.com/scandrix/backend/internal/review/checker"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/internal/review/pipeline"
+	"github.com/scandrix/backend/internal/review/verifier"
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// SuggestionValidatorStage dry-runs code replacement proposals through syntax compilers.
-type SuggestionValidatorStage struct{}
+// SuggestionValidatorStage dry-runs code replacement proposals through syntax compilers and DiffGate.
+type SuggestionValidatorStage struct {
+	gate *verifier.DiffGate
+}
 
 func NewSuggestionValidatorStage() *SuggestionValidatorStage {
-	return &SuggestionValidatorStage{}
+	syntaxValidator := checker.NewASTSyntaxValidator()
+	return &SuggestionValidatorStage{
+		gate: verifier.NewDiffGate(syntaxValidator),
+	}
 }
 
 func (s *SuggestionValidatorStage) Name() string {
@@ -46,37 +51,28 @@ func (s *SuggestionValidatorStage) Execute(ctx context.Context, pCtx *pipeline.P
 			f.StartLine = snappedStart
 			f.EndLine = snappedEnd
 		}
-		alignedFindings = append(alignedFindings, f)
 
 		codeSnippet := f.SuggestedDiff
 		if codeSnippet == "" {
 			codeSnippet = f.Remediation
 		}
 		if strings.TrimSpace(codeSnippet) == "" {
+			alignedFindings = append(alignedFindings, f)
 			continue
 		}
 
-		syntaxValid := true
-		confidence := 0.85
-
-		// If Go file, validate snippet syntax
-		if strings.HasSuffix(f.FilePath, ".go") {
-			wrappedSnippet := "package main\n" + codeSnippet
-			fset := token.NewFileSet()
-			_, err := parser.ParseFile(fset, "", wrappedSnippet, parser.AllErrors)
-			if err != nil {
-				// Try as function body snippet
-				wrappedFunc := "package main\nfunc _test() {\n" + codeSnippet + "\n}"
-				_, errFunc := parser.ParseFile(fset, "", wrappedFunc, parser.AllErrors)
-				if errFunc != nil {
-					syntaxValid = false
-					confidence = 0.50
-				}
-			}
+		// Multi-language syntax & committability verification via DiffGate
+		gateRes := s.gate.ValidateFindingDiff(ctx, f, "")
+		if gateRes.Decision == verifier.DecisionRejected {
+			// Suppress no-op or invalid cosmetic churn
+			continue
 		}
 
-		if syntaxValid {
-			confidence = 0.95
+		alignedFindings = append(alignedFindings, f)
+
+		syntaxValid := false
+		if gateRes.SyntaxReport != nil {
+			syntaxValid = gateRes.SyntaxReport.IsValid
 		}
 
 		validated = append(validated, pipeline.ValidatedSuggestion{
@@ -86,7 +82,8 @@ func (s *SuggestionValidatorStage) Execute(ctx context.Context, pCtx *pipeline.P
 			EndLine:         f.EndLine,
 			SuggestedCode:   codeSnippet,
 			SyntaxValid:     syntaxValid,
-			ConfidenceScore: confidence,
+			IsCommittable:   gateRes.IsCommittable,
+			ConfidenceScore: gateRes.ConfidenceScore,
 		})
 	}
 

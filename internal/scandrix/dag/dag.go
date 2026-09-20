@@ -22,10 +22,10 @@ type Node struct {
 
 // NodeResult contains execution outcome and timing for a DAG task.
 type NodeResult struct {
-	NodeID    string        `json:"node_id"`
-	Duration  time.Duration `json:"duration"`
-	Error     error         `json:"error,omitempty"`
-	Success   bool          `json:"success"`
+	NodeID   string        `json:"node_id"`
+	Duration time.Duration `json:"duration"`
+	Error    error         `json:"error,omitempty"`
+	Success  bool          `json:"success"`
 }
 
 // ExecutionGraph coordinates dependency resolution and parallel task dispatch.
@@ -185,7 +185,7 @@ func (g *ExecutionGraph) Execute(ctx context.Context) (map[string]*NodeResult, e
 	var inDegreeMu sync.Mutex
 	dispatchedCount := 0
 
-	dispatchLoop:
+dispatchLoop:
 	for dispatchedCount < len(g.nodes) {
 		select {
 		case <-ctx.Done():

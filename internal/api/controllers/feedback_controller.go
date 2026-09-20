@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,13 +14,22 @@ import (
 	"github.com/scandrix/backend/internal/database"
 )
 
+// FeedbackRepository defines the data contract for finding feedback and security memory (Clean Architecture).
+type FeedbackRepository interface {
+	RecordFindingFeedback(ctx context.Context, wsID, findingID uuid.UUID, sentiment, comments string) error
+	SaveSecurityMemory(ctx context.Context, wsID uuid.UUID, mem *database.SecurityMemoryRecord) error
+}
+
 // FeedbackController collects developer feedback on AI findings to tune detection accuracy.
 type FeedbackController struct {
-	repo *database.Repository
+	repo FeedbackRepository
 }
 
 // NewFeedbackController initializes the feedback controller with database persistence.
-func NewFeedbackController(repo *database.Repository) *FeedbackController {
+func NewFeedbackController(repo FeedbackRepository) *FeedbackController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &FeedbackController{repo: repo}
 }
 

@@ -9,6 +9,9 @@ import (
 )
 
 func TestCloudAMQPLiveConnection(t *testing.T) {
+	if os.Getenv("TEST_LIVE_AMQP") != "true" {
+		t.Skip("skipping live CloudAMQP test: set TEST_LIVE_AMQP=true to run against external broker")
+	}
 	_ = godotenv.Load("../../.env", "../../../.env")
 	uri := os.Getenv("API_RABBITMQ_URI")
 	if uri == "" {

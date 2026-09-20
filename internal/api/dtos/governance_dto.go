@@ -21,14 +21,14 @@ type PermissionCheckResponse struct {
 
 // LicenseResponse details the active enterprise subscription.
 type LicenseResponse struct {
-	LicenseKey       string     `json:"license_key"`
-	OrganizationName string     `json:"organization_name"`
-	PlanTier         string     `json:"plan_tier"` // "ENTERPRISE", "TEAM", "PRO"
-	TotalSeats       int        `json:"total_seats"`
-	AllocatedSeats   int        `json:"allocated_seats"`
-	ExpiresAt        time.Time  `json:"expires_at"`
-	IsAirGapped      bool       `json:"is_air_gapped"`
-	FeaturesEnabled  []string   `json:"features_enabled"`
+	LicenseKey       string    `json:"license_key"`
+	OrganizationName string    `json:"organization_name"`
+	PlanTier         string    `json:"plan_tier"` // "ENTERPRISE", "TEAM", "PRO"
+	TotalSeats       int       `json:"total_seats"`
+	AllocatedSeats   int       `json:"allocated_seats"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	IsAirGapped      bool      `json:"is_air_gapped"`
+	FeaturesEnabled  []string  `json:"features_enabled"`
 }
 
 // ActivateLicenseRequest sends a new enterprise license token.
@@ -38,28 +38,28 @@ type ActivateLicenseRequest struct {
 
 // WebhookHealthResponse details recent webhook delivery reliability.
 type WebhookHealthResponse struct {
-	TotalDelivered   int64   `json:"total_delivered"`
-	SuccessRate      float64 `json:"success_rate"`
-	AverageLatencyMs float64 `json:"average_latency_ms"`
-	RecentFailures   int     `json:"recent_failures"`
+	TotalDelivered   int64     `json:"total_delivered"`
+	SuccessRate      float64   `json:"success_rate"`
+	AverageLatencyMs float64   `json:"average_latency_ms"`
+	RecentFailures   int       `json:"recent_failures"`
 	LastEventAt      time.Time `json:"last_event_at"`
 }
 
 // OutboxLagResponse details asynchronous queue backlog.
 type OutboxLagResponse struct {
-	PendingCount int       `json:"pending_count"`
-	RetryingCount int      `json:"retrying_count"`
-	DeadLetterCount int    `json:"dead_letter_count"`
+	PendingCount    int       `json:"pending_count"`
+	RetryingCount   int       `json:"retrying_count"`
+	DeadLetterCount int       `json:"dead_letter_count"`
 	OldestPendingAt time.Time `json:"oldest_pending_at"`
 }
 
 // NotificationChannelDTO defines alert destinations.
 type NotificationChannelDTO struct {
-	ID        uuid.UUID `json:"id"`
-	Type      string    `json:"type"` // "SLACK", "TEAMS", "EMAIL"
-	Target    string    `json:"target"` // URL or email
-	Severity  models.FindingSeverity `json:"severity_filter"`
-	Enabled   bool      `json:"enabled"`
+	ID       uuid.UUID              `json:"id"`
+	Type     string                 `json:"type"`   // "SLACK", "TEAMS", "EMAIL"
+	Target   string                 `json:"target"` // URL or email
+	Severity models.FindingSeverity `json:"severity_filter"`
+	Enabled  bool                   `json:"enabled"`
 }
 
 // FindingFeedbackRequest records developer sentiment on review findings.

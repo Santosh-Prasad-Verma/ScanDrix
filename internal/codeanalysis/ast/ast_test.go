@@ -1,6 +1,7 @@
 package ast_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/scandrix/backend/internal/codeanalysis/ast"
@@ -129,5 +130,12 @@ func TerminateEarly() int {
 	halstead := rep1.Halstead
 	if halstead.Volume <= 0 || halstead.ProgramVocabulary <= 0 || halstead.ProgramLength <= 0 {
 		t.Fatalf("expected positive Halstead metrics, got: %+v", halstead)
+	}
+
+	// 6. MaxSourceFileSize DoS Protection (files > 2MB rejected)
+	oversizedSrc := strings.Repeat("x := 1\n", (ast.MaxSourceFileSize/7)+100)
+	_, errOversized := analyzer.Analyze("huge.go", oversizedSrc)
+	if errOversized == nil {
+		t.Fatalf("expected oversized source file (>2MB) to be rejected, got nil error")
 	}
 }

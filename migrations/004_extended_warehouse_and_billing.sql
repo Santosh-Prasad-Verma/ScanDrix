@@ -1,4 +1,4 @@
--- Migration 004: Extended Analytics Warehouse, Seat Allocations & Kody Vector Memory
+-- Migration 004: Extended Analytics Warehouse, Seat Allocations & Drixy Vector Memory
 -- Master Rule 4.4 & 5.3 compliant schema with multi-tenant row-level security
 
 -- 1. Persistent Domain Events Warehouse
@@ -47,8 +47,8 @@ CREATE POLICY tenant_isolation_billing_seats ON organization_billing_seats
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
--- 3. Kody Vector Embeddings Memory for Rules & Suggestion Fine-Tuning
-CREATE TABLE IF NOT EXISTS kody_embedding_vectors (
+-- 3. Drixy Vector Embeddings Memory for Rules & Suggestion Fine-Tuning
+CREATE TABLE IF NOT EXISTS drixy_embedding_vectors (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     rule_id UUID,
@@ -61,13 +61,14 @@ CREATE TABLE IF NOT EXISTS kody_embedding_vectors (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_kody_embeddings_ws ON kody_embedding_vectors(workspace_id, entity_type);
-CREATE INDEX IF NOT EXISTS idx_kody_embeddings_hash ON kody_embedding_vectors(content_hash);
+CREATE INDEX IF NOT EXISTS idx_drixy_embeddings_ws ON drixy_embedding_vectors(workspace_id, entity_type);
+CREATE INDEX IF NOT EXISTS idx_drixy_embeddings_hash ON drixy_embedding_vectors(content_hash);
 
-ALTER TABLE kody_embedding_vectors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drixy_embedding_vectors ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS tenant_isolation_embeddings ON kody_embedding_vectors;
-CREATE POLICY tenant_isolation_embeddings ON kody_embedding_vectors
+DROP POLICY IF EXISTS tenant_isolation_embeddings ON drixy_embedding_vectors;
+CREATE POLICY tenant_isolation_embeddings ON drixy_embedding_vectors
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
 

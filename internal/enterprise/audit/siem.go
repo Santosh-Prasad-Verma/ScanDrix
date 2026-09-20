@@ -22,19 +22,19 @@ const (
 
 // EnterpriseAuditEvent details an immutable compliance event for SIEM streaming.
 type EnterpriseAuditEvent struct {
-	EventID     uuid.UUID   `json:"event_id"`
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	ActorID     string      `json:"actor_id"`
-	ActorEmail  string      `json:"actor_email"`
-	ClientIP    string      `json:"client_ip"`
-	Action      AuditAction `json:"action"`
-	ResourceType string     `json:"resource_type"` // CodeReviewSettings, BYOK, Rules
-	ResourceID  string      `json:"resource_id"`
-	OldValue    string      `json:"old_value,omitempty"`
-	NewValue    string      `json:"new_value,omitempty"`
-	Timestamp   time.Time   `json:"timestamp"`
-	PrevHash    string      `json:"prev_hash"`
-	Hash        string      `json:"hash"`
+	EventID      uuid.UUID   `json:"event_id"`
+	WorkspaceID  uuid.UUID   `json:"workspace_id"`
+	ActorID      string      `json:"actor_id"`
+	ActorEmail   string      `json:"actor_email"`
+	ClientIP     string      `json:"client_ip"`
+	Action       AuditAction `json:"action"`
+	ResourceType string      `json:"resource_type"` // CodeReviewSettings, BYOK, Rules
+	ResourceID   string      `json:"resource_id"`
+	OldValue     string      `json:"old_value,omitempty"`
+	NewValue     string      `json:"new_value,omitempty"`
+	Timestamp    time.Time   `json:"timestamp"`
+	PrevHash     string      `json:"prev_hash"`
+	Hash         string      `json:"hash"`
 }
 
 // SIEMAuditStreamer generates compliant CEF and RFC-5424 audit logs with tamper-evident chaining.

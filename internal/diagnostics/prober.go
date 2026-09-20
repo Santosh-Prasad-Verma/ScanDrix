@@ -128,11 +128,11 @@ func (p *HealthProber) probeQueue(ctx context.Context) ComponentHealth {
 	}
 
 	return ComponentHealth{
-		Name:        "queue_outbox",
-		Type:        ComponentQueue,
-		Status:      status,
-		Latency:     latency,
-		Message:     msg,
+		Name:    "queue_outbox",
+		Type:    ComponentQueue,
+		Status:  status,
+		Latency: latency,
+		Message: msg,
 		Details: map[string]any{
 			"pending_count":     lag.PendingCount,
 			"claimed_count":     lag.ClaimedCount,
@@ -175,11 +175,11 @@ func (p *HealthProber) probeCache(ctx context.Context) ComponentHealth {
 
 	stats := p.cache.Stats()
 	return ComponentHealth{
-		Name:        "cache_tiered",
-		Type:        ComponentCache,
-		Status:      StatusHealthy,
-		Latency:     latency,
-		Message:     "Cache responsive with normal hit ratios",
+		Name:    "cache_tiered",
+		Type:    ComponentCache,
+		Status:  StatusHealthy,
+		Latency: latency,
+		Message: "Cache responsive with normal hit ratios",
 		Details: map[string]any{
 			"hits":   stats.Hits,
 			"misses": stats.Misses,
@@ -200,11 +200,11 @@ func (p *HealthProber) probeRuntime(ctx context.Context, m runtime.MemStats) Com
 	}
 
 	return ComponentHealth{
-		Name:        "runtime_engine",
-		Type:        ComponentStorage,
-		Status:      status,
-		Latency:     10 * time.Microsecond,
-		Message:     msg,
+		Name:    "runtime_engine",
+		Type:    ComponentStorage,
+		Status:  status,
+		Latency: 10 * time.Microsecond,
+		Message: msg,
 		Details: map[string]any{
 			"goroutines": goroutines,
 			"alloc_mb":   math.Round((float64(m.Alloc)/1024/1024)*100) / 100,

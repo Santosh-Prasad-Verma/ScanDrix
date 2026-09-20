@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,18 +11,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
-	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/provenance/intoto"
 	"github.com/scandrix/backend/pkg/models"
 )
 
+// WorkspaceRepository abstracts workspace persistence operations adhering to clean architecture.
+type WorkspaceRepository interface {
+	CreateWorkspace(ctx context.Context, ws *models.Workspace) error
+	GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*models.Workspace, error)
+	GetCockpitMetrics(ctx context.Context, id uuid.UUID) (*models.CockpitMetrics, error)
+}
+
 // WorkspaceController handles multi-tenant workspace management and executive metrics.
 type WorkspaceController struct {
-	repo *database.Repository
+	repo WorkspaceRepository
 }
 
 // NewWorkspaceController initializes the workspace controller.
-func NewWorkspaceController(repo *database.Repository) *WorkspaceController {
+func NewWorkspaceController(repo WorkspaceRepository) *WorkspaceController {
+	if isNilInterface(repo) {
+		repo = nil
+	}
 	return &WorkspaceController{repo: repo}
 }
 
@@ -148,4 +158,3 @@ func (c *WorkspaceController) handleGetAttestationPublicKey(w http.ResponseWrite
 		"public_key":   pemStr,
 	})
 }
-

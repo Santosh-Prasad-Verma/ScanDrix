@@ -45,14 +45,14 @@ func TestDiscussionOrchestrator(t *testing.T) {
 		t.Errorf("expected 0 replies, got %d", len(mockPub.replies))
 	}
 
-	// 2. Comment invoking @scandrix
+	// 2. Comment invoking @drixy
 	invokedEvent := review.PRCommentDiscussionEvent{
 		EventID:       uuid.New(),
 		RepoNamespace: "acme/service",
 		PullNumber:    10,
 		CommentID:     102,
 		Author:        "alice",
-		CommentBody:   "@scandrix why is this query reported as dangerous?",
+		CommentBody:   "@drixy why is this query reported as dangerous?",
 		FilePath:      "db.go",
 		DiffHunk:      "+ db.Query(fmt.Sprintf(\"SELECT * FROM users WHERE id = '%s'\", id))",
 	}
@@ -67,7 +67,22 @@ func TestDiscussionOrchestrator(t *testing.T) {
 		t.Fatalf("expected 1 reply, got %d", len(mockPub.replies))
 	}
 	reply := mockPub.replies[0]
-	if !strings.Contains(reply, "ScanDrix Assistant") || !strings.Contains(reply, "@alice") {
+	if !strings.Contains(reply, "Drixy") || !strings.Contains(reply, "@alice") {
 		t.Errorf("unexpected reply body: %s", reply)
+	}
+
+	// 3. Backward compatible comment invoking @scandrix
+	scandrixEvent := review.PRCommentDiscussionEvent{
+		EventID:       uuid.New(),
+		RepoNamespace: "acme/service",
+		PullNumber:    10,
+		CommentID:     103,
+		Author:        "bob",
+		CommentBody:   "@scandrix please inspect this logic",
+		FilePath:      "main.go",
+	}
+	handled, err = orchestrator.HandleComment(ctx, scandrixEvent)
+	if err != nil || !handled {
+		t.Errorf("expected @scandrix alias to be handled, err: %v", err)
 	}
 }

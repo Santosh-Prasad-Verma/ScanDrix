@@ -9,12 +9,11 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scandrix}
       POSTGRES_USER: ${POSTGRES_USER:-scandrix_app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scandrix_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scandrix_app} -d ${POSTGRES_DB:-scandrix}"]
       interval: 5s
@@ -33,7 +32,7 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-scandrix_admin}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-scandrix_mq_password}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}
     ports:
       - "5672:5672"   # AMQP protocol
       - "15672:15672" # Web management UI
@@ -78,7 +77,7 @@ services:
     restart: "no"
     entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,14 +93,20 @@ services:
       dockerfile: Dockerfile
     container_name: scandrix-api
     restart: unless-stopped
+    env_file:
+      - .env
     entrypoint: ["/app/bin/scandrix-api"]
     environment:
       - PORT=8080
-      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
       - REDIS_URL=redis://redis:6379/0
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
-      - JWT_SECRET=${JWT_SECRET:-scandrix-dev-secret-key-32bytes-min}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be provided in .env}
+      - INTEGRATION_ENCRYPTION_KEY=${INTEGRATION_ENCRYPTION_KEY:-}
+      - KMS_MASTER_KEY=${KMS_MASTER_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
       - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
       - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
       - GITLAB_OAUTH_CLIENT_ID=${GITLAB_OAUTH_CLIENT_ID:-}
@@ -125,6 +130,8 @@ services:
       - SCANDRIX_ENCRYPTION_KEY=${SCANDRIX_ENCRYPTION_KEY:-}
     ports:
       - "8080:8080"
+      - "3001:8080"
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,12 +151,14 @@ services:
       dockerfile: Dockerfile
     container_name: scandrix-webhooks
     restart: unless-stopped
+    env_file:
+      - .env
     entrypoint: ["/app/bin/scandrix-webhooks"]
     environment:
       - PORT=8081
-      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
       - REDIS_URL=redis://redis:6379/0
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET:-}
       - BITBUCKET_WEBHOOK_SECRET=${BITBUCKET_WEBHOOK_SECRET:-}
@@ -176,11 +185,13 @@ services:
       dockerfile: Dockerfile
     container_name: scandrix-worker
     restart: unless-stopped
+    env_file:
+      - .env
     entrypoint: ["/app/bin/scandrix-worker"]
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:-scandrix_dev_password}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
       - REDIS_URL=redis://redis:6379/0
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:-scandrix_mq_password}@rabbitmq:5672/
+      - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -194,12 +205,11 @@ services:
       - VERTEX_ACCESS_TOKEN=${VERTEX_ACCESS_TOKEN:-}
       - VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID:-}
       - VERTEX_LOCATION=${VERTEX_LOCATION:-us-central1}
-      - OLLAMA_ENDPOINT=${OLLAMA_ENDPOINT:-http://localhost:11434}
-      - AI_MODEL_TRIAGE=${AI_MODEL_TRIAGE:-minimax/minimax-m3:free}
-      - AI_MODEL_LOGIC=${AI_MODEL_LOGIC:-nvidia/nemotron-3-ultra-550b-a55b:free}
-      - AI_MODEL_SECURITY=${AI_MODEL_SECURITY:-stealth/ox-alpha}
-      - AI_MODEL_PERF=${AI_MODEL_PERF:-google/gemini-2.5-flash}
-      - AI_MODEL_VERIFIER=${AI_MODEL_VERIFIER:-qwen/qwen-2.5-coder-32b-instruct}
+      - AI_MODEL_TRIAGE=${AI_MODEL_TRIAGE:-}
+      - AI_MODEL_LOGIC=${AI_MODEL_LOGIC:-}
+      - AI_MODEL_SECURITY=${AI_MODEL_SECURITY:-}
+      - AI_MODEL_PERF=${AI_MODEL_PERF:-}
+      - AI_MODEL_VERIFIER=${AI_MODEL_VERIFIER:-}
       - E2B_API_KEY=${E2B_API_KEY:-}
       - E2B_ENDPOINT=${E2B_ENDPOINT:-}
       - PROOFOFFIX_SANDBOX_ENABLED=${PROOFOFFIX_SANDBOX_ENABLED:-false}

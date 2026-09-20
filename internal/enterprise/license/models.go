@@ -11,6 +11,7 @@ type LicenseTier string
 
 const (
 	TierCommunity  LicenseTier = "COMMUNITY"
+	TierDeveloper  LicenseTier = "DEVELOPER"
 	TierTeam       LicenseTier = "TEAM"
 	TierEnterprise LicenseTier = "ENTERPRISE"
 )

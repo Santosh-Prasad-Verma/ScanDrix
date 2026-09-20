@@ -23,17 +23,17 @@ var (
 
 // PublicReviewService coordinates anonymous public PR reviews.
 type PublicReviewService struct {
-	mu          sync.RWMutex
-	limiter     *RateLimiter
-	featured    *FeaturedRegistry
-	evaluator   *rules.Evaluator
-	jobs        map[uuid.UUID]*ReviewJob
-	httpClient  *http.Client
-	sem         chan struct{}
-	stopChan    chan struct{}
-	maxLines    int
-	maxFiles    int
-	maxJobs     int
+	mu         sync.RWMutex
+	limiter    *RateLimiter
+	featured   *FeaturedRegistry
+	evaluator  *rules.Evaluator
+	jobs       map[uuid.UUID]*ReviewJob
+	httpClient *http.Client
+	sem        chan struct{}
+	stopChan   chan struct{}
+	maxLines   int
+	maxFiles   int
+	maxJobs    int
 }
 
 // NewPublicReviewService initializes the public PR review engine.

@@ -55,3 +55,22 @@ type RuleResponse struct {
 	Remediation string                 `json:"remediation"`
 	Enabled     bool                   `json:"enabled"`
 }
+
+// GenerateRuleRequest requests AI synthesis of a custom Drixy rule.
+type GenerateRuleRequest struct {
+	Prompt      string `json:"prompt"`
+	CodeContext string `json:"code_context,omitempty"`
+	Language    string `json:"language,omitempty"`
+}
+
+// GenerateRuleResponse returns the generated Drixy rule.
+type GenerateRuleResponse struct {
+	Name        string                 `json:"name"`
+	RegexRule   string                 `json:"regex_rule"`
+	PathPattern string                 `json:"path_pattern"`
+	Severity    models.FindingSeverity `json:"severity"`
+	Category    string                 `json:"category"`
+	Description string                 `json:"description"`
+	Remediation string                 `json:"remediation"`
+	Explanation string                 `json:"explanation,omitempty"`
+}

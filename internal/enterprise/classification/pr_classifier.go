@@ -32,13 +32,13 @@ var (
 
 // ClassifiedPR records the categorized pull request metadata.
 type ClassifiedPR struct {
-	PRID           uuid.UUID  `json:"pr_id"`
-	WorkspaceID    uuid.UUID  `json:"workspace_id"`
-	PRNumber       int        `json:"pr_number"`
-	Title          string     `json:"title"`
-	Category       PRCategory `json:"category"`
-	Confidence     float64    `json:"confidence"`
-	ClassifiedAt   time.Time  `json:"classified_at"`
+	PRID         uuid.UUID  `json:"pr_id"`
+	WorkspaceID  uuid.UUID  `json:"workspace_id"`
+	PRNumber     int        `json:"pr_number"`
+	Title        string     `json:"title"`
+	Category     PRCategory `json:"category"`
+	Confidence   float64    `json:"confidence"`
+	ClassifiedAt time.Time  `json:"classified_at"`
 }
 
 // PRClassifier assigns semantic categories to PRs for DORA metrics and bug ratio analysis.

@@ -1,0 +1,42 @@
+name: "ScanDrix Quality: PR Gate"
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-gate:
+    name: "Go Engine: Verify, Test & Build"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Module Integrity & Cleanliness
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Run Test Suite with Race Detector & Coverage
+        run: |
+          gotestsum --format pkgname -- -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Compile All 10 ScanDrix Binaries
+        run: |
+          make build

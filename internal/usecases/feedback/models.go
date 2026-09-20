@@ -19,15 +19,15 @@ const (
 
 // ReviewFeedback captures developer sentiment on an automated code review finding.
 type ReviewFeedback struct {
-	FindingID    uuid.UUID              `json:"finding_id"`
-	WorkspaceID  uuid.UUID              `json:"workspace_id"`
-	RepositoryID uuid.UUID              `json:"repository_id"`
-	PRNumber     int                    `json:"pr_number"`
-	Reactions    map[ReactionType]int   `json:"reactions"`
-	CommentText  string                 `json:"comment_text,omitempty"`
-	IsHelpful    bool                   `json:"is_helpful"`
-	ReportedFP   bool                   `json:"reported_fp"` // Marked as False Positive
-	UpdatedAt    time.Time              `json:"updated_at"`
+	FindingID    uuid.UUID            `json:"finding_id"`
+	WorkspaceID  uuid.UUID            `json:"workspace_id"`
+	RepositoryID uuid.UUID            `json:"repository_id"`
+	PRNumber     int                  `json:"pr_number"`
+	Reactions    map[ReactionType]int `json:"reactions"`
+	CommentText  string               `json:"comment_text,omitempty"`
+	IsHelpful    bool                 `json:"is_helpful"`
+	ReportedFP   bool                 `json:"reported_fp"` // Marked as False Positive
+	UpdatedAt    time.Time            `json:"updated_at"`
 }
 
 // ScopedMessageRule attaches custom notifications or compliance notices based on modified file paths.

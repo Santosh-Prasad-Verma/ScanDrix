@@ -16,9 +16,9 @@ import (
 
 // RuleSyncer validates, reconciles, and compiles declarative rule repositories into the active engine.
 type RuleSyncer struct {
-	mu           sync.RWMutex
-	rulesByWs    map[uuid.UUID][]rules.RuleSpec
-	ruleHashes   map[uuid.UUID]map[string]string // wsID -> ruleID/name -> hash
+	mu         sync.RWMutex
+	rulesByWs  map[uuid.UUID][]rules.RuleSpec
+	ruleHashes map[uuid.UUID]map[string]string // wsID -> ruleID/name -> hash
 }
 
 // NewRuleSyncer initializes the rule synchronization service.

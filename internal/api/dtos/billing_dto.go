@@ -20,16 +20,16 @@ type VerifyPaymentDTO struct {
 
 // WorkspacePlanStatusResponse provides comprehensive plan entitlement and consumption metrics.
 type WorkspacePlanStatusResponse struct {
-	PlanTier           string    `json:"plan_tier"`
-	OrganizationName   string    `json:"organization_name"`
-	TotalSeats         int       `json:"total_seats"`
-	AllocatedSeats     int       `json:"allocated_seats"`
-	ExpiresAt          time.Time `json:"expires_at"`
-	MonthlyTokenLimit  int64     `json:"monthly_token_limit"`
-	MonthlyTokensUsed  int64     `json:"monthly_tokens_used"`
-	BurstLimitPerMin   int64     `json:"burst_limit_per_min"`
-	BurstTokensUsed    int64     `json:"burst_tokens_used"`
-	AllocatedModels    []string  `json:"allocated_models"`
-	FeaturesEnabled    []string  `json:"features_enabled"`
-	BYOKAllowed        bool      `json:"byok_allowed"`
+	PlanTier          string    `json:"plan_tier"`
+	OrganizationName  string    `json:"organization_name"`
+	TotalSeats        int       `json:"total_seats"`
+	AllocatedSeats    int       `json:"allocated_seats"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	MonthlyTokenLimit int64     `json:"monthly_token_limit"`
+	MonthlyTokensUsed int64     `json:"monthly_tokens_used"`
+	BurstLimitPerMin  int64     `json:"burst_limit_per_min"`
+	BurstTokensUsed   int64     `json:"burst_tokens_used"`
+	AllocatedModels   []string  `json:"allocated_models"`
+	FeaturesEnabled   []string  `json:"features_enabled"`
+	BYOKAllowed       bool      `json:"byok_allowed"`
 }

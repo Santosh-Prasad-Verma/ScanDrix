@@ -10,10 +10,16 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. QUEUE NAMES & BROKER STATE (Topology constants & struct definition)
+// ═══════════════════════════════════════════════════════════════
+
 const (
-	ReviewTaskQueue = "scandrix.reviews.v1"
-	ReviewDLX       = "scandrix.dlx"
-	DelayedExchange = "scandrix.delayed"
+	ReviewTaskQueue        = "scandrix.reviews.v1"
+	BillingEventQueue      = "scandrix.billing.v1"
+	SandboxInvalidateQueue = "scandrix.sandbox.invalidate.v1"
+	ReviewDLX              = "scandrix.dlx"
+	DelayedExchange        = "scandrix.delayed"
 )
 
 // Broker manages an AMQP 0-9-1 connection to RabbitMQ with quorum queue and delayed exchange support.
@@ -24,6 +30,10 @@ type Broker struct {
 	mu        sync.Mutex
 	isClosing bool
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 2. BROKER CONNECTION & QUEUE TOPOLOGY (DLX, delayed exchange & quorum queue probe)
+// ═══════════════════════════════════════════════════════════════
 
 // NewBroker establishes a resilient connection to the RabbitMQ broker.
 func NewBroker(url string) (*Broker, error) {
@@ -133,10 +143,74 @@ func (b *Broker) connect() error {
 			fallbackArgs,
 		)
 		if err != nil {
+			// If existing broker queue has differing arguments (406 inequivalent arg),
+			// reopen channel and attach using passive declaration
 			_ = ch.Close()
-			_ = conn.Close()
-			return fmt.Errorf("failed to declare review task queue: %w", err)
+			ch, err = conn.Channel()
+			if err != nil {
+				_ = conn.Close()
+				return fmt.Errorf("failed to reopen channel after classic probe: %w", err)
+			}
+			_, err = ch.QueueDeclarePassive(
+				ReviewTaskQueue,
+				true,  // durable
+				false, // delete when unused
+				false, // exclusive
+				false, // no-wait
+				nil,
+			)
+			if err != nil {
+				_ = ch.Close()
+				_ = conn.Close()
+				return fmt.Errorf("failed to declare review task queue: %w", err)
+			}
 		}
+	}
+
+	// Declare Billing Event Queue for asynchronous outbox payment webhook ingestion
+	billingQueueArgs := amqp.Table{
+		"x-dead-letter-exchange":    ReviewDLX,
+		"x-dead-letter-routing-key": BillingEventQueue + ".dlq",
+	}
+	if _, err := ch.QueueDeclare(
+		BillingEventQueue,
+		true,  // durable
+		false, // delete when unused
+		false, // exclusive
+		false, // no-wait
+		billingQueueArgs,
+	); err != nil {
+		_, _ = ch.QueueDeclare(
+			BillingEventQueue,
+			true,
+			false,
+			false,
+			false,
+			nil,
+		)
+	}
+
+	// Declare Sandbox Invalidation Queue for asynchronous PR invalidation / force-push sweeps
+	sandboxQueueArgs := amqp.Table{
+		"x-dead-letter-exchange":    ReviewDLX,
+		"x-dead-letter-routing-key": SandboxInvalidateQueue + ".dlq",
+	}
+	if _, err := ch.QueueDeclare(
+		SandboxInvalidateQueue,
+		true,  // durable
+		false, // delete when unused
+		false, // exclusive
+		false, // no-wait
+		sandboxQueueArgs,
+	); err != nil {
+		_, _ = ch.QueueDeclare(
+			SandboxInvalidateQueue,
+			true,
+			false,
+			false,
+			false,
+			nil,
+		)
 	}
 
 	b.conn = conn
@@ -144,8 +218,12 @@ func (b *Broker) connect() error {
 	return nil
 }
 
-// Publish sends a task payload to the specified routing queue safely with thread serialization.
-func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) error {
+// ═══════════════════════════════════════════════════════════════
+// 3. PRODUCER WITH PRIORITY (SLA-based publishing & thread serialization)
+// ═══════════════════════════════════════════════════════════════
+
+// PublishWithPriority sends a task payload with a priority (0-10) for SLA-based tier routing.
+func (b *Broker) PublishWithPriority(ctx context.Context, queueName string, payload []byte, priority uint8) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -170,11 +248,21 @@ func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) 
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "application/json",
+			Priority:     priority,
 			Timestamp:    time.Now().UTC(),
 			Body:         payload,
 		},
 	)
 }
+
+// Publish sends a task payload to the specified routing queue safely with thread serialization.
+func (b *Broker) Publish(ctx context.Context, queueName string, payload []byte) error {
+	return b.PublishWithPriority(ctx, queueName, payload, 0)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 4. DELAYED MESSAGE EXCHANGE (Exponential backoff & delayed retry routing)
+// ═══════════════════════════════════════════════════════════════
 
 // PublishDelayed publishes a message with delayed delivery using RabbitMQ delayed message exchange.
 func (b *Broker) PublishDelayed(ctx context.Context, routingKey string, payload []byte, delayMs int64) error {
@@ -212,6 +300,10 @@ func (b *Broker) PublishDelayed(ctx context.Context, routingKey string, payload 
 		},
 	)
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 5. DEDICATED CONSUMER & TEARDOWN (Prefetch QoS, manual ack & graceful shutdown)
+// ═══════════════════════════════════════════════════════════════
 
 // Consume subscribes to the review task quorum queue with a dedicated AMQP channel to avoid channel contention.
 func (b *Broker) Consume(queueName string, prefetchCount int) (<-chan amqp.Delivery, error) {

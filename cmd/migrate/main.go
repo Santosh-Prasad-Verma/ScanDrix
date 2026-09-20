@@ -17,7 +17,10 @@ func main() {
 	_ = godotenv.Load(".env")
 	_ = godotenv.Load("../.env")
 
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("DIRECT_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
 	if dbURL == "" {
 		dbURL = os.Getenv("SUPABASE_DATABASE_URL")
 	}
@@ -62,6 +65,17 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 		migrationsDir = os.Args[1]
 	}
 
+	// Ensure schema_migrations tracker exists
+	_, err = pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version VARCHAR(255) PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+	`)
+	if err != nil {
+		log.Fatalf("Failed ensuring schema_migrations table: %v", err)
+	}
+
 	files, err := filepath.Glob(filepath.Join(migrationsDir, "*.sql"))
 	if err != nil {
 		log.Fatalf("Failed listing migrations: %v", err)
@@ -69,16 +83,41 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 	sort.Strings(files)
 
 	for _, file := range files {
-		fmt.Printf("Applying migration: %s\n", filepath.Base(file))
+		baseName := filepath.Base(file)
+
+		// Check if already applied
+		var alreadyApplied bool
+		err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", baseName).Scan(&alreadyApplied)
+		if err == nil && alreadyApplied {
+			fmt.Printf("Skipping already applied migration: %s\n", baseName)
+			continue
+		}
+
+		fmt.Printf("Applying migration atomically in transaction: %s\n", baseName)
 		content, err := os.ReadFile(file)
 		if err != nil {
 			log.Fatalf("Failed reading migration %s: %v", file, err)
 		}
 
-		if _, err := pool.Exec(ctx, string(content)); err != nil {
-			log.Fatalf("Migration failed on %s: %v", filepath.Base(file), err)
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			log.Fatalf("Failed starting transaction for %s: %v", baseName, err)
 		}
-		fmt.Printf("Successfully applied %s\n", filepath.Base(file))
+
+		if _, err := tx.Exec(ctx, string(content)); err != nil {
+			_ = tx.Rollback(ctx)
+			log.Fatalf("Migration failed on %s (transaction rolled back): %v", baseName, err)
+		}
+
+		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", baseName); err != nil {
+			_ = tx.Rollback(ctx)
+			log.Fatalf("Failed recording migration %s (transaction rolled back): %v", baseName, err)
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			log.Fatalf("Failed committing migration transaction for %s: %v", baseName, err)
+		}
+		fmt.Printf("Successfully applied %s\n", baseName)
 	}
 
 	fmt.Println("\nAll database migrations applied successfully!")
@@ -95,4 +134,3 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 		}
 	}
 }
-

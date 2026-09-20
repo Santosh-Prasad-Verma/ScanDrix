@@ -1,0 +1,7 @@
+{
+    "server": "shadowsocks.example.internal",
+    "server_port": 8388,
+    "password": "your-shadowsocks-password",
+    "method": "aes-256-gcm",
+    "mode": "tcp_only"
+}

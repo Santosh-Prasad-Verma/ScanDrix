@@ -10,18 +10,23 @@ import (
 
 // Metrics holds the registered Prometheus instrumentation collectors.
 type Metrics struct {
-	HTTPRequestsTotal      *prometheus.CounterVec
-	HTTPRequestDuration    *prometheus.HistogramVec
-	ReviewsProcessedTotal  *prometheus.CounterVec
-	ReviewDurationSeconds  *prometheus.HistogramVec
-	ActiveWorkerCount      prometheus.Gauge
-	FindingsDiscovered     *prometheus.CounterVec
+	HTTPRequestsTotal     *prometheus.CounterVec
+	HTTPRequestDuration   *prometheus.HistogramVec
+	ReviewsProcessedTotal *prometheus.CounterVec
+	ReviewDurationSeconds *prometheus.HistogramVec
+	ActiveWorkerCount     prometheus.Gauge
+	FindingsDiscovered    *prometheus.CounterVec
+	AuthAttemptsTotal     *prometheus.CounterVec
 }
 
 var globalMetrics *Metrics
 
 // InitMetrics initializes and registers production Prometheus metrics collectors.
 func InitMetrics() *Metrics {
+	if globalMetrics != nil {
+		return globalMetrics
+	}
+
 	m := &Metrics{
 		HTTPRequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -66,6 +71,13 @@ func InitMetrics() *Metrics {
 			},
 			[]string{"severity", "category"},
 		),
+		AuthAttemptsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "scandrix_auth_attempts_total",
+				Help: "Total count of authentication attempts by status and failure reason",
+			},
+			[]string{"status", "reason"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -75,6 +87,7 @@ func InitMetrics() *Metrics {
 		m.ReviewDurationSeconds,
 		m.ActiveWorkerCount,
 		m.FindingsDiscovered,
+		m.AuthAttemptsTotal,
 	)
 
 	globalMetrics = m

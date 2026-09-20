@@ -11,7 +11,7 @@ import (
 // It guards against directory traversal (../), absolute root injections, and symlink breakout.
 func ValidatePathContainment(sandboxRoot, targetRelPath string) (string, error) {
 	cleanRoot := filepath.Clean(sandboxRoot)
-	
+
 	// Ensure target is relative and not root injection
 	if filepath.IsAbs(targetRelPath) {
 		return "", fmt.Errorf("absolute path injection prohibited: %s", targetRelPath)

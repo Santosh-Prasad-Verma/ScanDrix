@@ -20,8 +20,8 @@ func TestParsePRInput(t *testing.T) {
 			wantErr:       false,
 		},
 		{
-			input:         "https://github.com/kodustech/kodus-ai/pull/105",
-			wantNamespace: "kodustech/kodus-ai",
+			input:         "https://github.com/scandrix/scandrix/pull/105",
+			wantNamespace: "scandrix/scandrix",
 			wantNumber:    105,
 			wantErr:       false,
 		},
@@ -51,5 +51,33 @@ func TestParsePRInput(t *testing.T) {
 				t.Errorf("input %s: got number %d, want %d", tt.input, num, tt.wantNumber)
 			}
 		}
+	}
+}
+
+func TestFetchDiffFromGit_SecurityValidation(t *testing.T) {
+	ctx := t.Context()
+
+	maliciousBranches := []string{
+		"--output=/tmp/evil",
+		"-D",
+		"main..evil",
+		"branch;rm -rf /",
+		"branch`id`",
+		"branch$(whoami)",
+	}
+
+	for _, branch := range maliciousBranches {
+		_, err := pr.FetchDiffFromGit(ctx, 42, branch)
+		if err == nil {
+			t.Errorf("expected security validation error for malicious branch %q, but got nil", branch)
+		}
+	}
+
+	// Invalid PR numbers
+	if _, err := pr.FetchDiffFromGit(ctx, 0, "main"); err == nil {
+		t.Errorf("expected error for PR number 0")
+	}
+	if _, err := pr.FetchDiffFromGit(ctx, -5, "main"); err == nil {
+		t.Errorf("expected error for negative PR number")
 	}
 }

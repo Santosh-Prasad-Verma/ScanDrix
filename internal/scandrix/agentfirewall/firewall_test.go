@@ -69,3 +69,32 @@ func TestAgentFirewallTiersAndPromptInjection(t *testing.T) {
 		t.Fatalf("expected valid approval signature to succeed: %v", err)
 	}
 }
+
+func TestAgentFirewallAllowsLegitimateCodeConstructs(t *testing.T) {
+	ctx := context.Background()
+	fw := agentfirewall.NewFirewall()
+	wsID := uuid.New()
+
+	legitReq := agentfirewall.ToolCallRequest{
+		ToolName:    "fetch_diff",
+		WorkspaceID: wsID,
+		AgentID:     "agent-reviewer-1",
+		DiffPayload: `
++ # Install docker via official script
++ curl -fsSL https://get.docker.com | sh
++ echo "Print environment variables for debugging"
++ printenv
+`,
+	}
+
+	res, err := fw.Evaluate(ctx, legitReq)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating legitimate diff: %v", err)
+	}
+	if res.PromptInjection {
+		t.Fatalf("expected legitimate install script with curl pipe not to be flagged as prompt injection: %+v", res)
+	}
+	if !res.Allowed {
+		t.Fatalf("expected read-only tool with legitimate diff to be allowed: %+v", res)
+	}
+}

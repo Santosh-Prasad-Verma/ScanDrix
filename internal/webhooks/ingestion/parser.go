@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,10 +72,22 @@ func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedW
 			prNum = commentData.Issue.Number
 		}
 
+		action := ActionCommentCreated
+		dismissReason := ""
+		lowerBody := strings.ToLower(commentData.Comment.Body)
+		if strings.Contains(lowerBody, "@scandrix dismiss") || strings.Contains(lowerBody, "@scandrix false-positive") || strings.Contains(lowerBody, "@scandrix ignore") {
+			action = ActionFeedbackDismissed
+			dismissReason = "FALSE_POSITIVE"
+			if strings.Contains(lowerBody, "wont-fix") || strings.Contains(lowerBody, "won't fix") {
+				dismissReason = "WONT_FIX"
+			}
+		}
+
 		return &NormalizedWebhookEvent{
 			ID:                uuid.New(),
 			Provider:          models.ProviderGitHub,
-			Action:            ActionCommentCreated,
+			Action:            action,
+			DismissalReason:   dismissReason,
 			RepoNamespace:     commentData.Repository.FullName,
 			PullRequestNumber: prNum,
 			CommentID:         commentData.Comment.ID,
@@ -87,6 +100,102 @@ func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedW
 		}, nil
 	}
 
+	if eventType == "installation" {
+		var installData struct {
+			Action       string `json:"action"`
+			Installation struct {
+				ID      int64 `json:"id"`
+				Account struct {
+					Login string `json:"login"`
+				} `json:"account"`
+			} `json:"installation"`
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+			Sender struct {
+				Login string `json:"login"`
+			} `json:"sender"`
+		}
+		if err := json.Unmarshal(body, &installData); err != nil {
+			return nil, err
+		}
+
+		action := ActionIgnored
+		switch installData.Action {
+		case "created":
+			action = ActionInstallationCreated
+		case "deleted", "suspend":
+			action = ActionInstallationDeleted
+		}
+
+		repos := make([]string, len(installData.Repositories))
+		for i, r := range installData.Repositories {
+			repos[i] = r.FullName
+		}
+
+		return &NormalizedWebhookEvent{
+			ID:             uuid.New(),
+			Provider:       models.ProviderGitHub,
+			Action:         action,
+			RepoNamespace:  installData.Installation.Account.Login,
+			InstallationID: installData.Installation.ID,
+			Repositories:   repos,
+			Sender:         installData.Sender.Login,
+			RawPayload:     body,
+			ReceivedAt:     time.Now().UTC(),
+		}, nil
+	}
+
+	if eventType == "installation_repositories" {
+		var repoData struct {
+			Action       string `json:"action"`
+			Installation struct {
+				ID      int64 `json:"id"`
+				Account struct {
+					Login string `json:"login"`
+				} `json:"account"`
+			} `json:"installation"`
+			RepositoriesAdded []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories_added"`
+			RepositoriesRemoved []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories_removed"`
+			Sender struct {
+				Login string `json:"login"`
+			} `json:"sender"`
+		}
+		if err := json.Unmarshal(body, &repoData); err != nil {
+			return nil, err
+		}
+
+		action := ActionIgnored
+		var repos []string
+		if repoData.Action == "added" {
+			action = ActionReposAdded
+			for _, r := range repoData.RepositoriesAdded {
+				repos = append(repos, r.FullName)
+			}
+		} else if repoData.Action == "removed" {
+			action = ActionReposRemoved
+			for _, r := range repoData.RepositoriesRemoved {
+				repos = append(repos, r.FullName)
+			}
+		}
+
+		return &NormalizedWebhookEvent{
+			ID:             uuid.New(),
+			Provider:       models.ProviderGitHub,
+			Action:         action,
+			RepoNamespace:  repoData.Installation.Account.Login,
+			InstallationID: repoData.Installation.ID,
+			Repositories:   repos,
+			Sender:         repoData.Sender.Login,
+			RawPayload:     body,
+			ReceivedAt:     time.Now().UTC(),
+		}, nil
+	}
+
 	if eventType != "pull_request" {
 		return &NormalizedWebhookEvent{Action: ActionIgnored}, nil
 	}
@@ -95,8 +204,9 @@ func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedW
 		Action      string `json:"action"`
 		Number      int    `json:"number"`
 		PullRequest struct {
-			Title string `json:"title"`
-			Head  struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+			Head   struct {
 				SHA string `json:"sha"`
 			} `json:"head"`
 			Base struct {
@@ -115,13 +225,18 @@ func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedW
 		return nil, err
 	}
 
+	prNum := data.Number
+	if prNum == 0 {
+		prNum = data.PullRequest.Number
+	}
+
 	action := mapGitHubAction(data.Action)
 	return &NormalizedWebhookEvent{
 		ID:                uuid.New(),
 		Provider:          models.ProviderGitHub,
 		Action:            action,
 		RepoNamespace:     data.Repository.FullName,
-		PullRequestNumber: data.Number,
+		PullRequestNumber: prNum,
 		Title:             data.PullRequest.Title,
 		HeadSHA:           data.PullRequest.Head.SHA,
 		BaseSHA:           data.PullRequest.Base.SHA,
@@ -133,17 +248,17 @@ func (p *WebhookParser) parseGitHub(eventType string, body []byte) (*NormalizedW
 
 func (p *WebhookParser) parseGitLab(eventType string, body []byte) (*NormalizedWebhookEvent, error) {
 	var data struct {
-		ObjectKind       string `json:"object_kind"`
-		Project          struct {
+		ObjectKind string `json:"object_kind"`
+		Project    struct {
 			PathWithNamespace string `json:"path_with_namespace"`
 		} `json:"project"`
 		User struct {
 			Username string `json:"username"`
 		} `json:"user"`
 		ObjectAttributes struct {
-			IID     int    `json:"iid"`
-			Title   string `json:"title"`
-			Action  string `json:"action"`
+			IID        int    `json:"iid"`
+			Title      string `json:"title"`
+			Action     string `json:"action"`
 			LastCommit struct {
 				ID string `json:"id"`
 			} `json:"last_commit"`
@@ -303,7 +418,7 @@ func mapGitHubAction(action string) WebhookAction {
 	}
 }
 
-// ExtractRepoNamespace scans body for common repo name keys before full parsing.
+// ExtractRepoNamespace scans body for common repo name or installation account keys before full parsing.
 func ExtractRepoNamespace(body []byte) (string, error) {
 	var quickCheck struct {
 		Repository struct {
@@ -312,6 +427,11 @@ func ExtractRepoNamespace(body []byte) (string, error) {
 		Project struct {
 			PathWithNamespace string `json:"path_with_namespace"`
 		} `json:"project"`
+		Installation struct {
+			Account struct {
+				Login string `json:"login"`
+			} `json:"account"`
+		} `json:"installation"`
 	}
 
 	if err := json.Unmarshal(body, &quickCheck); err != nil {
@@ -324,6 +444,9 @@ func ExtractRepoNamespace(body []byte) (string, error) {
 	if quickCheck.Project.PathWithNamespace != "" {
 		return quickCheck.Project.PathWithNamespace, nil
 	}
+	if quickCheck.Installation.Account.Login != "" {
+		return quickCheck.Installation.Account.Login, nil
+	}
 
-	return "", errors.New("could not identify repository namespace")
+	return "", errors.New("could not identify repository or installation namespace")
 }

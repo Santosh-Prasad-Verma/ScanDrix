@@ -24,15 +24,15 @@ type ASTStore interface {
 
 // BackfillProgress tracks worker progress for observability.
 type BackfillProgress struct {
-	RepositoryID  uuid.UUID `json:"repository_id"`
-	TotalFiles    int64     `json:"total_files"`
-	ProcessedFiles int64   `json:"processed_files"`
-	ErrorCount    int64     `json:"error_count"`
-	NodesExtracted int64   `json:"nodes_extracted"`
-	EdgesExtracted int64   `json:"edges_extracted"`
-	StartedAt     time.Time `json:"started_at"`
-	CompletedAt   time.Time `json:"completed_at,omitempty"`
-	Status        string    `json:"status"` // "running", "completed", "failed"
+	RepositoryID   uuid.UUID `json:"repository_id"`
+	TotalFiles     int64     `json:"total_files"`
+	ProcessedFiles int64     `json:"processed_files"`
+	ErrorCount     int64     `json:"error_count"`
+	NodesExtracted int64     `json:"nodes_extracted"`
+	EdgesExtracted int64     `json:"edges_extracted"`
+	StartedAt      time.Time `json:"started_at"`
+	CompletedAt    time.Time `json:"completed_at,omitempty"`
+	Status         string    `json:"status"` // "running", "completed", "failed"
 }
 
 // Worker performs full background sweeps indexing all files into code_ast_nodes

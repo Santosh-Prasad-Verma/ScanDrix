@@ -9,6 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// ═══════════════════════════════════════════════════════════════
+// 1. TRANSACTIONAL OUTBOX REPOSITORY (In-memory buffer & mutex)
+// ═══════════════════════════════════════════════════════════════
+
 // OutboxStore provides thread-safe outbox message persistence and lease claiming.
 type OutboxStore struct {
 	mu       sync.RWMutex
@@ -21,6 +25,10 @@ func NewOutboxStore() *OutboxStore {
 		messages: make(map[uuid.UUID]*OutboxMessage),
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 2. OUTBOX EVENT INGESTION (Pending state & retry initialization)
+// ═══════════════════════════════════════════════════════════════
 
 // Insert adds a new message in PENDING state.
 func (s *OutboxStore) Insert(ctx context.Context, msg OutboxMessage) error {
@@ -44,6 +52,10 @@ func (s *OutboxStore) Insert(ctx context.Context, msg OutboxMessage) error {
 	s.messages[msg.ID] = &msgCopy
 	return nil
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 3. LEASE CLAIMING & DISPATCH (Worker lease locking & expiration timeout)
+// ═══════════════════════════════════════════════════════════════
 
 // ClaimPending claims up to limit pending or expired claimed messages for a worker.
 func (s *OutboxStore) ClaimPending(ctx context.Context, workerID string, limit int, claimDuration time.Duration) ([]OutboxMessage, error) {
@@ -81,6 +93,10 @@ func (s *OutboxStore) ClaimPending(ctx context.Context, workerID string, limit i
 
 	return claimed, nil
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 4. DISPATCH OUTCOME HANDLERS (Mark published or transition to dead-letter)
+// ═══════════════════════════════════════════════════════════════
 
 // MarkPublished marks a message as successfully dispatched.
 func (s *OutboxStore) MarkPublished(ctx context.Context, msgID uuid.UUID) error {
@@ -123,6 +139,10 @@ func (s *OutboxStore) RecordFailure(ctx context.Context, msgID uuid.UUID, errMsg
 	return nil
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5. DEAD-LETTER REDRIVE (Resetting failed events back to pending)
+// ═══════════════════════════════════════════════════════════════
+
 // RedriveDeadLetter resets dead-lettered messages back to PENDING state.
 func (s *OutboxStore) RedriveDeadLetter(ctx context.Context, topic string, limit int) (int, error) {
 	s.mu.Lock()
@@ -142,6 +162,10 @@ func (s *OutboxStore) RedriveDeadLetter(ctx context.Context, topic string, limit
 	}
 	return count, nil
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 6. QUEUE LAG METRICS & OBSERVABILITY (Pending age & dead-letter counts)
+// ═══════════════════════════════════════════════════════════════
 
 // GetLag calculates pending, claimed, and dead-letter statistics.
 func (s *OutboxStore) GetLag(ctx context.Context) (*OutboxLagStats, error) {

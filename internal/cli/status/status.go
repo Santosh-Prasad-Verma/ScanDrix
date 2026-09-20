@@ -1,5 +1,5 @@
 // Copyright (c) ScanDrix Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 package status
 
@@ -42,17 +42,17 @@ func GetStatus(workDir string) (*StatusResult, error) {
 	cfg := configcli.Load(workDir)
 
 	// Auth mode calculation
-	authMode := "\033[90mNot Authenticated\033[0m"
+	authMode := "Not Authenticated"
 	if cfg.AccessToken != "" {
-		authMode = "\033[32mOAuth / Device Session (JWT)\033[0m"
+		authMode = "OAuth / Device Session (JWT)"
 	} else if cfg.APIKey != "" {
-		authMode = "\033[32mTeam API Key\033[0m"
+		authMode = "Team API Key"
 	}
 
 	// Team key status
-	teamKey := "\033[33mNot Configured\033[0m \033[2m(required for: custom rules sync, repo settings)\033[0m"
+	teamKey := "Not Configured (required for: custom rules sync, repo settings)"
 	if cfg.APIKey != "" {
-		teamKey = "\033[32mConfigured\033[0m"
+		teamKey = "Configured"
 	}
 
 	// Git repository and branch inspection
@@ -78,15 +78,15 @@ func GetStatus(workDir string) (*StatusResult, error) {
 	prePush := "Not Installed"
 	if hookStat, err := hooks.Status(workDir); err == nil && hookStat.GitRepoDetected {
 		if hookStat.PreCommitActive {
-			preCommit = "\033[32mActive (ScanDrix Guard)\033[0m"
+			preCommit = "Active (ScanDrix Guard)"
 		} else if hookStat.PreCommitIsCustom {
-			preCommit = "\033[33mActive (Custom user hook)\033[0m"
+			preCommit = "Active (Custom user hook)"
 		}
 
 		if hookStat.PrePushActive {
-			prePush = "\033[32mActive (ScanDrix Guard)\033[0m"
+			prePush = "Active (ScanDrix Guard)"
 		} else if hookStat.PrePushIsCustom {
-			prePush = "\033[33mActive (Custom user hook)\033[0m"
+			prePush = "Active (Custom user hook)"
 		}
 	}
 
@@ -95,7 +95,9 @@ func GetStatus(workDir string) (*StatusResult, error) {
 	if _, err := os.Stat(filepath.Join(workDir, ".cursor", "rules")); err == nil {
 		assistantList = append(assistantList, "Cursor")
 	}
-	if _, err := os.Stat(filepath.Join(workDir, ".claude", "scandrix.md")); err == nil {
+	if _, err := os.Stat(filepath.Join(workDir, ".claude", "settings.json")); err == nil {
+		assistantList = append(assistantList, "Claude Code")
+	} else if _, err := os.Stat(filepath.Join(workDir, ".claude", "commands")); err == nil {
 		assistantList = append(assistantList, "Claude Code")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -104,9 +106,9 @@ func GetStatus(workDir string) (*StatusResult, error) {
 		}
 	}
 
-	assistantHooks := "\033[90mNot Configured\033[0m"
+	assistantHooks := "Not Configured"
 	if len(assistantList) > 0 {
-		assistantHooks = fmt.Sprintf("\033[32m%s\033[0m", strings.Join(assistantList, ", "))
+		assistantHooks = strings.Join(assistantList, ", ")
 	}
 
 	bundledSkillsCount := len(skills.BundledSkillsCatalog())
