@@ -1,5 +1,8 @@
 # Stage 1: Build Binaries
-FROM golang:alpine AS builder
+# Pinned to the Go release go.mod requires (1.25.3). An unpinned
+# `golang:alpine` drifts with the tag, so builds either break or silently
+# download a toolchain at image-build time (AUDIT_REMEDIATION.md F-58).
+FROM golang:1.25-alpine AS builder
 ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git ca-certificates tzdata
@@ -49,7 +52,12 @@ USER scandrix:scandrix
 
 EXPOSE 8080 8081 9090
 
+# This image is shared by api, webhooks, worker and migrate. The health probe
+# port differs per service: api/webhooks serve on 8080, the worker on
+# WORKER_HEALTH_PORT (8082). Hardcoding 8080 left the worker permanently
+# unhealthy. The shell expands this from the container environment, so the
+# port is resolved at run time rather than baked in.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:8080/healthz || exit 1
+  CMD wget -qO- "http://localhost:${HEALTH_PROBE_PORT:-8080}/healthz" || exit 1
 
 ENTRYPOINT ["/app/bin/scandrix-server"]

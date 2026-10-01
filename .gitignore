@@ -1,7 +1,3 @@
-# ==============================================================================
-# ScanDrix Enterprise Git Ignore Configuration
-# ==============================================================================
-
 # 1. Compiled Binaries & Build Output
 bin/
 dist/
@@ -67,3 +63,16 @@ scratch/
 /cli
 prompt.md
 SCANDRIX_ENGINEERING_MASTERCLASS.md
+
+# 7. Terraform State & Provider Binaries
+# tfstate holds secrets in plaintext (RDS passwords, Secrets Manager values,
+# IAM attributes). .tfvars holds local variable values. Both stay local.
+# Tracked on purpose: *.tf and *.tfvars.example
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Terraform backend config: environment-specific endpoints and credentials
+infra/terraform/backend.hcl
