@@ -55,16 +55,62 @@ main() {
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$HOME/.scandrix/sessions"
 
-    TARBALL="scandrix-${OS}-${ARCH}.tar.gz"
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
+    # The release workflow publishes raw binaries named scandrix-cli-<os>-<arch>
+    # (see cli-release.yml matrix output_name) plus checksums.txt. This script
+    # used to request scandrix-<os>-<arch>.tar.gz, which is never published, so
+    # the download always failed and silently fell back to compiling locally -
+    # installed users were never getting the release artifact.
+    ASSET="scandrix-cli-${OS}-${ARCH}"
+    BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+    DOWNLOAD_URL="${BASE_URL}/${ASSET}"
+    CHECKSUM_URL="${BASE_URL}/checksums.txt"
 
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "$TMP_DIR"' EXIT
 
+    # Portable SHA-256. A downloaded binary is executed immediately after this,
+    # so an unverified download is remote code execution with no gate.
+    sha256_of() {
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$1" | awk '{print $1}'
+        elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$1" | awk '{print $1}'
+        else
+            echo ""
+        fi
+    }
+
     echo -e "\033[1;34m==>\033[0m Downloading binary..."
-    if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
-        tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
-        mv "$TMP_DIR/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+    if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$ASSET" 2>/dev/null; then
+
+        # ── Verify before executing ──────────────────────────────────────────
+        # checksums.txt is published by cli-release.yml alongside the binaries.
+        if ! curl -fsSL "$CHECKSUM_URL" -o "$TMP_DIR/checksums.txt" 2>/dev/null; then
+            echo -e "\033[1;31mError:\033[0m Could not fetch checksums.txt; refusing to run an unverified binary." >&2
+            exit 1
+        fi
+
+        EXPECTED="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1 }' "$TMP_DIR/checksums.txt" | head -1)"
+        if [ -z "$EXPECTED" ]; then
+            echo -e "\033[1;31mError:\033[0m No checksum entry for ${ASSET} in checksums.txt; refusing to continue." >&2
+            exit 1
+        fi
+
+        ACTUAL="$(sha256_of "$TMP_DIR/$ASSET")"
+        if [ -z "$ACTUAL" ]; then
+            echo -e "\033[1;31mError:\033[0m No sha256 tool found (need sha256sum or shasum); refusing to continue." >&2
+            exit 1
+        fi
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo -e "\033[1;31mError:\033[0m Checksum mismatch for ${ASSET}." >&2
+            echo "  expected: $EXPECTED" >&2
+            echo "  actual:   $ACTUAL" >&2
+            echo "Refusing to install. Re-run once the release is fetched over a trusted channel." >&2
+            exit 1
+        fi
+        echo -e "    \033[0;32mChecksum verified.\033[0m"
+
+        mv "$TMP_DIR/$ASSET" "$INSTALL_DIR/$BINARY_NAME"
     else
         # If building from local repo checkout
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -93,7 +139,9 @@ main() {
     if [ -n "$TEAM_KEY" ]; then
         echo ""
         echo -e "\033[1;34m==>\033[0m Authenticating with team key..."
-        if "$INSTALL_DIR/$BINARY_NAME" auth team-key --key "$TEAM_KEY"; then
+        # Passed via the environment, not --key: argv is world-readable through
+        # ps, so a command-line secret leaks to every user on the host.
+        if SCANDRIX_TEAM_KEY="$TEAM_KEY" "$INSTALL_DIR/$BINARY_NAME" auth team-key; then
             echo -e "\033[1;32m✓\033[0m Authenticated successfully"
         else
             echo -e "\033[1;31mError:\033[0m Authentication with team key failed" >&2
@@ -102,8 +150,12 @@ main() {
 
     echo ""
     echo -e "\033[1;34m==>\033[0m Installing bundled ScanDrix agent skills..."
-    "$INSTALL_DIR/$BINARY_NAME" skills install >/dev/null 2>&1 || true
-    echo -e "\033[1;32m✓\033[0m Agent skills installed"
+    if "$INSTALL_DIR/$BINARY_NAME" skills install >/dev/null 2>&1; then
+        echo -e "\033[1;32m✓\033[0m Agent skills installed"
+    else
+        echo -e "\033[1;33m!\033[0m Agent skills were not installed. The CLI is installed and usable;"
+        echo "  re-run \`scandrix skills install\` once the cause is fixed."
+    fi
 
     echo ""
     echo "Get started:"

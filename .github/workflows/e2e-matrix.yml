@@ -11,13 +11,24 @@ on:
       - 'internal/review/**'
       - 'test/integration/**'
 
+# Least privilege. These workflows check out the repo and run linters,
+# tests and image scans; none of them needs write access. Without this the
+# workflow inherits the repository default, which is often write-all.
+# AUDIT_REMEDIATION.md F-70.
+permissions:
+  contents: read
+
 jobs:
   integration-matrix:
     name: "E2E Postgres & RabbitMQ Integration"
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        # Matches the pgvector major used by every deployed compose file
+        # (docker-compose.yml and friends all use pg16). Testing migrations on a
+        # different major than they ship on means CI cannot catch a pg16
+        # incompatibility (AUDIT_REMEDIATION.md F-57).
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: scandrix_test
           POSTGRES_PASSWORD: test_password

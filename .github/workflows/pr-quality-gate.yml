@@ -10,6 +10,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege. These workflows check out the repo and run linters,
+# tests and image scans; none of them needs write access. Without this the
+# workflow inherits the repository default, which is often write-all.
+# AUDIT_REMEDIATION.md F-70.
+permissions:
+  contents: read
+
 jobs:
   backend-gate:
     name: "Go Engine: Verify, Test & Build"
@@ -31,7 +38,7 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
+        run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Run Test Suite with Race Detector & Coverage
         run: |

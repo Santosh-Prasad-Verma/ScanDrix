@@ -10,6 +10,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege. These workflows check out the repo and run linters,
+# tests and image scans; none of them needs write access. Without this the
+# workflow inherits the repository default, which is often write-all.
+# AUDIT_REMEDIATION.md F-70.
+permissions:
+  contents: read
+
 jobs:
   golangci-lint:
     name: "GolangCI-Lint Gate"
