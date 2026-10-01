@@ -19,26 +19,27 @@ func TestRepositoryNilClientGuards(t *testing.T) {
 
 	// 1. AST Graph persistence nil guards
 	repoID := uuid.New()
-	err := repo.BatchInsertASTNodes(ctx, repoID, []graph.ASTNode{
+	wsID := uuid.New()
+	err := repo.BatchInsertASTNodes(ctx, wsID, repoID, []graph.ASTNode{
 		{ID: uuid.New(), SymbolName: "AuthHandler"},
 	})
 	if err != nil {
 		t.Fatalf("expected nil error on nil repo client for batch insert nodes, got: %v", err)
 	}
 
-	err = repo.BatchInsertASTEdges(ctx, repoID, []graph.ASTEdge{
+	err = repo.BatchInsertASTEdges(ctx, wsID, repoID, []graph.ASTEdge{
 		{ID: uuid.New(), FromNodeID: uuid.New(), ToNodeID: uuid.New()},
 	})
 	if err != nil {
 		t.Fatalf("expected nil error on nil repo client for batch insert edges, got: %v", err)
 	}
 
-	_, err = repo.GetASTNodesByRepository(ctx, repoID)
+	_, err = repo.GetASTNodesByRepository(ctx, wsID, repoID)
 	if err == nil {
 		t.Fatal("expected error querying nodes on nil repo client")
 	}
 
-	_, err = repo.GetASTCallers(ctx, repoID, uuid.New())
+	_, err = repo.GetASTCallers(ctx, wsID, repoID, uuid.New())
 	if err == nil {
 		t.Fatal("expected error querying callers on nil repo client")
 	}
@@ -112,7 +113,7 @@ func TestRepositoryNilClientGuards(t *testing.T) {
 		t.Fatal("expected error getting CLI session on nil client")
 	}
 
-	err = repo.CompleteCLISession(ctx, "USER123", "acc", "ref", uuid.New(), "test@scandrix.dev")
+	err = repo.CompleteCLISession(ctx, "USER123", "acc", "ref", uuid.New(), uuid.New(), "test@scandrix.dev")
 	if err != nil {
 		t.Fatalf("expected graceful nil on nil client for CompleteCLISession, got: %v", err)
 	}
@@ -134,7 +135,6 @@ func TestRepositoryNilClientGuards(t *testing.T) {
 	}
 
 	// 6. Security Memory & pgvector nil guards
-	wsID := uuid.New()
 	err = repo.SaveSecurityMemory(ctx, wsID, &database.SecurityMemoryRecord{
 		ID:                 uuid.New(),
 		FindingFingerprint: "sha256-finding-1",

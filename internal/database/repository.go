@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/scandrix/backend/internal/security/kms"
 	"github.com/scandrix/backend/pkg/crypto"
@@ -73,8 +74,6 @@ func (r *Repository) Client() *Client {
 	return r.client
 }
 
-
-
 func decryptStoredSecret(ctx context.Context, wsID uuid.UUID, cipherText string) string {
 	if cipherText == "" {
 		return ""
@@ -119,4 +118,15 @@ func deriveTenantIntegrationKey(wsID uuid.UUID) []byte {
 func deriveLegacyTenantIntegrationKey(wsID uuid.UUID) []byte {
 	k := sha256.Sum256([]byte("scandrix_integration_kdf_v1:" + wsID.String()))
 	return k[:]
+}
+
+// Pool exposes the underlying connection pool for the few callers that need to
+// hand a *pgxpool.Pool to a library which does not accept an interface (the
+// health indicators, for example). Prefer a narrow interface over reaching for
+// the pool directly in application code.
+func (r *Repository) Pool() *pgxpool.Pool {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	return r.client.Pool
 }

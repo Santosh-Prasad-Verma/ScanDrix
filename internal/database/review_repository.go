@@ -20,18 +20,22 @@ import (
 // repository by its provider and namespace path (e.g. "owner/repo"). Returns
 // uuid.Nil if no matching active repository is found.
 func (r *Repository) GetWorkspaceIDByRepoNamespace(ctx context.Context, provider, namespacePath string) (uuid.UUID, error) {
-	row := r.client.Pool.QueryRow(ctx,
-		`SELECT workspace_id FROM tracked_repositories
+	// Reverse lookup from an incoming webhook: no session, no tenant, so this
+	// must run as a system worker.
+	var wsID uuid.UUID
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`SELECT workspace_id FROM tracked_repositories
 		 WHERE provider = $1 AND namespace_path = $2 AND is_active = TRUE
 		 LIMIT 1`,
-		provider, namespacePath)
-	var wsID uuid.UUID
-	if err := row.Scan(&wsID); err != nil {
+			provider, namespacePath)
+		return row.Scan(&wsID)
+	})
+	if err != nil {
 		return uuid.Nil, fmt.Errorf("no active workspace for %s/%s: %w", provider, namespacePath, err)
 	}
 	return wsID, nil
 }
-
 
 // GetWebhookSecretForRepo queries PostgreSQL for a repo's custom webhook secret.
 // It checks tracked_repositories.webhook_secret_enc first, and falls back to
@@ -76,7 +80,6 @@ func (r *Repository) GetWebhookSecretForRepo(ctx context.Context, provider strin
 	return "", nil
 }
 
-
 // SetWebhookSecretForRepo encrypts and stores a custom webhook secret for a tracked repository.
 func (r *Repository) SetWebhookSecretForRepo(ctx context.Context, wsID uuid.UUID, provider, namespacePath, secretPlain string) error {
 	if r == nil || r.client == nil {
@@ -102,7 +105,6 @@ func (r *Repository) SetWebhookSecretForRepo(ctx context.Context, wsID uuid.UUID
 	})
 }
 
-
 // CreateWorkspace inserts a new enterprise organization workspace.
 func (r *Repository) CreateWorkspace(ctx context.Context, ws *models.Workspace) error {
 	query := `
@@ -116,13 +118,17 @@ func (r *Repository) CreateWorkspace(ctx context.Context, ws *models.Workspace) 
 		ws.ID = uuid.New()
 	}
 
-	_, err := r.client.Pool.Exec(ctx, query, ws.ID, ws.Slug, ws.Name, ws.Status, ws.CreatedAt, ws.UpdatedAt)
+	// Bootstrap: the row does not exist yet, so tenant RLS cannot admit it.
+	// Authorization for who may create a workspace is enforced by the caller.
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, query, ws.ID, ws.Slug, ws.Name, ws.Status, ws.CreatedAt, ws.UpdatedAt)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create workspace: %w", err)
 	}
 	return nil
 }
-
 
 // GetWorkspaceByID retrieves a workspace by its unique identifier.
 func (r *Repository) GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*models.Workspace, error) {
@@ -135,10 +141,14 @@ func (r *Repository) GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*model
 		FROM workspaces
 		WHERE id = $1
 	`
+	// The workspace id is the tenant id, so this self-scopes without changing
+	// the signature: RLS admits the row because id = app.current_tenant_id.
 	var ws models.Workspace
-	err := r.client.Pool.QueryRow(ctx, query, id).Scan(
-		&ws.ID, &ws.Slug, &ws.Name, &ws.Status, &ws.CreatedAt, &ws.UpdatedAt,
-	)
+	err := r.client.ExecWithTenant(ctx, id, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, id).Scan(
+			&ws.ID, &ws.Slug, &ws.Name, &ws.Status, &ws.CreatedAt, &ws.UpdatedAt,
+		)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +161,12 @@ func (r *Repository) UpdateWorkspace(ctx context.Context, id uuid.UUID, name str
 		return fmt.Errorf("database unavailable")
 	}
 	query := `UPDATE workspaces SET name = $1, updated_at = now() WHERE id = $2`
-	_, err := r.client.Pool.Exec(ctx, query, name, id)
-	return err
+	// Self-scoped: the workspace id is the tenant id.
+	return r.client.ExecWithTenant(ctx, id, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, query, name, id)
+		return execErr
+	})
 }
-
 
 // CreateReview records a new incoming pull request review lifecycle job.
 func (r *Repository) CreateReview(ctx context.Context, rev *models.PullRequestReview) error {
@@ -178,7 +190,6 @@ func (r *Repository) CreateReview(ctx context.Context, rev *models.PullRequestRe
 	})
 }
 
-
 // UpdateReviewState updates the state and completion timestamp of a review job.
 func (r *Repository) UpdateReviewState(ctx context.Context, tenantID, reviewID uuid.UUID, state models.ReviewState, findingsCount int) error {
 	query := `
@@ -192,7 +203,6 @@ func (r *Repository) UpdateReviewState(ctx context.Context, tenantID, reviewID u
 		return err
 	})
 }
-
 
 // HasNewerReviewForPR checks whether a subsequent review has been submitted for this PR (e.g. newer commit pushed).
 func (r *Repository) HasNewerReviewForPR(ctx context.Context, tenantID, reviewID uuid.UUID) (bool, error) {
@@ -218,7 +228,6 @@ func (r *Repository) HasNewerReviewForPR(ctx context.Context, tenantID, reviewID
 	}
 	return hasNewer, nil
 }
-
 
 // BatchInsertFindings persists actionable review findings discovered by the analysis pipeline.
 func (r *Repository) BatchInsertFindings(ctx context.Context, tenantID uuid.UUID, findings []models.CodeFinding) error {
@@ -251,7 +260,6 @@ func (r *Repository) BatchInsertFindings(ctx context.Context, tenantID uuid.UUID
 		return nil
 	})
 }
-
 
 // GetReviewFindings fetches all findings discovered for a specific pull request review with tenant isolation.
 func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID, optionalWsID ...uuid.UUID) ([]models.CodeFinding, error) {
@@ -327,7 +335,6 @@ func (r *Repository) GetReviewFindings(ctx context.Context, reviewID uuid.UUID, 
 	return findings, nil
 }
 
-
 // GetFindingByID retrieves an individual code finding by ID under tenant isolation.
 func (r *Repository) GetFindingByID(ctx context.Context, wsID, findingID uuid.UUID) (*models.CodeFinding, error) {
 	if r == nil || r.client == nil {
@@ -356,7 +363,6 @@ func (r *Repository) GetFindingByID(ctx context.Context, wsID, findingID uuid.UU
 	}
 	return &f, nil
 }
-
 
 // GetReview fetches a single review by workspace and review ID.
 func (r *Repository) GetReview(ctx context.Context, wsID, reviewID uuid.UUID) (*models.PullRequestReview, error) {
@@ -388,23 +394,26 @@ func (r *Repository) GetReview(ctx context.Context, wsID, reviewID uuid.UUID) (*
 	return &rev, nil
 }
 
-
-// DismissFinding updates a finding status and records reason.
+// DismissFinding transitions a finding to DISMISSED and records why.
+//
+// The lifecycle state belongs in status and the reason in dismissal_reason. Both
+// used to be written into the remediation column as a "DISMISSED: " prefix,
+// which destroyed the remediation text and left the dashboard queries with no
+// column to filter on.
 func (r *Repository) DismissFinding(ctx context.Context, wsID, findingID uuid.UUID, reason string) error {
 	if r == nil || r.client == nil {
 		return nil
 	}
 	query := `
 		UPDATE code_findings
-		SET remediation = $1
+		SET status = 'DISMISSED', dismissal_reason = $1
 		WHERE id = $2 AND workspace_id = $3
 	`
 	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, query, "DISMISSED: "+reason, findingID, wsID)
+		_, err := tx.Exec(ctx, query, reason, findingID, wsID)
 		return err
 	})
 }
-
 
 // RecordFindingFeedback records user feedback on a finding.
 func (r *Repository) RecordFindingFeedback(ctx context.Context, wsID, findingID uuid.UUID, sentiment, comment string) error {
@@ -413,7 +422,7 @@ func (r *Repository) RecordFindingFeedback(ctx context.Context, wsID, findingID 
 	}
 
 	query := `
-		INSERT INTO finding_feedback (id, workspace_id, findingID, sentiment, comment, created_at)
+		INSERT INTO finding_feedback (id, workspace_id, finding_id, sentiment, comment, created_at)
 		VALUES ($1, $2, $3, $4, $5, now());
 	`
 	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
@@ -421,7 +430,6 @@ func (r *Repository) RecordFindingFeedback(ctx context.Context, wsID, findingID 
 		return err
 	})
 }
-
 
 // CountActiveReviews counts in-flight reviews in RECEIVED, QUEUED, or PROCESSING states for a workspace.
 func (r *Repository) CountActiveReviews(ctx context.Context, wsID uuid.UUID) (int, error) {
@@ -435,13 +443,16 @@ func (r *Repository) CountActiveReviews(ctx context.Context, wsID uuid.UUID) (in
 		WHERE workspace_id = $1 AND state IN ('RECEIVED', 'QUEUED', 'PROCESSING');
 	`
 	var count int
-	err := r.client.Pool.QueryRow(ctx, query, wsID).Scan(&count)
+	// Tenant-scoped: pull_request_reviews has RLS, and a bare pool query under a
+	// non-superuser runtime role matches zero rows instead of erroring.
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, wsID).Scan(&count)
+	})
 	if err != nil {
 		return 0, err
 	}
 	return count, nil
 }
-
 
 // GetWorkspaceOwner retrieves the email and display name of the workspace owner or admin for billing notifications.
 func (r *Repository) GetWorkspaceOwner(ctx context.Context, wsID uuid.UUID) (email, displayName string, err error) {
@@ -456,7 +467,10 @@ func (r *Repository) GetWorkspaceOwner(ctx context.Context, wsID uuid.UUID) (ema
 		ORDER BY CASE WHEN UPPER(role) = 'OWNER' THEN 1 WHEN UPPER(role) = 'ADMIN' THEN 2 ELSE 3 END, created_at ASC
 		LIMIT 1;
 	`
-	err = r.client.Pool.QueryRow(ctx, query, wsID).Scan(&email, &displayName)
+	// Tenant-scoped: account_profiles has RLS.
+	err = r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, wsID).Scan(&email, &displayName)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", nil
@@ -465,7 +479,6 @@ func (r *Repository) GetWorkspaceOwner(ctx context.Context, wsID uuid.UUID) (ema
 	}
 	return email, displayName, nil
 }
-
 
 // TimeoutStaleReviews identifies in-flight reviews that exceeded recovery thresholds and marks them FAILED.
 func (r *Repository) TimeoutStaleReviews(ctx context.Context, olderThanMinutes int) (int64, error) {
@@ -493,7 +506,6 @@ func (r *Repository) TimeoutStaleReviews(ctx context.Context, olderThanMinutes i
 	}
 	return rowsAffected, nil
 }
-
 
 // CreateWorkspaceWithUser atomically provisions a workspace, owner user account, and profile in a single transaction.
 func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Workspace, email, passwordHash, role, displayName string) (*UserRecord, error) {
@@ -569,7 +581,6 @@ func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Wor
 			return fmt.Errorf("failed provisioning initial organization license: %w", err)
 		}
 
-
 		return nil
 	})
 
@@ -578,7 +589,6 @@ func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Wor
 	}
 	return &userRecord, nil
 }
-
 
 // ListWorkspaces retrieves all active workspaces across the platform.
 func (r *Repository) ListWorkspaces(ctx context.Context) ([]models.Workspace, error) {
@@ -592,23 +602,34 @@ func (r *Repository) ListWorkspaces(ctx context.Context) ([]models.Workspace, er
 		WHERE status = 'ACTIVE'
 		ORDER BY created_at ASC;
 	`
-	rows, err := r.client.Pool.Query(ctx, query)
+	// SECURITY: this returns every active workspace with no per-user filter.
+	// It is intentionally still a system query because 2 of its 6 callers are
+	// cross-tenant cron jobs, but the 4 API callers must not use it to pick a
+	// default workspace for the current user. See ListWorkspacesForUser.
+	// TODO(security): repoint the API controllers at a user-scoped query.
+	// Rows are consumed inside the transaction: returning pgx.Rows from the
+	// closure and iterating after commit fails with "conn busy".
+	var list []models.Workspace
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var w models.Workspace
+			if err := rows.Scan(&w.ID, &w.Slug, &w.Name, &w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+				return err
+			}
+			list = append(list, w)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed listing workspaces: %w", err)
 	}
-	defer rows.Close()
-
-	var list []models.Workspace
-	for rows.Next() {
-		var w models.Workspace
-		if err := rows.Scan(&w.ID, &w.Slug, &w.Name, &w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
-			return nil, err
-		}
-		list = append(list, w)
-	}
 	return list, nil
 }
-
 
 // PendingApprovalRecord represents a review eligible for automated PR approval.
 type PendingApprovalRecord struct {
@@ -623,7 +644,6 @@ type PendingApprovalRecord struct {
 	CriticalCount int       `json:"critical_count"`
 	HighCount     int       `json:"high_count"`
 }
-
 
 // GetPendingApprovalReviews queries reviews in COMPLETED state with zero critical/high blockers.
 func (r *Repository) GetPendingApprovalReviews(ctx context.Context, limit int) ([]PendingApprovalRecord, error) {
@@ -649,27 +669,34 @@ func (r *Repository) GetPendingApprovalReviews(ctx context.Context, limit int) (
 		LIMIT $1;
 	`
 
-	rows, err := r.client.Pool.Query(ctx, query, limit)
+	// Cross-tenant by design: a global approval queue drained by a worker.
+	// Rows are consumed inside the transaction: returning pgx.Rows from the
+	// closure and iterating after commit fails with "conn busy".
+	var results []PendingApprovalRecord
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p PendingApprovalRecord
+			if err := rows.Scan(
+				&p.ReviewID, &p.WorkspaceID, &p.RepositoryID, &p.PullNumber,
+				&p.Title, &p.HeadSHA, &p.BaseSHA, &p.FindingsCount,
+				&p.CriticalCount, &p.HighCount,
+			); err != nil {
+				return err
+			}
+			results = append(results, p)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed querying pending approval reviews: %w", err)
 	}
-	defer rows.Close()
-
-	var results []PendingApprovalRecord
-	for rows.Next() {
-		var p PendingApprovalRecord
-		if err := rows.Scan(
-			&p.ReviewID, &p.WorkspaceID, &p.RepositoryID, &p.PullNumber,
-			&p.Title, &p.HeadSHA, &p.BaseSHA, &p.FindingsCount,
-			&p.CriticalCount, &p.HighCount,
-		); err != nil {
-			return nil, err
-		}
-		results = append(results, p)
-	}
 	return results, nil
 }
-
 
 // RecordReviewApproval logs an automated review approval event in the outbox and audit log.
 func (r *Repository) RecordReviewApproval(ctx context.Context, wsID, reviewID uuid.UUID, pullNumber int, reason string) error {
@@ -696,7 +723,6 @@ func (r *Repository) RecordReviewApproval(ctx context.Context, wsID, reviewID uu
 
 	return r.InsertOutboxEvent(ctx, outbox)
 }
-
 
 // SyncFindingFeedbackSentiment aggregates feedback sentiment to tune rule confidence weights.
 func (r *Repository) SyncFindingFeedbackSentiment(ctx context.Context, wsID uuid.UUID) (int64, error) {
@@ -732,7 +758,6 @@ func (r *Repository) SyncFindingFeedbackSentiment(ctx context.Context, wsID uuid
 	})
 	return affected, err
 }
-
 
 // InsertReviewAttestation stores a cryptographically signed DSSE attestation envelope.
 func (r *Repository) InsertReviewAttestation(ctx context.Context, rec intoto.AttestationRecord) error {
@@ -771,7 +796,6 @@ func (r *Repository) InsertReviewAttestation(ctx context.Context, rec intoto.Att
 		return err
 	})
 }
-
 
 // GetReviewAttestations retrieves all cryptographic attestations for a given review.
 func (r *Repository) GetReviewAttestations(ctx context.Context, wsID, reviewID uuid.UUID) ([]intoto.AttestationRecord, error) {
@@ -813,7 +837,6 @@ func (r *Repository) GetReviewAttestations(ctx context.Context, wsID, reviewID u
 
 	return records, err
 }
-
 
 // GetLatestReviewAttestation returns the most recent in-toto / SLSA attestation for a review.
 func (r *Repository) GetLatestReviewAttestation(ctx context.Context, wsID, reviewID uuid.UUID) (*intoto.AttestationRecord, error) {
@@ -897,7 +920,7 @@ func (r *Repository) ListPullRequestExecutions(ctx context.Context, wsID uuid.UU
 			argIdx++
 		}
 		if filter.Author != "" {
-			baseWhere += fmt.Sprintf(" AND r.author ILIKE $%d", argIdx)
+			baseWhere += fmt.Sprintf(" AND r.author_username ILIKE $%d", argIdx)
 			args = append(args, "%"+filter.Author+"%")
 			argIdx++
 		}
@@ -926,7 +949,7 @@ func (r *Repository) ListPullRequestExecutions(ctx context.Context, wsID uuid.UU
 		// Query page records
 		listQuery := fmt.Sprintf(`
 			SELECT r.id, r.repository_id, COALESCE(tr.namespace_path, ''), r.pull_number,
-			       r.title, COALESCE(r.author, ''), r.state, r.created_at, r.updated_at,
+			       r.title, COALESCE(r.author_username, ''), r.state, r.created_at, r.completed_at,
 			       COALESCE(r.head_sha, ''), COALESCE(r.base_sha, '')
 			FROM pull_request_reviews r
 			LEFT JOIN tracked_repositories tr ON tr.id = r.repository_id
@@ -948,7 +971,7 @@ func (r *Repository) ListPullRequestExecutions(ctx context.Context, wsID uuid.UU
 			var state string
 			if err := rows.Scan(
 				&item.UUID, &repoID, &item.RepositoryName, &item.PullRequestNumber,
-				&item.PullRequestTitle, &item.Author, &state, &item.CreatedAt, &item.UpdatedAt,
+				&item.PullRequestTitle, &item.Author, &state, &item.CreatedAt, &item.CompletedAt,
 				&item.HeadSHA, &item.BaseSHA,
 			); err != nil {
 				return err
@@ -964,8 +987,10 @@ func (r *Repository) ListPullRequestExecutions(ctx context.Context, wsID uuid.UU
 			default:
 				item.Status = strings.ToLower(state)
 			}
-			if item.UpdatedAt.After(item.CreatedAt) {
-				item.ExecutionTimeMs = item.UpdatedAt.Sub(item.CreatedAt).Milliseconds()
+			// Execution time is only defined once a review has completed. An
+			// in-flight review reports 0 rather than a duration measured from nothing.
+			if item.CompletedAt != nil && item.CompletedAt.After(item.CreatedAt) {
+				item.ExecutionTimeMs = item.CompletedAt.Sub(item.CreatedAt).Milliseconds()
 			} else {
 				item.ExecutionTimeMs = 0
 			}
@@ -1080,7 +1105,7 @@ func (r *Repository) GetPullRequestFacets(ctx context.Context, wsID uuid.UUID, t
 				COUNT(*) as total,
 				COUNT(*) FILTER (WHERE state = 'FAILED') as errored,
 				COUNT(*) FILTER (WHERE state IN ('QUEUED', 'PROCESSING')) as awaiting,
-				COUNT(*) FILTER (WHERE author = $2 AND $2 != '') as mine,
+				COUNT(*) FILTER (WHERE author_username = $2 AND $2 != '') as mine,
 				(SELECT COUNT(*) FROM open_with_unresolved) as needs_attention
 			FROM pull_request_reviews
 			WHERE workspace_id = $1
@@ -1117,10 +1142,10 @@ func (r *Repository) GetPullRequestAuthors(ctx context.Context, wsID uuid.UUID, 
 
 	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
 		query := `
-			SELECT author, COUNT(*) as cnt
+			SELECT author_username, COUNT(*) as cnt
 			FROM pull_request_reviews
-			WHERE workspace_id = $1 AND author != '' AND ($2 = '' OR author ILIKE '%' || $2 || '%')
-			GROUP BY author
+			WHERE workspace_id = $1 AND author_username != '' AND ($2 = '' OR author_username ILIKE '%' || $2 || '%')
+			GROUP BY author_username
 			ORDER BY cnt DESC
 			LIMIT $3
 		`
@@ -1154,7 +1179,7 @@ func (r *Repository) GetAwaitingPullRequests(ctx context.Context, wsID uuid.UUID
 	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
 		query := `
 			SELECT r.repository_id, COALESCE(tr.namespace_path, ''), r.pull_number,
-			       r.title, COALESCE(r.author, ''), r.created_at
+			       r.title, COALESCE(r.author_username, ''), r.created_at
 			FROM pull_request_reviews r
 			LEFT JOIN tracked_repositories tr ON tr.id = r.repository_id
 			WHERE r.workspace_id = $1 AND (r.state = 'QUEUED' OR r.state = 'RECEIVED')
@@ -1327,4 +1352,56 @@ func (r *Repository) GetSpendLimitStatus(ctx context.Context, wsID uuid.UUID) (*
 	}, nil
 }
 
+// ListWorkspacesForUser returns only the workspaces the given user belongs to.
+//
+// Unlike ListWorkspaces this is scoped to a single principal, so it is safe to
+// use for picking a default workspace in a request handler. ListWorkspaces has
+// no per-user filter at all, so using it there hands a caller an arbitrary
+// tenant's workspace.
+//
+// The join is on email because account_profiles has no user_id column; users
+// carries organization_id, which is the workspace. A caller with no matching
+// user row gets an empty list rather than everyone's workspaces.
+func (r *Repository) ListWorkspacesForUser(ctx context.Context, email string) ([]models.Workspace, error) {
+	if r == nil || r.client == nil {
+		return []models.Workspace{}, nil
+	}
+	email = strings.TrimSpace(email)
+	if email == "" {
+		// No identity: returning everything here is exactly the leak this
+		// function exists to close, so return nothing.
+		return []models.Workspace{}, nil
+	}
 
+	query := `
+		SELECT DISTINCT w.id, w.slug, w.name, w.status, w.created_at, w.updated_at
+		FROM workspaces w
+		JOIN users u ON u.organization_id = w.id
+		WHERE lower(u.email) = lower($1)
+		  AND u.status <> 'inactive'
+		  AND w.status = 'ACTIVE'
+		ORDER BY w.created_at ASC;
+	`
+	var list []models.Workspace
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		// Rows are consumed inside the transaction: a pgx.Rows returned from
+		// the closure and iterated after commit fails with "conn busy".
+		rows, err := tx.Query(ctx, query, email)
+		if err != nil {
+			return fmt.Errorf("failed listing user workspaces: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var w models.Workspace
+			if err := rows.Scan(&w.ID, &w.Slug, &w.Name, &w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+				return fmt.Errorf("failed scanning workspace: %w", err)
+			}
+			list = append(list, w)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}

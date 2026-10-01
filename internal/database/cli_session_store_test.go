@@ -54,7 +54,7 @@ func TestPostgresCLISessionStoreAdapter(t *testing.T) {
 	}
 
 	// 4. CompleteSession (nil client guard returns nil)
-	err = store.CompleteSession(ctx, "ABCD-EFGH", "access-token", "refresh-token", uuid.New(), "user@example.com")
+	err = store.CompleteSession(ctx, "ABCD-EFGH", "access-token", "refresh-token", uuid.New(), uuid.New(), "user@example.com")
 	if err != nil {
 		t.Fatalf("expected nil error on nil db client, got %v", err)
 	}
