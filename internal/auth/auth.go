@@ -60,6 +60,23 @@ func AccountProfileFromContext(ctx context.Context) (*models.AccountProfile, boo
 	return val, ok
 }
 
+// CallerEmail returns the authenticated caller's email address.
+//
+// Use this to scope a lookup to the calling principal. Anything that picks a
+// tenant on a caller's behalf must be scoped this way: an unscoped
+// "list everything" query hands one user another tenant's workspace.
+func CallerEmail(ctx context.Context) (string, error) {
+	profile, ok := AccountProfileFromContext(ctx)
+	if !ok || profile == nil {
+		return "", errors.New("no authenticated caller in context")
+	}
+	email := strings.TrimSpace(profile.Email)
+	if email == "" {
+		return "", errors.New("authenticated caller has no email")
+	}
+	return email, nil
+}
+
 const (
 	// DefaultAccessTokenTTL defines the recommended 15-minute lifetime for JWT access tokens (OWASP ASVS V3.2.1).
 	DefaultAccessTokenTTL = 15 * time.Minute

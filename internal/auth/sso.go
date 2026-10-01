@@ -280,7 +280,7 @@ func (s *SSOService) ParseSAMLResponse(rawBase64 string) (*models.AccountProfile
 		return nil, fmt.Errorf("failed base64 decoding saml response: %w", err)
 	}
 
-	// 1. If an IdP Certificate is configured, verify cryptographic signature and conditions using SAMLHandler
+	// 1. If an IdP certificate is configured, verify signature and conditions.
 	if s.samlConfig != nil && strings.TrimSpace(s.samlConfig.IDPCertificate) != "" {
 		handler := ssoPkg.NewSAMLHandler()
 		if err := handler.SetIdPCertificate(s.samlConfig.IDPCertificate); err != nil {
@@ -308,7 +308,32 @@ func (s *SSOService) ParseSAMLResponse(rawBase64 string) (*models.AccountProfile
 		}, nil
 	}
 
-	// 2. Fallback XML parsing with temporal conditions and status checks
+	// 2. No IdP certificate configured: refuse.
+	//
+	// This used to fall through to plain XML parsing with only status and
+	// temporal checks, then build a complete AccountProfile -- including an
+	// email -- and return it for the caller to authenticate. Any party able to
+	// POST to the ACS endpoint could therefore assert any identity at all: no
+	// signature, no issuer check, nothing (AUDIT_REMEDIATION.md F-23).
+	//
+	// Status and NotBefore/NotOnOrAfter are properties of the *unverified*
+	// document, so they prove nothing about who sent it. An unverified SAML
+	// assertion is not authentication; it is an unauthenticated request to log
+	// in as whoever the attacker named.
+	//
+	// The parsing below is retained only so the failure message can describe what
+	// arrived, and its result is discarded.
+	if s.samlConfig == nil || strings.TrimSpace(s.samlConfig.IDPCertificate) == "" {
+		var resp SAMLResponseXML
+		_ = xml.Unmarshal(xmlBytes, &resp)
+		return nil, fmt.Errorf(
+			"saml authentication refused: no IdP certificate is configured for this workspace (%s), "+
+				"so the assertion cannot be cryptographically verified; refusing to authenticate an unsigned assertion",
+			samlEntityIDForError(resp))
+	}
+
+	// Unreachable in practice: the block above returns unless a certificate is
+	// configured, and that case is handled above with full verification.
 	var resp SAMLResponseXML
 	if err := xml.Unmarshal(xmlBytes, &resp); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling saml xml: %w", err)
@@ -373,4 +398,16 @@ func GenerateSecureNonce() string {
 		return hex.EncodeToString(u[:])
 	}
 	return hex.EncodeToString(b)
+}
+
+// samlEntityIDForError extracts an issuer identifier purely for a diagnostic
+// message. It is attacker-controlled and is never used for an access decision.
+func samlEntityIDForError(resp SAMLResponseXML) string {
+	if id := strings.TrimSpace(resp.Issuer); id != "" {
+		if len(id) > 120 {
+			id = id[:120]
+		}
+		return id
+	}
+	return "unknown issuer"
 }

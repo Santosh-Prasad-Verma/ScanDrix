@@ -235,16 +235,15 @@ func TestMassive_SelfHostedAirGappedBypassAndPrivateNetworks(t *testing.T) {
 			t.Fatalf("[Cloud Case %d] Cloud mode must not auto-verify private domain %s", i, domain)
 		}
 
-		// 2. Self-Hosted Mode: Must auto-verify private hostname
+		// 2. Self-hosted mode must behave identically: a private hostname is
+		//    still a domain that requires proof of ownership.
+		//    (AUDIT_REMEDIATION.md F-11 removed the instant auto-approval.)
 		selfHostedRec, err := selfHostedSvc.RequestVerification(ctx, wsID, domain, email)
 		if err != nil {
 			t.Fatalf("[SelfHosted Case %d] RequestVerification failed: %v", i, err)
 		}
-		if !selfHostedRec.Verified {
-			t.Fatalf("[SelfHosted Case %d] Self-hosted mode should auto-verify %s", i, domain)
-		}
-		if !selfHostedRec.IsSelfHostedBypass {
-			t.Fatalf("[SelfHosted Case %d] expected IsSelfHostedBypass=true", i)
+		if selfHostedRec.Verified {
+			t.Fatalf("[SelfHosted Case %d] self-hosted mode must not auto-verify %s", i, domain)
 		}
 	}
 }

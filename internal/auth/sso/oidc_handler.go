@@ -57,7 +57,27 @@ type OIDCHandler struct {
 	signingKey any                       // *rsa.PublicKey or []byte (fallback default)
 	jwksCache  map[string]*rsa.PublicKey // kid -> *rsa.PublicKey
 	httpClient *http.Client
+
+	// Key-rotation support (AUDIT_REMEDIATION.md F-30).
+	//
+	// FetchAndCacheJWKS had no production caller, so the cache stayed empty and
+	// the documented "automated key rotation" never happened; only the static
+	// signingKey ever verified anything. And because cached keys were never
+	// expired, a key the IdP had rotated *out* stayed trusted for the process
+	// lifetime.
+	jwksURI       string
+	jwksFetchedAt time.Time
+	lastRefetch   time.Time
 }
+
+// jwksCacheTTL bounds how long a fetched key may be trusted without a refresh.
+// IdPs publish new keys ahead of using them, so this only needs to be long enough
+// that a normal fetch cycle covers it.
+const jwksCacheTTL = 1 * time.Hour
+
+// jwksRefetchInterval throttles the "unknown kid" refresh path, so an attacker
+// cannot turn unknown key ids into a request amplifier aimed at the IdP.
+const jwksRefetchInterval = 1 * time.Minute
 
 // NewOIDCHandler initializes the OIDC handler with JWKS caching and timeout controls.
 func NewOIDCHandler() *OIDCHandler {
@@ -74,6 +94,22 @@ func (h *OIDCHandler) SetSigningKey(key any) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.signingKey = key
+}
+
+// currentSigningKey returns the statically configured key, if any.
+func (h *OIDCHandler) currentSigningKey() any {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.signingKey
+}
+
+// RefreshJWKS re-fetches the configured JWKS endpoint if one has been seen. Callers
+// that know provider metadata (for example on login) should call this so a
+// rotation is picked up without waiting for an unknown-kid retry.
+//
+// A provider with no JWKS endpoint configured is a no-op rather than an error.
+func (h *OIDCHandler) RefreshJWKS(ctx context.Context) {
+	h.refreshJWKSIfStale(ctx, false)
 }
 
 // SetHTTPClient configures a custom HTTP client for remote JWKS operations.
@@ -105,18 +141,65 @@ func (h *OIDCHandler) FetchAndCacheJWKS(ctx context.Context, jwksURI string) err
 		return fmt.Errorf("failed decoding JWKS response: %w", err)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Build the new set first, then swap it in wholesale. Merging into the old
+	// map would keep a key the IdP has since removed trusted forever, which is
+	// the exact failure F-30 describes: a rotated-out key must stop verifying.
+	fresh := make(map[string]*rsa.PublicKey)
 	for _, k := range jwks.Keys {
 		if strings.ToUpper(k.Kty) != "RSA" || k.Kid == "" || k.N == "" || k.E == "" {
 			continue
 		}
 		pubKey, err := parseRSAPublicKeyFromJWK(k)
 		if err == nil && pubKey != nil {
-			h.jwksCache[k.Kid] = pubKey
+			fresh[k.Kid] = pubKey
 		}
 	}
+
+	h.mu.Lock()
+	h.jwksCache = fresh
+	h.jwksURI = jwksURI
+	h.jwksFetchedAt = time.Now()
+	h.mu.Unlock()
 	return nil
+}
+
+// jwksUsableLocked reports whether the cache is present and fresh enough to trust.
+// Caller must hold at least a read lock.
+func (h *OIDCHandler) jwksUsableLocked(now time.Time) bool {
+	return len(h.jwksCache) > 0 && !h.jwksFetchedAt.IsZero() &&
+		now.Sub(h.jwksFetchedAt) < jwksCacheTTL
+}
+
+// refreshJWKSIfStale refetches when the cache is empty, expired, or older than the
+// throttle window. Errors are swallowed: a refresh failure must not turn a
+// previously valid verification into a hard error, and the caller falls through
+// to whatever key it already had.
+func (h *OIDCHandler) refreshJWKSIfStale(ctx context.Context, force bool) {
+	now := time.Now()
+
+	h.mu.RLock()
+	uri := h.jwksURI
+	usable := h.jwksUsableLocked(now)
+	lastRefetch := h.lastRefetch
+	h.mu.RUnlock()
+
+	if uri == "" {
+		return
+	}
+	if usable && !force {
+		return
+	}
+	// Throttle even the forced path: an unknown kid must not become an
+	// unbounded request generator against the identity provider.
+	if !lastRefetch.IsZero() && now.Sub(lastRefetch) < jwksRefetchInterval && !usable {
+		return
+	}
+
+	h.mu.Lock()
+	h.lastRefetch = now
+	h.mu.Unlock()
+
+	_ = h.FetchAndCacheJWKS(ctx, uri)
 }
 
 // DiscoverProvider queries /.well-known/openid-configuration to obtain provider metadata.
@@ -270,27 +353,50 @@ func (h *OIDCHandler) VerifySignature(rawJWT string, key any) error {
 
 // ParseAndVerifyIDToken decodes the JWT and validates standard claims (iss, aud, exp, email_verified).
 // Fails closed if no verification key is configured.
-func (h *OIDCHandler) ParseAndVerifyIDToken(rawJWT string, expectedIssuer string, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
+func (h *OIDCHandler) ParseAndVerifyIDToken(ctx context.Context, rawJWT string, expectedIssuer string, expectedAudience string, now time.Time) (*FederatedIdentity, error) {
 	parts := strings.Split(rawJWT, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT structure: expected 3 segments, got %d", len(parts))
 	}
 
 	// 0. Resolve Verification Key and Fail Closed if missing
-	h.mu.RLock()
-	verificationKey := h.signingKey
-	if verificationKey == nil {
-		headerBytes, decErr := base64.RawURLEncoding.DecodeString(parts[0])
-		if decErr == nil {
-			var hdr OIDCHeader
-			if json.Unmarshal(headerBytes, &hdr) == nil && hdr.Kid != "" {
-				if pk, ok := h.jwksCache[hdr.Kid]; ok {
-					verificationKey = pk
-				}
-			}
+	//
+	// Key rotation (AUDIT_REMEDIATION.md F-30). The static signingKey still wins
+	// when set, for compatibility with HMAC/pinned setups. Otherwise the JWKS
+	// cache is consulted, refreshed when stale, and refreshed once more when the
+	// presented kid is unknown -- which is what an IdP key rotation actually
+	// looks like from here.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	kid := ""
+	if headerBytes, decErr := base64.RawURLEncoding.DecodeString(parts[0]); decErr == nil {
+		var hdr OIDCHeader
+		if json.Unmarshal(headerBytes, &hdr) == nil {
+			kid = hdr.Kid
 		}
 	}
-	h.mu.RUnlock()
+
+	lookup := func() any {
+		h.mu.RLock()
+		defer h.mu.RUnlock()
+		if pk, ok := h.jwksCache[kid]; ok && kid != "" {
+			return pk
+		}
+		return nil
+	}
+
+	verificationKey := h.currentSigningKey()
+	if key := lookup(); key != nil {
+		verificationKey = key
+	} else if verificationKey == nil {
+		// Unknown kid: the IdP may have rotated. Refresh and retry once.
+		h.refreshJWKSIfStale(ctx, true)
+		if key := lookup(); key != nil {
+			verificationKey = key
+		}
+	}
 
 	if verificationKey == nil {
 		return nil, ErrUnsignedToken

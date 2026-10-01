@@ -1,21 +1,19 @@
 package auth
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"github.com/beevik/etree"
+	dsig "github.com/russellhaering/goxmldsig"
 	"math/big"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/scandrix/backend/pkg/models"
 )
 
 func TestSSOOIDCClaimValidation(t *testing.T) {
@@ -170,16 +168,21 @@ func TestSSOSAMLAssertionParsing(t *testing.T) {
 
 	b64XML := base64.StdEncoding.EncodeToString([]byte(rawXML))
 
+	// These assertions are completely unsigned, and no IdP certificate is
+	// configured for this service. They previously parsed successfully and
+	// yielded a usable AccountProfile, which meant anyone able to POST to the ACS
+	// endpoint could assert any identity at all (AUDIT_REMEDIATION.md F-23).
+	// The corrected contract is refusal: an unverified assertion is not
+	// authentication.
 	profile, err := sso.ParseSAMLResponse(b64XML)
-	if err != nil {
-		t.Fatalf("failed parsing SAML assertion: %v", err)
+	if err == nil {
+		t.Fatalf("an unsigned SAML assertion must be refused, got profile %+v", profile)
 	}
-
-	if profile.Email != "dev-lead@enterprise.com" {
-		t.Errorf("expected email 'dev-lead@enterprise.com', got %s", profile.Email)
+	if profile != nil {
+		t.Errorf("no profile may be returned for an unsigned assertion, got %+v", profile)
 	}
-	if profile.Role != models.RoleMember {
-		t.Errorf("expected member role, got %s", profile.Role)
+	if !strings.Contains(err.Error(), "IdP certificate") {
+		t.Errorf("error should explain the missing certificate, got: %v", err)
 	}
 
 	// 2. SAML Response with opaque NameID and email in AttributeStatement
@@ -199,12 +202,14 @@ func TestSSOSAMLAssertionParsing(t *testing.T) {
 		</saml:Assertion>
 	</samlp:Response>`
 
+	// Unsigned too: an email in an AttributeStatement is no more trustworthy
+	// than one in a NameID when nothing has been signed.
 	profileAttr, err := sso.ParseSAMLResponse(base64.StdEncoding.EncodeToString([]byte(attrXML)))
-	if err != nil {
-		t.Fatalf("failed parsing SAML assertion with attribute email: %v", err)
+	if err == nil {
+		t.Fatalf("an unsigned assertion with an attribute email must be refused, got %+v", profileAttr)
 	}
-	if profileAttr.Email != "arch-lead@enterprise.com" {
-		t.Errorf("expected email 'arch-lead@enterprise.com', got %s", profileAttr.Email)
+	if profileAttr != nil {
+		t.Errorf("no profile may be returned, got %+v", profileAttr)
 	}
 
 	// 3. Expired assertion conditions
@@ -220,11 +225,14 @@ func TestSSOSAMLAssertionParsing(t *testing.T) {
 		</saml:Assertion>
 	</samlp:Response>`, time.Now().Add(-2*time.Hour).Format(time.RFC3339), time.Now().Add(-1*time.Hour).Format(time.RFC3339))
 
+	// Expired conditions are no longer the first thing reported: an unsigned
+	// document is refused before its conditions are trusted, because NotBefore
+	// and NotOnOrAfter are claims by an unverified sender.
 	_, err = sso.ParseSAMLResponse(base64.StdEncoding.EncodeToString([]byte(expiredCondXML)))
 	if err == nil {
 		t.Error("expected error for expired SAML assertion conditions, got nil")
-	} else if !strings.Contains(err.Error(), "expired") {
-		t.Errorf("expected expired error, got: %v", err)
+	} else if !strings.Contains(err.Error(), "IdP certificate") {
+		t.Errorf("expected the unsigned-assertion refusal, got: %v", err)
 	}
 
 	// 4. SAML Failure status
@@ -237,6 +245,52 @@ func TestSSOSAMLAssertionParsing(t *testing.T) {
 	_, err = sso.ParseSAMLResponse(base64.StdEncoding.EncodeToString([]byte(failureXML)))
 	if err == nil {
 		t.Error("expected error for non-Success SAML status, got nil")
+	}
+}
+
+// F-23 regression: the unsigned-assertion fallback used to build a complete
+// AccountProfile from a document that was never cryptographically verified, and
+// the caller authenticated with it. Any party able to POST to the ACS endpoint
+// could therefore log in as any identity they named.
+func TestUnsignedSAMLAssertionNeverYieldsAProfile(t *testing.T) {
+	// No IDPCertificate: exactly the configuration that used to fall through to
+	// unsigned parsing.
+	svc := NewSSOService(nil, &SAMLProviderConfig{
+		SPEntityID: "urn:scandrix:sp",
+		ACSURL:     "https://app.scandrix.io/auth/saml/acs",
+		IDPSSOURL:  "https://idp.okta.com/app/sso/saml",
+	})
+
+	cases := map[string]string{
+		"NameID email": `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+			<samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
+			<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+				<saml:Subject><saml:NameID>attacker@evil.example</saml:NameID></saml:Subject>
+			</saml:Assertion>
+		</samlp:Response>`,
+		"attribute email": `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+			<samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
+			<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+				<saml:Subject><saml:NameID>opaque-1</saml:NameID></saml:Subject>
+				<saml:AttributeStatement>
+					<saml:Attribute Name="emailaddress">
+						<saml:AttributeValue>attacker@evil.example</saml:AttributeValue>
+					</saml:Attribute>
+				</saml:AttributeStatement>
+			</saml:Assertion>
+		</samlp:Response>`,
+	}
+
+	for name, doc := range cases {
+		t.Run(name, func(t *testing.T) {
+			profile, err := svc.ParseSAMLResponse(base64.StdEncoding.EncodeToString([]byte(doc)))
+			if err == nil {
+				t.Fatalf("unsigned assertion was accepted: %+v", profile)
+			}
+			if profile != nil {
+				t.Errorf("profile must be nil for an unsigned assertion, got %+v", profile)
+			}
+		})
 	}
 }
 
@@ -267,9 +321,11 @@ func TestSSOSAMLCryptographicVerification(t *testing.T) {
 		IDPCertificate: certPEM,
 	})
 
+	// IDs are required: a real XMLDSig <Reference URI="#id"> cannot bind to an
+	// element that has none. AUDIT_REMEDIATION.md F-24.
 	unsignedXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol">
-  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion">
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_cryptoresp">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_cryptoassert">
     <Issuer>https://idp.okta.com/app</Issuer>
     <Subject>
       <NameID>crypto-user@enterprise.com</NameID>
@@ -282,14 +338,9 @@ func TestSSOSAMLCryptographicVerification(t *testing.T) {
   </Assertion>
 </Response>`, now.Add(-5*time.Minute).Format(time.RFC3339), now.Add(5*time.Minute).Format(time.RFC3339))
 
-	h256 := sha256.Sum256([]byte(unsignedXML))
-	sigBytes, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h256[:])
-	if err != nil {
-		t.Fatalf("failed signing test XML: %v", err)
-	}
-	sigBase64 := base64.StdEncoding.EncodeToString(sigBytes)
-
-	samlXML := strings.Replace(unsignedXML, "</Response>", fmt.Sprintf("<Signature xmlns=\"http://www.w3.org/2000/09/xmldsig#\"><SignedInfo><SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"/></SignedInfo><SignatureValue>%s</SignatureValue></Signature></Response>", sigBase64), 1)
+	// A genuine enveloped XMLDSig signature, not a hash of the whole document
+	// wrapped in a <SignedInfo> that has no <Reference> or <DigestValue>.
+	samlXML := signAssertionEnvelopedForTest(t, unsignedXML, rsaKey)
 
 	profile, err := ssoService.ParseSAMLResponse(base64.StdEncoding.EncodeToString([]byte(samlXML)))
 	if err != nil {
@@ -305,4 +356,58 @@ func TestSSOSAMLCryptographicVerification(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for tampered SAML assertion signature, got nil")
 	}
+}
+
+// signAssertionEnvelopedForTest signs the <Assertion> in a SAML Response with a
+// genuine enveloped XMLDSig signature.
+//
+// The previous fixture hashed the whole unsigned document and embedded a
+// <SignedInfo> carrying only a SignatureMethod - no <Reference>, no
+// <DigestValue> - which the old handler's non-XMLDSig fallback happened to
+// accept. Verification is now real XMLDSig, so the fixture has to be a real
+// signature. AUDIT_REMEDIATION.md F-24.
+func signAssertionEnvelopedForTest(t *testing.T, unsignedXML string, key *rsa.PrivateKey) string {
+	t.Helper()
+
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(unsignedXML); err != nil {
+		t.Fatalf("parse unsigned SAML: %v", err)
+	}
+	assertion := doc.FindElement("//Assertion")
+	if assertion == nil {
+		t.Fatal("unsigned SAML has no Assertion element")
+	}
+
+	signCtx, err := dsig.NewSigningContext(key, nil)
+	if err != nil {
+		t.Fatalf("signing context: %v", err)
+	}
+	signCtx.IdAttribute = "ID"
+	if err := signCtx.SetSignatureMethod(dsig.RSASHA256SignatureMethod); err != nil {
+		t.Fatalf("set signature method: %v", err)
+	}
+	signedAssertion, err := signCtx.SignEnveloped(assertion)
+	if err != nil {
+		t.Fatalf("sign assertion: %v", err)
+	}
+	if sigEl := signedAssertion.FindElement("./Signature"); sigEl != nil {
+		// Drop KeyInfo: goxmldsig's signer leaves <X509Certificate> empty and
+		// its validator then refuses rather than using the configured cert.
+		for _, child := range sigEl.ChildElements() {
+			if child.Tag == "KeyInfo" {
+				sigEl.RemoveChild(child)
+			}
+		}
+	}
+	parent := assertion.Parent()
+	parent.RemoveChild(assertion)
+	parent.AddChild(signedAssertion)
+
+	// No re-indentation: canonicalisation preserves whitespace, so
+	// pretty-printing SignedInfo after signing breaks the signature.
+	out, err := doc.WriteToString()
+	if err != nil {
+		t.Fatalf("serialize signed SAML: %v", err)
+	}
+	return out
 }

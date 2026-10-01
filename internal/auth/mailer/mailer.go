@@ -3,6 +3,7 @@ package mailer
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -187,6 +188,57 @@ func (s *SMTPSender) SendTeamInviteEmail(ctx context.Context, recipientEmail, in
 }
 
 // NoopSender is a fallback that logs dispatch events without network requests (for testing/dev).
+// ErrSMTPNotConfigured is returned by every send method when no SMTP host is
+// configured. Callers must surface it rather than treating delivery as
+// successful.
+var ErrSMTPNotConfigured = errors.New("mailer: SMTP is not configured; set SMTP_HOST to send email")
+
+// UnconfiguredSender is returned by NewSender when no SMTP host is configured.
+//
+// It exists so that a deployment without SMTP fails loudly. Previously
+// NewSender returned NoopSender, whose methods all returned nil, so every
+// email path reported success while discarding the message: password reset,
+// email confirmation, subscription welcome, payment invoice, payment failed,
+// spend-limit alerts and team invites were all silently lost, locking users
+// out of their accounts with no signal (AUDIT_REMEDIATION.md F-04).
+type UnconfiguredSender struct{}
+
+// Err reports the configuration failure. Every send method returns it.
+func (UnconfiguredSender) Err() error { return ErrSMTPNotConfigured }
+
+func (UnconfiguredSender) SendPasswordResetEmail(context.Context, string, string) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendEmailConfirmation(context.Context, string, string) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendSubscriptionWelcomeEmail(context.Context, string, string, string, string, int64, []string, string) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendPaymentInvoiceEmail(context.Context, string, templates.InvoiceDetails) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendPaymentFailedEmail(context.Context, string, string, string, string, string, string, string) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendSpendLimitAlertEmail(context.Context, string, string, string, int, int64, int64, string) error {
+	return ErrSMTPNotConfigured
+}
+
+func (UnconfiguredSender) SendTeamInviteEmail(context.Context, string, string, string, string, string) error {
+	return ErrSMTPNotConfigured
+}
+
+// NoopSender records the last message instead of sending it.
+//
+// It is intended for tests only. It must never be returned by NewSender in a
+// running deployment, because it reports success for a message that was
+// discarded. Use UnconfiguredSender instead.
 type NoopSender struct {
 	LastRecipient string
 	LastSubject   string
@@ -195,7 +247,7 @@ type NoopSender struct {
 	LastInvoice   *templates.InvoiceDetails
 }
 
-// NewNoopSender creates a no-op email sender.
+// NewNoopSender creates a recording sender for use in tests.
 func NewNoopSender() *NoopSender {
 	return &NoopSender{}
 }
@@ -253,9 +305,15 @@ func (n *NoopSender) SendTeamInviteEmail(_ context.Context, recipientEmail, invi
 }
 
 // NewSender constructs the appropriate EmailSender based on configuration.
+//
+// When no SMTP host is configured it returns an UnconfiguredSender, whose
+// methods return ErrSMTPNotConfigured. It deliberately does NOT return a
+// sender that reports success without delivering: a silently-discarded
+// password-reset email locks the user out of their account permanently
+// (AUDIT_REMEDIATION.md F-04).
 func NewSender(cfg SMTPConfig) EmailSender {
 	if strings.TrimSpace(cfg.Host) != "" {
 		return NewSMTPSender(cfg)
 	}
-	return NewNoopSender()
+	return UnconfiguredSender{}
 }

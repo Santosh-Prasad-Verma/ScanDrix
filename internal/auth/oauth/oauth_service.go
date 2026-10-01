@@ -127,7 +127,14 @@ func (s *OAuthService) SetHTTPClient(client *http.Client) {
 }
 
 // GetAuthorizationURL returns the redirect URL to send the user's browser to.
+// GetAuthorizationURL builds the authorize URL without PKCE.
 func (s *OAuthService) GetAuthorizationURL(provider OAuthProvider, state string) (string, error) {
+	return s.GetAuthorizationURLWithPKCE(provider, state, "", "")
+}
+
+// GetAuthorizationURLWithPKCE builds the authorize URL including the S256 PKCE
+// code challenge and the ID-token nonce.
+func (s *OAuthService) GetAuthorizationURLWithPKCE(provider OAuthProvider, state, codeChallenge, nonce string) (string, error) {
 	cfg, ok := s.providers[provider]
 	if !ok || cfg.ClientID == "" {
 		return "", ErrUnsupportedProvider
@@ -144,6 +151,16 @@ func (s *OAuthService) GetAuthorizationURL(provider OAuthProvider, state string)
 		q.Set("redirect_uri", cfg.RedirectURI)
 	}
 	q.Set("scope", cfg.Scope)
+	// PKCE (RFC 7636) and ID-token nonce.
+	// AUDIT_REMEDIATION.md: the user OAuth flow previously sent neither,
+	// so an intercepted authorization code could be replayed.
+	if codeChallenge != "" {
+		q.Set("code_challenge", codeChallenge)
+		q.Set("code_challenge_method", "S256")
+	}
+	if nonce != "" {
+		q.Set("nonce", nonce)
+	}
 	q.Set("state", state)
 	q.Set("response_type", "code")
 	u.RawQuery = q.Encode()
@@ -200,7 +217,14 @@ func (s *OAuthService) ExchangeAccessToken(ctx context.Context, provider OAuthPr
 }
 
 // ExchangeCode exchanges an authorization code for user profile details.
+// ExchangeCode redeems an authorization code without PKCE.
 func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider, code string) (*OAuthUserProfile, error) {
+	return s.ExchangeCodeWithPKCE(ctx, provider, code, "")
+}
+
+// ExchangeCodeWithPKCE redeems an authorization code, presenting the PKCE code
+// verifier that matches the challenge sent on the authorize leg.
+func (s *OAuthService) ExchangeCodeWithPKCE(ctx context.Context, provider OAuthProvider, code, codeVerifier string) (*OAuthUserProfile, error) {
 	cfg, ok := s.providers[provider]
 	if !ok {
 		return nil, ErrUnsupportedProvider
@@ -217,6 +241,12 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, provider OAuthProvider,
 	}
 	if provider == ProviderGitLab {
 		tokenValues.Set("grant_type", "authorization_code")
+	}
+
+	// The verifier is only ever sent to the token endpoint, never to the
+	// browser, so a stolen authorization code cannot be redeemed.
+	if codeVerifier != "" {
+		tokenValues.Set("code_verifier", codeVerifier)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.TokenURL, strings.NewReader(tokenValues.Encode()))

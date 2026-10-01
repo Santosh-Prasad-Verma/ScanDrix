@@ -2,6 +2,7 @@ package mailer_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/scandrix/backend/internal/auth/mailer"
@@ -65,10 +66,19 @@ func TestNoopSender(t *testing.T) {
 }
 
 func TestNewSenderFactory(t *testing.T) {
-	// 1. Without host -> returns NoopSender
+	ctx := context.Background()
+
+	// 1. Without host -> returns UnconfiguredSender, whose sends all fail.
+	//
+	// It used to return a NoopSender, which returned nil from every send, so a
+	// deployment with no SMTP silently discarded password resets and email
+	// confirmations while reporting success (AUDIT_REMEDIATION.md F-04).
 	s1 := mailer.NewSender(mailer.SMTPConfig{})
-	if _, ok := s1.(*mailer.NoopSender); !ok {
-		t.Errorf("expected *mailer.NoopSender when host is empty, got %T", s1)
+	if _, ok := s1.(mailer.UnconfiguredSender); !ok {
+		t.Fatalf("expected mailer.UnconfiguredSender when host is empty, got %T", s1)
+	}
+	if err := s1.SendPasswordResetEmail(ctx, "a@b.test", "https://x"); !errors.Is(err, mailer.ErrSMTPNotConfigured) {
+		t.Fatalf("expected ErrSMTPNotConfigured, got %v", err)
 	}
 
 	// 2. With host -> returns SMTPSender

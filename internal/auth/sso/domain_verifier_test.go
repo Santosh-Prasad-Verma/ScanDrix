@@ -6,6 +6,7 @@ package sso_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -110,23 +111,59 @@ func TestDomainVerification_CloudModeDNS(t *testing.T) {
 	}
 }
 
-func TestDomainVerification_SelfHostedBypass(t *testing.T) {
+// TestDomainVerification_RequiresProofOfOwnership pins AUDIT_REMEDIATION.md F-11.
+//
+// The service previously auto-approved every domain when cloudMode was false,
+// which is how it was constructed in production, so no domain ever required
+// proof. Ownership must now come from a DNS TXT challenge or a confirmed token.
+func TestDomainVerification_RequiresProofOfOwnership(t *testing.T) {
+	for _, cloudMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cloudMode=%v", cloudMode), func(t *testing.T) {
+			resolver := newMockDNSResolver()
+			service := sso.NewDomainVerifierService(resolver, cloudMode)
+			wsID := uuid.New()
+			ctx := context.Background()
+
+			rec, err := service.RequestVerification(ctx, wsID, "selfhosted.org", "it@selfhosted.org")
+			if err != nil {
+				t.Fatalf("RequestVerification failed: %v", err)
+			}
+
+			if rec.Verified {
+				t.Fatalf("a fresh challenge must not be pre-verified: %+v", rec)
+			}
+			if rec.Token == "" {
+				t.Fatalf("a challenge must carry a token to prove ownership")
+			}
+			if rec.TXTRecordExpected == "" {
+				t.Fatalf("a challenge must state the expected TXT record")
+			}
+			if service.IsDomainVerified(ctx, wsID, "selfhosted.org") {
+				t.Fatalf("IsDomainVerified must be false before the challenge is satisfied")
+			}
+
+			// Once the DNS challenge is satisfied, the domain is verified.
+			resolver.setTXT(rec.TXTRecordHost, []string{rec.TXTRecordExpected})
+			if _, err := service.VerifyDNS(ctx, wsID, "selfhosted.org"); err != nil {
+				t.Fatalf("VerifyDNS failed: %v", err)
+			}
+			if !service.IsDomainVerified(ctx, wsID, "selfhosted.org") {
+				t.Fatalf("the domain must verify once the TXT record matches")
+			}
+		})
+	}
+}
+
+// TestDomainVerification_ContactEmailMustMatchDomainInCloudMode confirms the
+// cloud-mode tightening is retained after the bypass was removed.
+func TestDomainVerification_ContactEmailMustMatchDomainInCloudMode(t *testing.T) {
 	resolver := newMockDNSResolver()
-	service := sso.NewDomainVerifierService(resolver, false) // self-hosted mode (cloudMode = false)
+	cloud := sso.NewDomainVerifierService(resolver, true)
 	wsID := uuid.New()
 	ctx := context.Background()
 
-	rec, err := service.RequestVerification(ctx, wsID, "selfhosted.org", "it@otherdomain.com")
-	if err != nil {
-		t.Fatalf("RequestVerification failed: %v", err)
-	}
-
-	if !rec.Verified || !rec.IsSelfHostedBypass {
-		t.Fatal("Self-hosted mode should immediately auto-verify with bypass flag")
-	}
-
-	if !service.IsDomainVerified(ctx, wsID, "selfhosted.org") {
-		t.Fatal("IsDomainVerified should immediately return true for self-hosted")
+	if _, err := cloud.RequestVerification(ctx, wsID, "corp.com", "attacker@evil.test"); err == nil {
+		t.Fatalf("cloud mode must reject a contact email outside the domain being verified")
 	}
 }
 
@@ -169,20 +206,108 @@ func TestDomainVerification_Concurrency(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			ws := uuid.New()
-			domain := "company-" + string(rune('a'+workerID%26)) + ".com"
+			// The domain must be unique per worker. It used to be
+			// "company-"+rune('a'+workerID%26), so with 50 workers several
+			// shared a domain; each setTXT then overwrote the shared TXT
+			// record and a peer failed to verify. That made this test flaky
+			// and unrelated to the concurrency it claims to exercise.
+			domain := fmt.Sprintf("company-%d.com", workerID)
 			email := "user@" + domain
 
+			// A fresh challenge must be unverified, and the service must stay
+			// race-free under concurrent access (AUDIT_REMEDIATION.md F-11).
 			rec, err := service.RequestVerification(ctx, ws, domain, email)
 			if err != nil {
 				t.Errorf("Worker %d failed: %v", workerID, err)
 				return
 			}
-			if !service.IsDomainVerified(ctx, ws, domain) {
-				t.Errorf("Worker %d expected verified", workerID)
+			if service.IsDomainVerified(ctx, ws, domain) {
+				t.Errorf("Worker %d: domain must not be verified before the challenge is met", workerID)
 			}
-			_ = rec
+
+			// Satisfy the challenge; the per-workspace record must stay isolated
+			// from every other worker's.
+			resolver.setTXT(rec.TXTRecordHost, []string{rec.TXTRecordExpected})
+			if _, err := service.VerifyDNS(ctx, ws, domain); err != nil {
+				t.Errorf("Worker %d verify failed: %v", workerID, err)
+				return
+			}
+			if !service.IsDomainVerified(ctx, ws, domain) {
+				t.Errorf("Worker %d expected verified after the TXT record matched", workerID)
+			}
 		}(i)
 	}
 
 	wg.Wait()
+}
+
+// TestDomainVerification_QuotedAndSegmentedTXTRecords pins AUDIT_REMEDIATION.md
+// F-11. The auto-approval bypass made VerifyDNS return before it performed a
+// lookup, so these real-world DNS response shapes were never exercised. Now
+// that ownership is genuinely checked, a correctly published record must verify
+// whether or not the provider quotes it, and must not be fooled by unrelated
+// records in the same answer.
+func TestDomainVerification_QuotedAndSegmentedTXTRecords(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(valid string) []string
+	}{
+		{"bare", func(v string) []string { return []string{v} }},
+		{"quoted", func(v string) []string { return []string{`"` + v + `"`} }},
+		{"padded", func(v string) []string { return []string{"  " + v + "  "} }},
+		{"segmented", func(v string) []string { return []string{`"v=spf1 -all" "` + v + `"`} }},
+		{"with noise", func(v string) []string {
+			return []string{
+				"v=spf1 include:_spf.google.com ~all",
+				"scandrix-domain-verification=" + strings.Repeat("0", 48),
+				v,
+				"google-site-verification=abc123",
+			}
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := newMockDNSResolver()
+			svc := sso.NewDomainVerifierService(resolver, false)
+			wsID := uuid.New()
+			ctx := context.Background()
+
+			rec, err := svc.RequestVerification(ctx, wsID, "quoted.example.com", "admin@quoted.example.com")
+			if err != nil {
+				t.Fatalf("RequestVerification failed: %v", err)
+			}
+			resolver.setTXT("quoted.example.com", tc.build(rec.TXTRecordExpected))
+
+			if _, err := svc.VerifyDNS(ctx, wsID, "quoted.example.com"); err != nil {
+				t.Fatalf("a correctly published record must verify: %v", err)
+			}
+			if !svc.IsDomainVerified(ctx, wsID, "quoted.example.com") {
+				t.Fatal("domain should be verified after a matching TXT record")
+			}
+		})
+	}
+}
+
+// TestDomainVerification_RejectsWrongToken guards the negative path: a domain
+// whose TXT record carries somebody else's token must not verify.
+func TestDomainVerification_RejectsWrongToken(t *testing.T) {
+	resolver := newMockDNSResolver()
+	svc := sso.NewDomainVerifierService(resolver, false)
+	wsID := uuid.New()
+	ctx := context.Background()
+
+	if _, err := svc.RequestVerification(ctx, wsID, "target.example.com", "admin@target.example.com"); err != nil {
+		t.Fatalf("RequestVerification failed: %v", err)
+	}
+	resolver.setTXT("target.example.com", []string{
+		sso.TXTRecordPrefix + strings.Repeat("f", 48),
+	})
+
+	if _, err := svc.VerifyDNS(ctx, wsID, "target.example.com"); err == nil {
+		t.Fatal("a TXT record carrying a different token must not verify the domain")
+	}
+	if svc.IsDomainVerified(ctx, wsID, "target.example.com") {
+		t.Fatal("domain must remain unverified after a failed challenge")
+	}
 }
