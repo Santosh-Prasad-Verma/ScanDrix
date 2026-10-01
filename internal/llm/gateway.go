@@ -34,8 +34,8 @@ type ReviewRequest struct {
 	PullTitle          string
 	DiffContent        string
 	CustomRules        string
-	Model              string           // User-selected model name (takes priority over defaults)
-	BaseURL            string           // Custom endpoint URL for OpenAI-compatible providers
+	Model              string // User-selected model name (takes priority over defaults)
+	BaseURL            string // Custom endpoint URL for OpenAI-compatible providers
 	BYOKConfig         *byok.BYOKConfig
 	BYOKOpenRouterKey  string
 	BYOKAnthropicKey   string
@@ -113,6 +113,8 @@ type Gateway struct {
 	localEndpoint    string
 	novitaKey        string
 	mistralKey       string
+	groqKey          string
+	cohereKey        string
 	xaiKey           string
 	minimaxKey       string
 	moonshotKey      string
@@ -139,6 +141,14 @@ func WithNovita(key string) GatewayOption {
 
 func WithMistral(key string) GatewayOption {
 	return func(g *Gateway) { g.mistralKey = key }
+}
+
+func WithGroq(key string) GatewayOption {
+	return func(g *Gateway) { g.groqKey = key }
+}
+
+func WithCohere(key string) GatewayOption {
+	return func(g *Gateway) { g.cohereKey = key }
 }
 
 func WithXAI(key string) GatewayOption {
@@ -311,6 +321,15 @@ func (g *Gateway) resolveDefaultSlot() *byok.NormalizedModel {
 		env.VertexProject = g.vertexProject
 		env.VertexLocation = g.vertexRegion
 	}
+	if g.mistralKey != "" {
+		env.MistralKey = g.mistralKey
+	}
+	if g.groqKey != "" {
+		env.GroqKey = g.groqKey
+	}
+	if g.cohereKey != "" {
+		env.CohereKey = g.cohereKey
+	}
 	return byok.ResolveManagedSlotFromConfig(env)
 }
 
@@ -397,6 +416,15 @@ func (g *Gateway) AnalyzeDiff(ctx context.Context, req ReviewRequest) (*ReviewRe
 		}
 		if g.geminiKey != "" && env.GeminiKey == "" {
 			env.GeminiKey = g.geminiKey
+		}
+		if g.mistralKey != "" && env.MistralKey == "" {
+			env.MistralKey = g.mistralKey
+		}
+		if g.groqKey != "" && env.GroqKey == "" {
+			env.GroqKey = g.groqKey
+		}
+		if g.cohereKey != "" && env.CohereKey == "" {
+			env.CohereKey = g.cohereKey
 		}
 		slot = byok.ResolveManagedSlotFromConfig(env)
 	}

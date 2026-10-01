@@ -40,7 +40,7 @@ func (uc *FindLibraryDrixyRulesUseCase) Execute(ctx context.Context, filters dto
 		"scope":    filters.Scope,
 	}
 
-	allRules, err := uc.rulesService.GetLibraryDrixyRulesWithFeedback(ctx, filterMap, "")
+	allRules, err := uc.rulesService.GetLibraryDrixyRulesWithFeedback(ctx, "", filterMap, "")
 	if err != nil {
 		return nil, err
 	}

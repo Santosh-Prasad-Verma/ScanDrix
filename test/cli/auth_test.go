@@ -26,7 +26,26 @@ func setupTempHome(t *testing.T) string {
 	tempDir := t.TempDir()
 	t.Setenv("HOME", tempDir)
 	t.Setenv("USERPROFILE", tempDir)
+	// These override any stored session token and take precedence over it
+	// (see Service.getEnvAuthToken). A developer with a real key exported in
+	// their shell or .env would otherwise silently break these tests, so the
+	// suite clears them and asserts the real credential flow instead.
+	clearAuthEnvOverrides(t)
 	return tempDir
+}
+
+// clearAuthEnvOverrides removes the env-based auth overrides for the duration of
+// the test. t.Setenv restores the previous values automatically.
+func clearAuthEnvOverrides(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"SCANDRIX_TOKEN",
+		"SCANDRIX_ACCESS_TOKEN",
+		"SCANDRIX_TEAM_KEY",
+		"SCANDRIX_API_KEY",
+	} {
+		t.Setenv(key, "")
+	}
 }
 
 func TestAuthService_PasswordLogin(t *testing.T) {

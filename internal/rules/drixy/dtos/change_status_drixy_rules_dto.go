@@ -11,7 +11,7 @@ import (
 
 // ChangeStatusDrixyRulesDTO alters status across a list of rules.
 type ChangeStatusDrixyRulesDTO struct {
-	RuleIDs []string                   `json:"ruleIds"`
+	RuleIDs []string                    `json:"ruleIds"`
 	Status  interfaces.DrixyRulesStatus `json:"status"`
-	TeamID  string                     `json:"teamId,omitempty"`
+	TeamID  string                      `json:"teamId,omitempty"`
 }

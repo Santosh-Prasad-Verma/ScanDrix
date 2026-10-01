@@ -249,121 +249,15 @@ func (r *SQLAuthRepository) DeactivateRefreshToken(ctx context.Context, userUUID
 	return err
 }
 
-// SQLCLIAuthSessionRepository implements domain.CliAuthSessionRepository.
-type SQLCLIAuthSessionRepository struct {
-	db *sql.DB
-}
-
-// NewSQLCLIAuthSessionRepository creates a new SQLCLIAuthSessionRepository.
-func NewSQLCLIAuthSessionRepository(db *sql.DB) *SQLCLIAuthSessionRepository {
-	return &SQLCLIAuthSessionRepository{db: db}
-}
-
-func (r *SQLCLIAuthSessionRepository) Create(ctx context.Context, session domain.CliAuthSession) (*domain.CliAuthSession, error) {
-	if session.UUID == uuid.Nil {
-		session.UUID = uuid.New()
-	}
-	now := time.Now().UTC()
-	session.CreatedAt = now
-
-	query := `
-INSERT INTO cli_auth_sessions (id, session_id, user_code, device_code, status, expires_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-
-	var uCode, dCode any
-	if session.UserCode != nil {
-		uCode = *session.UserCode
-	}
-	if session.DeviceCode != nil {
-		dCode = *session.DeviceCode
-	}
-
-	_, err := r.db.ExecContext(ctx, query,
-		session.UUID.String(),
-		session.SessionID,
-		uCode,
-		dCode,
-		string(session.Status),
-		session.ExpiresAt,
-		now,
-		now,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &session, nil
-}
-
-func (r *SQLCLIAuthSessionRepository) FindByState(ctx context.Context, state string) (*domain.CliAuthSession, error) {
-	query := `SELECT id, session_id, user_code, device_code, status, expires_at, created_at FROM cli_auth_sessions WHERE session_id = $1`
-	return r.scanSession(r.db.QueryRowContext(ctx, query, state))
-}
-
-func (r *SQLCLIAuthSessionRepository) FindByDeviceCode(ctx context.Context, code string) (*domain.CliAuthSession, error) {
-	query := `SELECT id, session_id, user_code, device_code, status, expires_at, created_at FROM cli_auth_sessions WHERE device_code = $1`
-	return r.scanSession(r.db.QueryRowContext(ctx, query, code))
-}
-
-func (r *SQLCLIAuthSessionRepository) FindByUserCode(ctx context.Context, code string) (*domain.CliAuthSession, error) {
-	query := `SELECT id, session_id, user_code, device_code, status, expires_at, created_at FROM cli_auth_sessions WHERE user_code = $1`
-	return r.scanSession(r.db.QueryRowContext(ctx, query, strings.ToUpper(strings.TrimSpace(code))))
-}
-
-func (r *SQLCLIAuthSessionRepository) scanSession(row *sql.Row) (*domain.CliAuthSession, error) {
-	var s domain.CliAuthSession
-	var idStr, statusStr string
-	var uCode, dCode sql.NullString
-
-	err := row.Scan(&idStr, &s.SessionID, &uCode, &dCode, &statusStr, &s.ExpiresAt, &s.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	s.UUID, _ = uuid.Parse(idStr)
-	s.Status = domain.CliAuthSessionStatus(statusStr)
-	if uCode.Valid {
-		s.UserCode = &uCode.String
-	}
-	if dCode.Valid {
-		s.DeviceCode = &dCode.String
-	}
-	return &s, nil
-}
-
-func (r *SQLCLIAuthSessionRepository) Complete(ctx context.Context, id uuid.UUID, tokens domain.TokenResponse, userUUID uuid.UUID, userEmail string) (*domain.CliAuthSession, error) {
-	query := `
-UPDATE cli_auth_sessions 
-SET status = 'approved', user_id = $1, token = $2, refresh_token = $3, updated_at = NOW()
-WHERE id = $4`
-	_, err := r.db.ExecContext(ctx, query, userUUID.String(), tokens.AccessToken, tokens.RefreshToken, id.String())
-	if err != nil {
-		return nil, err
-	}
-	return r.FindByState(ctx, id.String())
-}
-
-func (r *SQLCLIAuthSessionRepository) MarkConsumed(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE cli_auth_sessions SET status = 'consumed', updated_at = NOW() WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, id.String())
-	return err
-}
-
-func (r *SQLCLIAuthSessionRepository) MarkDenied(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE cli_auth_sessions SET status = 'denied', updated_at = NOW() WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, id.String())
-	return err
-}
-
-func (r *SQLCLIAuthSessionRepository) ExpirePending(ctx context.Context, now time.Time) (int, error) {
-	query := `UPDATE cli_auth_sessions SET status = 'expired', updated_at = NOW() WHERE status = 'pending' AND expires_at < $1`
-	res, err := r.db.ExecContext(ctx, query, now)
-	if err != nil {
-		return 0, err
-	}
-	affected, _ := res.RowsAffected()
-	return int(affected), nil
-}
-
-// SQLProfileConfigRepository implements domain.ProfileConfigRepository.
+// SQLCLIAuthSessionRepository removed.
+//
+// It claimed to implement domain.CliAuthSessionRepository but was never
+// constructed and had no callers. It wrote a second, incompatible shape
+// of cli_auth_sessions (session_id with no session_code, no workspace_id,
+// no token_payload), so leaving it in place meant two code paths claiming
+// ownership of one table. The live writer is auth_repository.go, which is
+// covered by the real-PostgreSQL lifecycle and atomic-consume tests.
+// AUDIT_REMEDIATION.md F-37.
 type SQLProfileConfigRepository struct {
 	db *sql.DB
 }

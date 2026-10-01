@@ -1,10 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Multi-Agent Code Review Platform
-// Copyright (c) 2026 ScanDrix Authors. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-// Domain: scandrix.dev
-// ═══════════════════════════════════════════════════════════════
-
 package audit
 
 import (
@@ -17,19 +10,19 @@ import (
 type AuditEventCategory string
 
 const (
-	CategoryCodeReviewConfig         AuditEventCategory = "CODE_REVIEW_CONFIG"
-	CategoryDrixyRules               AuditEventCategory = "DRIXY_RULES"
-	CategoryRepositories             AuditEventCategory = "REPOSITORIES"
-	CategoryRepositoryConfigRemoval  AuditEventCategory = "REPOSITORY_CONFIG_REMOVAL"
-	CategoryDirectoryConfigRemoval   AuditEventCategory = "DIRECTORY_CONFIG_REMOVAL"
-	CategoryIntegration              AuditEventCategory = "INTEGRATION"
-	CategoryUserStatus               AuditEventCategory = "USER_STATUS"
-	CategoryPRMessages               AuditEventCategory = "PR_MESSAGES"
-	CategoryUserInvite               AuditEventCategory = "USER_INVITE"
-	CategoryUserRoleChange           AuditEventCategory = "USER_ROLE_CHANGE"
-	CategoryUserRepoAccess           AuditEventCategory = "USER_REPO_ACCESS"
-	CategoryOrgSettings              AuditEventCategory = "ORG_SETTINGS"
-	CategoryCliKey                   AuditEventCategory = "CLI_KEY"
+	CategoryCodeReviewConfig        AuditEventCategory = "CODE_REVIEW_CONFIG"
+	CategoryDrixyRules              AuditEventCategory = "DRIXY_RULES"
+	CategoryRepositories            AuditEventCategory = "REPOSITORIES"
+	CategoryRepositoryConfigRemoval AuditEventCategory = "REPOSITORY_CONFIG_REMOVAL"
+	CategoryDirectoryConfigRemoval  AuditEventCategory = "DIRECTORY_CONFIG_REMOVAL"
+	CategoryIntegration             AuditEventCategory = "INTEGRATION"
+	CategoryUserStatus              AuditEventCategory = "USER_STATUS"
+	CategoryPRMessages              AuditEventCategory = "PR_MESSAGES"
+	CategoryUserInvite              AuditEventCategory = "USER_INVITE"
+	CategoryUserRoleChange          AuditEventCategory = "USER_ROLE_CHANGE"
+	CategoryUserRepoAccess          AuditEventCategory = "USER_REPO_ACCESS"
+	CategoryOrgSettings             AuditEventCategory = "ORG_SETTINGS"
+	CategoryCliKey                  AuditEventCategory = "CLI_KEY"
 )
 
 // ActorContext records the authenticated identity initiating an audit event.
@@ -145,10 +138,10 @@ type PRMessagesPayload struct {
 
 // UserInvitePayload carries enterprise team member invitations.
 type UserInvitePayload struct {
-	InviteID    uuid.UUID `json:"invite_id"`
-	InviteEmail string    `json:"invite_email"`
-	AssignedRole string   `json:"assigned_role"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	InviteID     uuid.UUID `json:"invite_id"`
+	InviteEmail  string    `json:"invite_email"`
+	AssignedRole string    `json:"assigned_role"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 // UserRoleChangePayload carries RBAC permissions and role modifications.
@@ -161,26 +154,26 @@ type UserRoleChangePayload struct {
 
 // UserRepoAccessPayload carries granular repository authorization assignments.
 type UserRepoAccessPayload struct {
-	TargetUserID   string      `json:"target_user_id"`
-	RepositoryIDs  []uuid.UUID `json:"repository_ids"`
-	AccessLevel    string      `json:"access_level"` // "READ", "WRITE", "ADMIN"
+	TargetUserID  string      `json:"target_user_id"`
+	RepositoryIDs []uuid.UUID `json:"repository_ids"`
+	AccessLevel   string      `json:"access_level"` // "READ", "WRITE", "ADMIN"
 }
 
 // OrgSettingsPayload carries enterprise SSO, IP allowlists, and retention settings.
 type OrgSettingsPayload struct {
-	SAMLConfigured      bool     `json:"saml_configured"`
-	AllowedDomains      []string `json:"allowed_domains,omitempty"`
-	IPAllowlist         []string `json:"ip_allowlist,omitempty"`
-	DataRetentionDays   int      `json:"data_retention_days,omitempty"`
-	EnforceMFA          bool     `json:"enforce_mfa"`
-	SessionTimeoutMins  int      `json:"session_timeout_mins,omitempty"`
+	SAMLConfigured     bool     `json:"saml_configured"`
+	AllowedDomains     []string `json:"allowed_domains,omitempty"`
+	IPAllowlist        []string `json:"ip_allowlist,omitempty"`
+	DataRetentionDays  int      `json:"data_retention_days,omitempty"`
+	EnforceMFA         bool     `json:"enforce_mfa"`
+	SessionTimeoutMins int      `json:"session_timeout_mins,omitempty"`
 }
 
 // CliKeyPayload carries team CLI token management events.
 type CliKeyPayload struct {
-	KeyID       uuid.UUID `json:"key_id"`
-	KeyName     string    `json:"key_name"`
-	KeyPrefix   string    `json:"key_prefix"` // e.g. "scandrix_team_..."
-	Scopes      []string  `json:"scopes"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	KeyID     uuid.UUID  `json:"key_id"`
+	KeyName   string     `json:"key_name"`
+	KeyPrefix string     `json:"key_prefix"` // e.g. "scandrix_team_..."
+	Scopes    []string   `json:"scopes"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }

@@ -96,3 +96,48 @@ func TestRBACMiddlewareEnforcement(t *testing.T) {
 		t.Fatalf("expected 200 OK for admin creating rule, got %d", rrAdmin.Code)
 	}
 }
+
+func TestOwnerIsAllowedRegardlessOfRoleCasing(t *testing.T) {
+	engine := rbac.NewPolicyEngine()
+
+	// The Postgres enum stores lowercase; the Go constants are uppercase. An
+	// owner arriving in either spelling must retain full access.
+	for _, role := range []models.UserRole{"owner", "OWNER", "Owner", " owner "} {
+		if !engine.Can(role, rbac.ActionManage, rbac.ResourceRules) {
+			t.Errorf("role %q should be allowed to manage rules", role)
+		}
+		if !engine.Can(role, rbac.ActionManage, rbac.ResourceMembers) {
+			t.Errorf("role %q should be allowed to manage members", role)
+		}
+		if !engine.Can(role, rbac.ActionRead, rbac.ResourceBilling) {
+			t.Errorf("role %q should be allowed to read billing", role)
+		}
+	}
+}
+
+func TestNormalizeRole(t *testing.T) {
+	cases := map[models.UserRole]models.UserRole{
+		"owner":   models.RoleOwner,
+		"OWNER":   models.RoleOwner,
+		"admin":   models.RoleAdmin,
+		"MEMBER":  models.RoleMember,
+		"viewer":  models.RoleViewer,
+		"unknown": "UNKNOWN",
+	}
+	for in, want := range cases {
+		if got := rbac.NormalizeRole(in); got != want {
+			t.Errorf("NormalizeRole(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNonOwnerStillDeniedManageOnRules(t *testing.T) {
+	engine := rbac.NewPolicyEngine()
+
+	if engine.Can("member", rbac.ActionManage, rbac.ResourceRules) {
+		t.Error("a member must not be allowed to manage rules")
+	}
+	if engine.Can("viewer", rbac.ActionManage, rbac.ResourceMembers) {
+		t.Error("a viewer must not be allowed to manage members")
+	}
+}

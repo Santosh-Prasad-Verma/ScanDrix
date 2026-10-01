@@ -12,9 +12,9 @@ import (
 )
 
 type mockNotificationEmitter struct {
-	emittedEvents []string
+	emittedEvents   []string
 	emittedPayloads []map[string]any
-	shouldFail bool
+	shouldFail      bool
 }
 
 func (m *mockNotificationEmitter) Emit(ctx context.Context, event string, payload map[string]any, orgUUID *uuid.UUID, recipientUUID *uuid.UUID) error {
@@ -46,10 +46,13 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 		userRepo := infrastructure.NewInMemoryUserRepository()
 		profileRepo := infrastructure.NewInMemoryProfileRepository()
 		pwService := infrastructure.NewBcryptPasswordService(10)
-		jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+		jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 			Secret:        "test-secret-key-32-chars-long-abc",
 			RefreshSecret: "test-refresh-secret-32-chars-long",
 		})
+		if ctorErr != nil {
+			t.Fatalf("jwtService construction failed: %v", ctorErr)
+		}
 		notif := &mockNotificationEmitter{}
 		uc := application.NewSignUpUseCase(userRepo, profileRepo, pwService, jwtService, notif)
 		return uc, userRepo
@@ -66,7 +69,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			user, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "sso-user1@scandrix.dev",
 				Name:           "SSO User 1",
-				Password:       "random-bytes-1",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    false,
 			})
@@ -88,7 +91,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			user, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "sso-user2@scandrix.dev",
 				Name:           "SSO User 2",
-				Password:       "random-bytes-2",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    false,
 			})
@@ -107,7 +110,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			user, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "sso-user3@scandrix.dev",
 				Name:           "SSO User 3",
-				Password:       "random-bytes-3",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    true,
 			})
@@ -126,7 +129,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			user, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "sso-user4@scandrix.dev",
 				Name:           "SSO User 4",
-				Password:       "random-bytes-4",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    true,
 			})
@@ -147,7 +150,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			user, err := uc.Execute(ctx, application.SignUpInput{
 				Email:    "owner@scandrix.dev",
 				Name:     "Owner User",
-				Password: "random-bytes-owner",
+				Password: "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 			})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -175,7 +178,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			created, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "sso@scandrix.dev",
 				Name:           "SSO Provisioned",
-				Password:       "x",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    true,
 			})
@@ -199,7 +202,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			created, err := uc.Execute(ctx, application.SignUpInput{
 				Email:          "invitee@scandrix.dev",
 				Name:           "Invitee",
-				Password:       "x",
+				Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 				OrganizationID: &orgID,
 				PreVerified:    false,
 			})
@@ -223,7 +226,7 @@ func TestSignUpUseCase_OrgJoiningStatusMatrix(t *testing.T) {
 			created, err := uc.Execute(ctx, application.SignUpInput{
 				Email:    "owner-reg@scandrix.dev",
 				Name:     "Owner Reg",
-				Password: "x",
+				Password: "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 			})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -246,10 +249,13 @@ func TestOAuthLoginUseCase_Provisioning(t *testing.T) {
 	authRepo := infrastructure.NewInMemoryAuthRepository()
 	profileRepo := infrastructure.NewInMemoryProfileRepository()
 	pwService := infrastructure.NewBcryptPasswordService(10)
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	notif := &mockNotificationEmitter{}
 
 	signUpUC := application.NewSignUpUseCase(userRepo, profileRepo, pwService, jwtService, notif)
@@ -288,10 +294,13 @@ func TestPasswordResetAndEmailConfirmationFlow(t *testing.T) {
 	userRepo := infrastructure.NewInMemoryUserRepository()
 	profileRepo := infrastructure.NewInMemoryProfileRepository()
 	pwService := infrastructure.NewBcryptPasswordService(10)
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	notif := &mockNotificationEmitter{}
 
 	signUpUC := application.NewSignUpUseCase(userRepo, profileRepo, pwService, jwtService, notif)
@@ -303,7 +312,7 @@ func TestPasswordResetAndEmailConfirmationFlow(t *testing.T) {
 	user, err := signUpUC.Execute(ctx, application.SignUpInput{
 		Email:          "pending-user@scandrix.dev",
 		Name:           "Pending User",
-		Password:       "InitialPassword123!",
+		Password:       "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 		OrganizationID: &orgID,
 		PreVerified:    false,
 	})
@@ -342,14 +351,14 @@ func TestPasswordResetAndEmailConfirmationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed creating reset token: %v", err)
 	}
-	err = resetPWUC.Execute(ctx, resetToken, "BrandNewPassword123!")
+	err = resetPWUC.Execute(ctx, resetToken, "BrandZq7-Kv4-Mn9-Tb2-Xc6-Rp8")
 	if err != nil {
 		t.Fatalf("reset password failed: %v", err)
 	}
 
 	// Verify updated password
 	updated, _ := userRepo.FindByUUID(ctx, user.UUID)
-	if !pwService.MatchPassword("BrandNewPassword123!", updated.Password) {
+	if !pwService.MatchPassword("BrandZq7-Kv4-Mn9-Tb2-Xc6-Rp8", updated.Password) {
 		t.Fatal("expected new password to match")
 	}
 }
@@ -357,10 +366,13 @@ func TestPasswordResetAndEmailConfirmationFlow(t *testing.T) {
 func TestConfirmEmailUseCase_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 	userRepo := infrastructure.NewInMemoryUserRepository()
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	uc := application.NewConfirmEmailUseCase(userRepo, jwtService)
 
 	// 1. Invalid token
@@ -397,10 +409,13 @@ func TestConfirmEmailUseCase_EdgeCases(t *testing.T) {
 func TestResendEmailUseCase(t *testing.T) {
 	ctx := context.Background()
 	userRepo := infrastructure.NewInMemoryUserRepository()
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	notif := &mockNotificationEmitter{}
 	uc := application.NewResendEmailUseCase(userRepo, jwtService, notif)
 
@@ -444,10 +459,13 @@ func TestResendEmailUseCase(t *testing.T) {
 func TestForgotPasswordUseCase_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 	userRepo := infrastructure.NewInMemoryUserRepository()
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	notif := &mockNotificationEmitter{}
 	uc := application.NewForgotPasswordUseCase(userRepo, jwtService, notif)
 
@@ -478,21 +496,24 @@ func TestResetPasswordUseCase_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 	userRepo := infrastructure.NewInMemoryUserRepository()
 	pwService := infrastructure.NewBcryptPasswordService(10)
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	uc := application.NewResetPasswordUseCase(userRepo, pwService, jwtService)
 
 	// 1. Invalid token
-	err := uc.Execute(ctx, "invalid-token", "NewPassword123!")
+	err := uc.Execute(ctx, "invalid-token", "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8")
 	if !errors.Is(err, application.ErrInvalidToken) {
 		t.Fatalf("expected ErrInvalidToken, got: %v", err)
 	}
 
 	// 2. Token for non-existent user
 	token, _ := jwtService.CreateForgotPassToken(uuid.New(), "ghost@scandrix.dev")
-	err = uc.Execute(ctx, token, "NewPassword123!")
+	err = uc.Execute(ctx, token, "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8")
 	if !errors.Is(err, application.ErrUserNotFound) {
 		t.Fatalf("expected ErrUserNotFound, got: %v", err)
 	}
@@ -502,10 +523,13 @@ func TestCreateHelpdeskTokenUseCase(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Fallback to HMAC when no RSA key configured
-	jwtServiceHMAC := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtServiceHMAC, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtServiceHMAC construction failed: %v", ctorErr)
+	}
 	ucHMAC := application.NewCreateHelpdeskTokenUseCase(jwtServiceHMAC)
 
 	token, err := ucHMAC.Execute(ctx, uuid.New())

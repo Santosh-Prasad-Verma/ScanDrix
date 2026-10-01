@@ -23,6 +23,17 @@ func TestConfig_LoadDefaultAndFile(t *testing.T) {
 	t.Setenv("SCANDRIX_API_URL", "")
 	t.Setenv("APP_BASE_URL", "")
 	t.Setenv("API_BASE_URL", "")
+	// Environment intentionally overrides the config file (see configcli.Load),
+	// so these must be cleared for the file assertions to mean anything. Without
+	// this a developer with a real key exported in their shell fails the suite.
+	for _, key := range []string{
+		"SCANDRIX_BILLING_URL", "BILLING_URL",
+		"SCANDRIX_API_KEY", "SCANDRIX_TEAM_KEY", "TEAM_API_KEY",
+		"SCANDRIX_ACCESS_TOKEN", "ACCESS_TOKEN",
+		"SCANDRIX_REFRESH_TOKEN", "REFRESH_TOKEN",
+	} {
+		t.Setenv(key, "")
+	}
 
 	tmpDir := t.TempDir()
 	cfgDir := filepath.Join(tmpDir, ".scandrix")

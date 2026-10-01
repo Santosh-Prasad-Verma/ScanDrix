@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/scandrix/backend/internal/auth"
 
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/identity/domain"
@@ -88,6 +89,12 @@ func (uc *AcceptUserInvitationUseCase) Execute(ctx context.Context, input Accept
 		return nil, errors.New("user not found")
 	}
 
+	// AUDIT_REMEDIATION.md F-21: the invitation path had no policy check. The
+	// invited user's email and name are the identifiers to avoid.
+	if err := auth.ValidatePassword(input.Password, user.Email, input.Name); err != nil {
+		return nil, fmt.Errorf("password rejected: %w", err)
+	}
+
 	hashedPassword, err := uc.passwordService.HashPassword(input.Password)
 	if err != nil {
 		return nil, fmt.Errorf("failed hashing password: %w", err)
@@ -148,9 +155,9 @@ type UpdateAnotherUserInput struct {
 
 // UpdateAnotherUserUseCase modifies permissions and statuses of organization members.
 type UpdateAnotherUserUseCase struct {
-	userRepo        domain.UserRepository
-	auditEmitter    domain.AuditLogEmitter
-	notifEmitter    domain.NotificationEmitter
+	userRepo     domain.UserRepository
+	auditEmitter domain.AuditLogEmitter
+	notifEmitter domain.NotificationEmitter
 }
 
 func NewUpdateAnotherUserUseCase(

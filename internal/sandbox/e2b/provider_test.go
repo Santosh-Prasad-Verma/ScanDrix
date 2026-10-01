@@ -83,3 +83,49 @@ func TestMicroVMSandboxProductionFailClosed(t *testing.T) {
 		t.Fatalf("expected secure execution failure message, got: %v", err)
 	}
 }
+
+// F-38: the sandbox gate tested only for "production", so a staging deployment
+// with no E2B credentials fell through to the development mock, which returned
+// exit code 0. A staging run that never reached the sandbox reported a clean
+// pass, and a release gate could not tell the difference from a real review.
+func TestStagingRequiresIsolation(t *testing.T) {
+	p := &e2b.MicroVMSandbox{}
+	cmd := "echo hi"
+
+	for _, env := range []string{"staging", "production"} {
+		for _, key := range []string{"ENVIRONMENT", "APP_ENV"} {
+			t.Run(env+" via "+key, func(t *testing.T) {
+				t.Setenv(key, env)
+				t.Setenv("ALLOW_UNSANDBOXED_COMMAND_EXECUTION", "")
+				t.Setenv("E2B_API_KEY", "")
+
+				res, err := p.Run(context.Background(), cmd, nil, 10*time.Second)
+				if err == nil && res != nil && res.ExitCode == 0 {
+					t.Fatalf("%s must not succeed via the dev mock (exit 0)", env)
+				}
+			})
+		}
+	}
+}
+
+// The dev mock itself must never look like success, or a vulnerability scan
+// gates on a command that was never run.
+func TestDevMockNeverReportsSuccess(t *testing.T) {
+	p := &e2b.MicroVMSandbox{}
+	t.Setenv("ENVIRONMENT", "development")
+	t.Setenv("APP_ENV", "development")
+
+	res, err := p.Run(context.Background(), "grep -r TODO .", nil, 10*time.Second)
+	if err != nil {
+		t.Skipf("mock path not reached in this environment: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected a result")
+	}
+	if res.ExitCode == 0 {
+		t.Error("a command that was never executed must not report exit code 0")
+	}
+	if !strings.Contains(res.Stdout, "NOT executed") {
+		t.Errorf("stdout must state the command was not executed, got %q", res.Stdout)
+	}
+}

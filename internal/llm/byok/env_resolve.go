@@ -28,13 +28,53 @@ func ResolveManagedSlotFromConfig(env EnvLLMConfig) *NormalizedModel {
 		}
 	}
 
-	if strings.HasPrefix(mLower, "gemini-") {
+	if strings.HasPrefix(mLower, "gemini-") || strings.HasPrefix(mLower, "google/gemini") {
+		modelName := env.DefaultModel
+		if strings.HasPrefix(mLower, "google/") {
+			modelName = env.DefaultModel[7:]
+		}
 		if env.GeminiKey != "" {
-			return createManagedSlot(ProviderGoogleGemini, env.GeminiKey, env.DefaultModel, nil)
+			return createManagedSlot(ProviderGoogleGemini, env.GeminiKey, modelName, nil)
 		}
 		if env.VertexKey != "" {
-			return createManagedSlot(ProviderGoogleVertex, env.VertexKey, env.DefaultModel, map[string]string{
+			return createManagedSlot(ProviderGoogleVertex, env.VertexKey, modelName, map[string]string{
 				"vertexLocation": env.VertexLocation,
+			})
+		}
+	}
+
+	if strings.HasPrefix(mLower, "mistral") || strings.HasPrefix(mLower, "codestral") {
+		if env.MistralKey != "" {
+			modelName := env.DefaultModel
+			if strings.HasPrefix(mLower, "mistral/") {
+				modelName = env.DefaultModel[8:]
+			}
+			return createManagedSlot(ProviderOpenAICompatible, env.MistralKey, modelName, map[string]string{
+				"baseURL": "https://api.mistral.ai/v1",
+			})
+		}
+	}
+
+	if strings.HasPrefix(mLower, "groq/") || (env.GroqKey != "" && (strings.HasPrefix(mLower, "llama-") || strings.Contains(mLower, "distill-llama"))) {
+		if env.GroqKey != "" {
+			modelName := env.DefaultModel
+			if strings.HasPrefix(mLower, "groq/") {
+				modelName = env.DefaultModel[5:]
+			}
+			return createManagedSlot(ProviderOpenAICompatible, env.GroqKey, modelName, map[string]string{
+				"baseURL": "https://api.groq.com/openai/v1",
+			})
+		}
+	}
+
+	if strings.HasPrefix(mLower, "cohere/") || strings.HasPrefix(mLower, "command") {
+		if env.CohereKey != "" {
+			modelName := env.DefaultModel
+			if strings.HasPrefix(mLower, "cohere/") {
+				modelName = env.DefaultModel[7:]
+			}
+			return createManagedSlot(ProviderOpenAICompatible, env.CohereKey, modelName, map[string]string{
+				"baseURL": "https://api.cohere.com/v2",
 			})
 		}
 	}
@@ -78,6 +118,24 @@ func ResolveManagedSlotFromConfig(env EnvLLMConfig) *NormalizedModel {
 	if env.AzureKey != "" && env.AzureEndpoint != "" {
 		return createManagedSlot(ProviderAzure, env.AzureKey, env.DefaultModel, map[string]string{
 			"baseURL": env.AzureEndpoint,
+		})
+	}
+
+	if env.MistralKey != "" {
+		return createManagedSlot(ProviderOpenAICompatible, env.MistralKey, env.DefaultModel, map[string]string{
+			"baseURL": "https://api.mistral.ai/v1",
+		})
+	}
+
+	if env.GroqKey != "" {
+		return createManagedSlot(ProviderOpenAICompatible, env.GroqKey, env.DefaultModel, map[string]string{
+			"baseURL": "https://api.groq.com/openai/v1",
+		})
+	}
+
+	if env.CohereKey != "" {
+		return createManagedSlot(ProviderOpenAICompatible, env.CohereKey, env.DefaultModel, map[string]string{
+			"baseURL": "https://api.cohere.com/v2",
 		})
 	}
 

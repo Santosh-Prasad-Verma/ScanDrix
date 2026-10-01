@@ -9,18 +9,55 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/mcp/guards"
+	"github.com/scandrix/backend/pkg/models"
 )
 
+// newAuthenticatedMCPHandler builds an MCP handler with the feature enabled and
+// a real session authenticator, mirroring production wiring.
+//
+// The transport is disabled by default and requires authentication
+// (AUDIT_REMEDIATION.md F-15f), so a test that exercises the protocol has to
+// supply both.
+func newAuthenticatedMCPHandler(t *testing.T) (http.Handler, *auth.Authenticator) {
+	t.Helper()
+	t.Setenv("SCANDRIX_MCP_SERVER_ENABLED", "true")
+	authSvc := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
+	return NewHTTPServer(NewServer(), authSvc), authSvc
+}
+
+// authedRequest adds a valid session token to a request.
+func authedRequest(t *testing.T, method, target string, body io.Reader, authSvc *auth.Authenticator) *http.Request {
+	t.Helper()
+	var req *http.Request
+	if body != nil {
+		req = httptest.NewRequest(method, target, body)
+	} else {
+		req = httptest.NewRequest(method, target, nil)
+	}
+	tok, _, err := authSvc.GenerateTokenPairWithEmail(
+		uuid.New(), uuid.New(), models.RoleOwner, "mcp-test@example.test")
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
 func TestStreamableHTTPServerProtocol(t *testing.T) {
-	server := NewServer()
-	handler := NewHTTPServer(server)
+	handler, authSvc := newAuthenticatedMCPHandler(t)
 
 	// 1. GET /mcp must return 405 Method Not Allowed with Allow: POST header and JSON-RPC error
-	reqGet, _ := http.NewRequest(http.MethodGet, "/mcp", nil)
+	reqGet := authedRequest(t, http.MethodGet, "/mcp", nil, authSvc)
 	rrGet := httptest.NewRecorder()
 	handler.ServeHTTP(rrGet, reqGet)
 
@@ -44,7 +81,7 @@ func TestStreamableHTTPServerProtocol(t *testing.T) {
 	}
 
 	// 2. DELETE /mcp must return 405 Method Not Allowed
-	reqDel, _ := http.NewRequest(http.MethodDelete, "/mcp", nil)
+	reqDel := authedRequest(t, http.MethodDelete, "/mcp", nil, authSvc)
 	rrDel := httptest.NewRecorder()
 	handler.ServeHTTP(rrDel, reqDel)
 
@@ -59,7 +96,7 @@ func TestStreamableHTTPServerProtocol(t *testing.T) {
 		Method:  "initialize",
 	}
 	initBody, _ := json.Marshal(initReq)
-	reqInit, _ := http.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(initBody))
+	reqInit := authedRequest(t, http.MethodPost, "/mcp", bytes.NewReader(initBody), authSvc)
 	rrInit := httptest.NewRecorder()
 	handler.ServeHTTP(rrInit, reqInit)
 
@@ -86,7 +123,7 @@ func TestStreamableHTTPServerProtocol(t *testing.T) {
 		Method:  "tools/list",
 	}
 	listBody, _ := json.Marshal(listReq)
-	reqList, _ := http.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(listBody))
+	reqList := authedRequest(t, http.MethodPost, "/mcp", bytes.NewReader(listBody), authSvc)
 	rrList := httptest.NewRecorder()
 	handler.ServeHTTP(rrList, reqList)
 
@@ -188,7 +225,7 @@ func TestStreamableHTTPServerProtocol(t *testing.T) {
 		Params:  callParams,
 	}
 	callBody, _ := json.Marshal(callReq)
-	reqCall, _ := http.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(callBody))
+	reqCall := authedRequest(t, http.MethodPost, "/mcp", bytes.NewReader(callBody), authSvc)
 	rrCall := httptest.NewRecorder()
 	handler.ServeHTTP(rrCall, reqCall)
 
@@ -209,7 +246,7 @@ func TestStreamableHTTPServerProtocol(t *testing.T) {
 		Method:  "tools/list",
 	}
 	issuesBody, _ := json.Marshal(issuesListReq)
-	reqIssues, _ := http.NewRequest(http.MethodPost, "/mcp/issues", bytes.NewReader(issuesBody))
+	reqIssues := authedRequest(t, http.MethodPost, "/mcp/issues", bytes.NewReader(issuesBody), authSvc)
 	rrIssues := httptest.NewRecorder()
 	handler.ServeHTTP(rrIssues, reqIssues)
 
@@ -226,10 +263,11 @@ func TestMcpServerEnabledGuard(t *testing.T) {
 	os.Setenv("SCANDRIX_MCP_SERVER_ENABLED", "false")
 	defer os.Unsetenv("SCANDRIX_MCP_SERVER_ENABLED")
 
-	server := NewServer()
-	handler := NewHTTPServer(server)
+	authSvc := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
+	handler := NewHTTPServer(NewServer(), authSvc)
 
-	req, _ := http.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	req := authedRequest(t, http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)), authSvc)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -241,5 +279,68 @@ func TestMcpServerEnabledGuard(t *testing.T) {
 	_ = json.NewDecoder(rr.Body).Decode(&body)
 	if body["message"] != "MCP Service is disabled" {
 		t.Fatalf("expected 'MCP Service is disabled', got: %v", body["message"])
+	}
+}
+
+// TestMcpServerDisabledByDefault pins AUDIT_REMEDIATION.md F-15f.
+//
+// The feature flag used to return true when unset, so every deployment served
+// an MCP endpoint reachable without credentials. It must now require an
+// explicit opt-in.
+func TestMcpServerDisabledByDefault(t *testing.T) {
+	for _, unset := range []string{"SCANDRIX_MCP_SERVER_ENABLED", "API_MCP_SERVER_ENABLED"} {
+		t.Setenv(unset, "")
+		os.Unsetenv(unset)
+	}
+	if guards.IsMcpServerEnabled() {
+		t.Fatalf("MCP must be disabled when neither variable is set")
+	}
+
+	// The HTTP surface must therefore refuse an authenticated caller too.
+	authSvc := auth.NewAuthenticator("test-jwt-secret-key-123456789012")
+	handler := NewHTTPServer(NewServer(), authSvc)
+	req := authedRequest(t, http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)), authSvc)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 with MCP unconfigured, got %d", rr.Code)
+	}
+}
+
+// TestMcpServerRequiresAuthentication pins the second half of F-15f: even with
+// the feature enabled, the transport must reject an anonymous caller rather
+// than serve tools with a self-asserted organizationId.
+func TestMcpServerRequiresAuthentication(t *testing.T) {
+	t.Setenv("SCANDRIX_MCP_SERVER_ENABLED", "true")
+	handler, _ := newAuthenticatedMCPHandler(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("anonymous MCP call was served: %s", rr.Body.String())
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without a session, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestMcpServerFailsClosedWithoutAuthenticator ensures a misconfigured mount
+// refuses traffic instead of serving unauthenticated.
+func TestMcpServerFailsClosedWithoutAuthenticator(t *testing.T) {
+	t.Setenv("SCANDRIX_MCP_SERVER_ENABLED", "true")
+	handler := NewHTTPServer(NewServer())
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with no authenticator configured, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

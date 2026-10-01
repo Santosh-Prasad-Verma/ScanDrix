@@ -2,6 +2,7 @@ package e2b_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,11 +31,21 @@ func TestMicroVMSandboxLifecycle(t *testing.T) {
 	}
 
 	// 3. Run command
+	//
+	// This asserted ExitCode == 0. Without E2B credentials there is no sandbox,
+	// so the provider fell through to the development mock, which returned 0 --
+	// meaning "go test ./..." passed without ever running (AUDIT_REMEDIATION.md
+	// F-38). The mock now reports failure, so the corrected contract is that an
+	// unexecuted command does not report success. A real sandbox, exercised by
+	// TestRemoteSandbox* tests, is what should produce a 0 here.
 	res, err := sb.RunCommand(ctx, sandbox.CommandRequest{
 		Command: "go test ./...",
 	})
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("command failed: %v", err)
+	if err == nil && res != nil && res.ExitCode == 0 {
+		t.Fatalf("a command that never executed must not report exit code 0 (stdout=%q)", res.Stdout)
+	}
+	if err == nil && res != nil && res.ExitCode == 0 && strings.Contains(res.Stdout, "NOT executed") {
+		t.Fatal("mock output contradicts its exit code")
 	}
 
 	// 4. Destroy

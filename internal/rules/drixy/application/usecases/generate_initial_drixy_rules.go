@@ -16,10 +16,10 @@ import (
 
 // GenerateInitialDrixyRulesUseCase seeds an organization repository with rules from past PRs when enabled for the first time.
 type GenerateInitialDrixyRulesUseCase struct {
-	rulesService          contracts.IDrixyRulesService
-	generateRulesUseCase  *GenerateDrixyRulesUseCase
-	lockMu                sync.Mutex
-	activeRuns            map[string]bool
+	rulesService         contracts.IDrixyRulesService
+	generateRulesUseCase *GenerateDrixyRulesUseCase
+	lockMu               sync.Mutex
+	activeRuns           map[string]bool
 }
 
 // NewGenerateInitialDrixyRulesUseCase constructs the initial generator use case.

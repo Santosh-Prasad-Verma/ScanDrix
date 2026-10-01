@@ -15,28 +15,28 @@ import (
 // BillingTransaction models an enterprise billing charge or credit.
 type BillingTransaction struct {
 	domain.TenantScopedEntity
-	AmountCents       int64     `json:"amount_cents" db:"amount_cents"`
-	Currency          string    `json:"currency" db:"currency"`
-	Provider          string    `json:"provider" db:"provider"` // "STRIPE", "ZOHO", "INVOICE"
-	TransactionType   string    `json:"transaction_type" db:"transaction_type"` // "SUBSCRIPTION", "SEATS_ADDON", "USAGE_OVERAGE"
-	Status            string    `json:"status" db:"status"`
-	InvoiceID         *string   `json:"invoice_id,omitempty" db:"invoice_id"`
-	PaymentMethodID   *string   `json:"payment_method_id,omitempty" db:"payment_method_id"`
+	AmountCents     int64   `json:"amount_cents" db:"amount_cents"`
+	Currency        string  `json:"currency" db:"currency"`
+	Provider        string  `json:"provider" db:"provider"`                 // "STRIPE", "ZOHO", "INVOICE"
+	TransactionType string  `json:"transaction_type" db:"transaction_type"` // "SUBSCRIPTION", "SEATS_ADDON", "USAGE_OVERAGE"
+	Status          string  `json:"status" db:"status"`
+	InvoiceID       *string `json:"invoice_id,omitempty" db:"invoice_id"`
+	PaymentMethodID *string `json:"payment_method_id,omitempty" db:"payment_method_id"`
 }
 
 // PlanConfiguration holds enterprise subscription plan limits and feature bundles.
 type PlanConfiguration struct {
 	domain.BaseEntity
-	Tier                    string  `json:"tier" db:"tier"`
-	Name                    string  `json:"name" db:"name"`
-	SeatPriceCents          int64   `json:"seat_price_cents" db:"seat_price_cents"`
-	IncludedSeats           int     `json:"included_seats" db:"included_seats"`
-	IncludedReviewsPerMonth int     `json:"included_reviews_per_month" db:"included_reviews_per_month"`
-	MaxRepos                int     `json:"max_repos" db:"max_repos"`
-	SAMLIncluded            bool    `json:"saml_included" db:"saml_included"`
-	CustomRulesIncluded     bool    `json:"custom_rules_included" db:"custom_rules_included"`
-	BYOKIncluded            bool    `json:"byok_included" db:"byok_included"`
-	IsActive                bool    `json:"is_active" db:"is_active"`
+	Tier                    string `json:"tier" db:"tier"`
+	Name                    string `json:"name" db:"name"`
+	SeatPriceCents          int64  `json:"seat_price_cents" db:"seat_price_cents"`
+	IncludedSeats           int    `json:"included_seats" db:"included_seats"`
+	IncludedReviewsPerMonth int    `json:"included_reviews_per_month" db:"included_reviews_per_month"`
+	MaxRepos                int    `json:"max_repos" db:"max_repos"`
+	SAMLIncluded            bool   `json:"saml_included" db:"saml_included"`
+	CustomRulesIncluded     bool   `json:"custom_rules_included" db:"custom_rules_included"`
+	BYOKIncluded            bool   `json:"byok_included" db:"byok_included"`
+	IsActive                bool   `json:"is_active" db:"is_active"`
 }
 
 // OrganizationLicense manages cryptographically signed enterprise license keys.
@@ -178,78 +178,10 @@ func (r *PgLicenseRepository) FindByWorkspace(ctx context.Context, wsID uuid.UUI
 	return lic, nil
 }
 
-// PgCliAuthSessionRepository handles OAuth device authorization flow for `scandrix login`.
-type PgCliAuthSessionRepository struct {
-	pool *pgxpool.Pool
-}
-
-// NewCliAuthSessionRepository instantiates a new repository.
-func NewCliAuthSessionRepository(pool *pgxpool.Pool) *PgCliAuthSessionRepository {
-	return &PgCliAuthSessionRepository{pool: pool}
-}
-
-// CreateSession initiates a new pending CLI login exchange.
-func (r *PgCliAuthSessionRepository) CreateSession(ctx context.Context, sess *domain.CliAuthSession) error {
-	query := `
-		INSERT INTO cli_auth_sessions (
-			id, created_at, updated_at, session_code, user_code, status,
-			user_id, workspace_id, token_payload, client_ip, user_agent, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`
-	now := time.Now().UTC()
-	if sess.ID == uuid.Nil {
-		sess.ID = uuid.New()
-	}
-	sess.CreatedAt = now
-	sess.UpdatedAt = now
-
-	_, err := r.pool.Exec(ctx, query,
-		sess.ID, sess.CreatedAt, sess.UpdatedAt, sess.SessionCode, sess.UserCode, sess.Status,
-		sess.UserID, sess.WorkspaceID, sess.TokenPayload, sess.ClientIP, sess.UserAgent, sess.ExpiresAt,
-	)
-	if err != nil {
-		return fmt.Errorf("failed creating cli auth session: %w", err)
-	}
-	return nil
-}
-
-// FindByUserCode looks up an active login session by the 8-character code shown to the developer.
-func (r *PgCliAuthSessionRepository) FindByUserCode(ctx context.Context, userCode string) (*domain.CliAuthSession, error) {
-	query := `
-		SELECT id, created_at, updated_at, session_code, user_code, status,
-		       user_id, workspace_id, token_payload, client_ip, user_agent, expires_at
-		FROM cli_auth_sessions
-		WHERE user_code = $1 AND expires_at > now()
-		LIMIT 1
-	`
-	sess := &domain.CliAuthSession{}
-	err := r.pool.QueryRow(ctx, query, userCode).Scan(
-		&sess.ID, &sess.CreatedAt, &sess.UpdatedAt, &sess.SessionCode, &sess.UserCode, &sess.Status,
-		&sess.UserID, &sess.WorkspaceID, &sess.TokenPayload, &sess.ClientIP, &sess.UserAgent, &sess.ExpiresAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("failed querying cli session: %w", err)
-	}
-	return sess, nil
-}
-
-// Authorize updates the session status to AUTHORIZED and attaches the encrypted token payload.
-func (r *PgCliAuthSessionRepository) Authorize(ctx context.Context, sessionCode string, userID, wsID uuid.UUID, tokenPayload string) error {
-	query := `
-		UPDATE cli_auth_sessions
-		SET status = 'AUTHORIZED', user_id = $2, workspace_id = $3,
-		    token_payload = $4, updated_at = $5
-		WHERE session_code = $1 AND status = 'PENDING' AND expires_at > now()
-	`
-	cmd, err := r.pool.Exec(ctx, query, sessionCode, userID, wsID, tokenPayload, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("failed authorizing cli session: %w", err)
-	}
-	if cmd.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
+// PgCliAuthSessionRepository removed.
+//
+// Never constructed and had no callers. Like the identity copy it wrote
+// a different shape of cli_auth_sessions (session_code + workspace_id,
+// no device_code), and it was the only writer of that shape - so the
+// divergence was untested and unreachable. The live writer is
+// auth_repository.go. AUDIT_REMEDIATION.md F-37.

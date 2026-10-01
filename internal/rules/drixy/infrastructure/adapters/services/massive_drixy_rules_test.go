@@ -426,6 +426,29 @@ func TestMassive_EntityTransformationsAndBuckets_500Cases(t *testing.T) {
 		t.Fatalf("failed to load catalog buckets: %v", err)
 	}
 
+	// The bucket count is derived from the catalog, so it must be a real
+	// recount rather than a zero the client used to invent. Each bucket is
+	// cross-checked against the library rules that name it.
+	library, err := rulesSvc.GetLibraryDrixyRules(ctx, map[string]any{}, "")
+	if err != nil {
+		t.Fatalf("failed to load catalog rules: %v", err)
+	}
+	actual := make(map[string]int, len(buckets))
+	for _, rule := range library {
+		for _, slug := range rule.Buckets {
+			actual[slug]++
+		}
+	}
+	if len(actual) == 0 {
+		t.Fatal("no library rule names any bucket; the recount would be vacuous")
+	}
+	for _, b := range buckets {
+		if b.RulesCount != actual[b.Slug] {
+			t.Errorf("bucket %s reports RulesCount=%d, catalog has %d",
+				b.Slug, b.RulesCount, actual[b.Slug])
+		}
+	}
+
 	for bIdx, b := range buckets {
 		bucket := b
 		idx := bIdx

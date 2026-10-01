@@ -96,4 +96,3 @@ func (e *RuleLikeEntity) ToObject() IRuleLike {
 func (e *RuleLikeEntity) MarshalJSON() ([]byte, error) {
 	return json.Marshal(e.ToObject())
 }
-

@@ -25,15 +25,21 @@ const (
 )
 
 // RuleSpec defines a user or organization custom review rule.
+// RuleSpec is a single compiled rule definition.
+//
+// The JSON tags match dtos.RuleResponse, which is what the workspace rule
+// endpoints return. Without them this type serialised with its Go field names
+// (ID, Name, PathPattern), so GET /rules/catalog answered in a different casing
+// from GET /rules and every client had to accept both spellings.
 type RuleSpec struct {
-	ID          uuid.UUID
-	Name        string
-	PathPattern string // Glob matching file paths, e.g. "*.go", "api/**"
-	RegexRule   string // Regular expression searched across added lines
-	Severity    models.FindingSeverity
-	Category    string
-	Description string
-	Remediation string
+	ID          uuid.UUID              `json:"id"`
+	Name        string                 `json:"name"`
+	PathPattern string                 `json:"path_pattern"` // Glob matching file paths, e.g. "*.go", "api/**"
+	RegexRule   string                 `json:"regex_rule"`   // Regular expression searched across added lines
+	Severity    models.FindingSeverity `json:"severity"`
+	Category    string                 `json:"category"`
+	Description string                 `json:"description"`
+	Remediation string                 `json:"remediation"`
 }
 
 // ═══════════════════════════════════════════════════════════════

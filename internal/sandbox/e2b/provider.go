@@ -26,17 +26,17 @@ const (
 
 // Config holds options for connecting to E2B and spinning up microVMs.
 type Config struct {
-	APIKey           string
-	Domain           string
-	Endpoint         string
-	TemplateID       string
-	TemplateGraphID  string
-	ProxyHost        string
-	ProxyPort        string
-	ProxyPassword    string
-	ProxyMethod      string
-	HTTPClient       *http.Client
-	DefaultTTL       time.Duration
+	APIKey          string
+	Domain          string
+	Endpoint        string
+	TemplateID      string
+	TemplateGraphID string
+	ProxyHost       string
+	ProxyPort       string
+	ProxyPassword   string
+	ProxyMethod     string
+	HTTPClient      *http.Client
+	DefaultTTL      time.Duration
 }
 
 // E2BProvider implements sandbox.ISandboxProvider using cloud-isolated E2B microVMs.
@@ -119,10 +119,10 @@ func (p *E2BProvider) CreateSandboxWithRepo(ctx context.Context, params sandbox.
 	}
 
 	var sbxResp struct {
-		SandboxID        string `json:"sandboxID"`
-		Domain           string `json:"domain"`
-		EnvdAccessToken  string `json:"envdAccessToken"`
-		EnvdVersion      string `json:"envdVersion"`
+		SandboxID       string `json:"sandboxID"`
+		Domain          string `json:"domain"`
+		EnvdAccessToken string `json:"envdAccessToken"`
+		EnvdVersion     string `json:"envdVersion"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sbxResp); err != nil {
 		return nil, fmt.Errorf("failed decoding E2B create response: %w", err)
@@ -134,18 +134,18 @@ func (p *E2BProvider) CreateSandboxWithRepo(ctx context.Context, params sandbox.
 	}
 
 	inst := &MicroVMSandbox{
-		id:               sbxUUID,
-		e2bID:            sbxResp.SandboxID,
-		apiKey:           p.cfg.APIKey,
-		endpoint:         p.cfg.Endpoint,
-		domain:           sbxResp.Domain,
-		envdAccessToken:  sbxResp.EnvdAccessToken,
-		httpClient:       p.httpClient,
-		repoDir:          repoDir,
-		baseBranch:       params.BaseBranch,
-		files:            make(map[string][]byte),
-		createdAt:        time.Now().UTC(),
-		expiresAt:        time.Now().UTC().Add(p.cfg.DefaultTTL),
+		id:              sbxUUID,
+		e2bID:           sbxResp.SandboxID,
+		apiKey:          p.cfg.APIKey,
+		endpoint:        p.cfg.Endpoint,
+		domain:          sbxResp.Domain,
+		envdAccessToken: sbxResp.EnvdAccessToken,
+		httpClient:      p.httpClient,
+		repoDir:         repoDir,
+		baseBranch:      params.BaseBranch,
+		files:           make(map[string][]byte),
+		createdAt:       time.Now().UTC(),
+		expiresAt:       time.Now().UTC().Add(p.cfg.DefaultTTL),
 	}
 
 	cleanupOnFailure := true
@@ -173,20 +173,20 @@ func (p *E2BProvider) CreateSandboxWithRepo(ctx context.Context, params sandbox.
 
 // MicroVMSandbox implements sandbox.SandboxInstance and sandbox.ISandbox for remote containerized execution.
 type MicroVMSandbox struct {
-	mu               sync.RWMutex
-	id               uuid.UUID
-	e2bID            string
-	apiKey           string
-	endpoint         string
-	domain           string
-	envdAccessToken  string
-	httpClient       *http.Client
-	repoDir          string
-	baseBranch       string
-	files            map[string][]byte
-	createdAt        time.Time
-	expiresAt        time.Time
-	destroyed        bool
+	mu              sync.RWMutex
+	id              uuid.UUID
+	e2bID           string
+	apiKey          string
+	endpoint        string
+	domain          string
+	envdAccessToken string
+	httpClient      *http.Client
+	repoDir         string
+	baseBranch      string
+	files           map[string][]byte
+	createdAt       time.Time
+	expiresAt       time.Time
+	destroyed       bool
 }
 
 // NewMicroVMSandbox initializes an isolated microVM sandbox lease (compatibility factory).
@@ -316,9 +316,19 @@ func (s *MicroVMSandbox) Run(ctx context.Context, command string, envs map[strin
 
 	// 2. Production Security Gate: Untrusted code must execute within an isolated microVM.
 	// Local host execution is blocked in production unless ALLOW_UNSANDBOXED_COMMAND_EXECUTION=true.
-	isProd := strings.EqualFold(os.Getenv("ENVIRONMENT"), "production") || strings.EqualFold(os.Getenv("APP_ENV"), "production")
+	// Staging is included deliberately (AUDIT_REMEDIATION.md F-38). This gate
+	// used to test only for "production", so a staging deployment with no E2B
+	// credentials fell through to the development mock below, which returned
+	// exit code 0. A staging run that never reached the sandbox therefore
+	// reported a clean pass, and the release gate could not tell the difference.
+	env := os.Getenv("ENVIRONMENT")
+	appEnv := os.Getenv("APP_ENV")
+	isProd := strings.EqualFold(env, "production") || strings.EqualFold(appEnv, "production")
+	isStaging := strings.EqualFold(env, "staging") || strings.EqualFold(appEnv, "staging")
+	requiresIsolation := isProd || isStaging
+
 	allowHost := strings.EqualFold(os.Getenv("ALLOW_UNSANDBOXED_COMMAND_EXECUTION"), "true")
-	if isProd && !allowHost {
+	if requiresIsolation && !allowHost {
 		if s.apiKey == "" {
 			return nil, errors.New("secure execution failed: E2B_API_KEY required; host command execution is prohibited in production")
 		}
@@ -337,12 +347,29 @@ func (s *MicroVMSandbox) Run(ctx context.Context, command string, envs map[strin
 		}
 	}
 
+	// Development mock. It deliberately does NOT report success.
+	//
+	// This returned exit code 0 with "dev-mock-exec: <cmd>" on stdout, so any
+	// pipeline that gates on the exit code -- notably a vulnerability scan -- saw
+	// a clean run for a command that was never executed. A mock must be
+	// unmistakably a mock in both its output and its status, so a missing sandbox
+	// fails the check instead of quietly passing it (F-38, related to F-39).
+	//
+	// Callers already treat a non-zero exit as failure
+	// (agent_deliberation.go), so this correctly fails the pipeline rather than
+	// reporting work that never happened.
 	return &sandbox.SandboxRunResult{
-		Stdout:   "dev-mock-exec: " + command,
-		ExitCode: 0,
+		Stdout: "dev-mock-exec: command NOT executed (" + command + "). " +
+			"No sandbox was available; treat this result as a failure, not a pass.",
+		ExitCode: devMockExitCode,
 		Duration: time.Since(start),
 	}, nil
 }
+
+// devMockExitCode marks a command that was never actually executed. 127 is the
+// conventional "command not found", which is an accurate description: the real
+// binary was never invoked.
+const devMockExitCode = 127
 
 func (s *MicroVMSandbox) Cleanup(ctx context.Context) error {
 	s.mu.Lock()

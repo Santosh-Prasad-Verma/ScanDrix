@@ -83,7 +83,7 @@ func (s *DrixyRulesService) GetLibraryDrixyRules(ctx context.Context, filters ma
 }
 
 // GetLibraryDrixyRulesWithFeedback returns catalog rules enriched with community votes.
-func (s *DrixyRulesService) GetLibraryDrixyRulesWithFeedback(ctx context.Context, filters map[string]any, userID string) ([]contracts.LibraryDrixyRule, error) {
+func (s *DrixyRulesService) GetLibraryDrixyRulesWithFeedback(ctx context.Context, organizationID string, filters map[string]any, userID string) ([]contracts.LibraryDrixyRule, error) {
 	rules, err := s.GetLibraryDrixyRules(ctx, filters, userID)
 	if err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func (s *DrixyRulesService) GetLibraryDrixyRulesWithFeedback(ctx context.Context
 		return rules, nil
 	}
 
-	feedbackList, err := s.ruleLikeService.GetAllRulesWithFeedback(ctx, userID)
+	feedbackList, err := s.ruleLikeService.GetAllRulesWithFeedback(ctx, organizationID, userID)
 	if err != nil {
 		return rules, nil
 	}
@@ -125,6 +125,19 @@ func (s *DrixyRulesService) GetLibraryDrixyRulesBuckets(ctx context.Context) ([]
 
 	out := make([]contracts.BucketInfo, len(s.buckets))
 	copy(out, s.buckets)
+
+	// Count the library rules that reference each bucket. A rule may sit in
+	// several buckets, so it is counted in each one it names.
+	counts := make(map[string]int, len(out))
+	for _, rule := range s.libraryRules {
+		for _, slug := range rule.Buckets {
+			counts[slug]++
+		}
+	}
+	for i := range out {
+		out[i].RulesCount = counts[out[i].Slug]
+	}
+
 	return out, nil
 }
 

@@ -13,19 +13,26 @@ import (
 	"strings"
 )
 
-// IsMcpServerEnabled checks if the MCP server feature flag is enabled.
-// Defaults to true unless explicitly disabled via SCANDRIX_MCP_SERVER_ENABLED=false
-// or API_MCP_SERVER_ENABLED=false.
+// IsMcpServerEnabled reports whether the MCP server is enabled.
+//
+// SECURITY (AUDIT_REMEDIATION.md F-15f): this previously returned true when
+// the variable was unset, so every deployment served an MCP endpoint that let
+// any caller reach tools with a self-asserted organizationId. The default is
+// now CLOSED: a deployment must opt in explicitly by setting
+// SCANDRIX_MCP_SERVER_ENABLED=true (or API_MCP_SERVER_ENABLED=true).
+//
+// This follows the same posture as the registration and cookie flags, where an
+// unset variable is a denial rather than a grant.
 func IsMcpServerEnabled() bool {
 	val := os.Getenv("SCANDRIX_MCP_SERVER_ENABLED")
 	if val == "" {
 		val = os.Getenv("API_MCP_SERVER_ENABLED")
 	}
-	if val == "" {
-		return true
+	if strings.TrimSpace(val) == "" {
+		return false
 	}
-	val = strings.TrimSpace(strings.ToLower(val))
-	return val != "false" && val != "0" && val != "off" && val != "disabled"
+	val = strings.ToLower(strings.TrimSpace(val))
+	return val == "true" || val == "1" || val == "on" || val == "enabled"
 }
 
 // McpEnabledMiddleware enforces that MCP server functionality is active.

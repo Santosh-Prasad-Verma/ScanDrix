@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/scandrix/backend/internal/auth"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,12 +15,12 @@ import (
 
 // Common error definitions for authentication operations.
 var (
-	ErrDuplicateEmail    = errors.New("a user with this email already exists")
-	ErrDuplicateOrg      = errors.New("an organization with this name already exists")
-	ErrUnauthorized      = errors.New("unauthorized credentials")
-	ErrUserNotFound      = errors.New("user not found")
-	ErrInvalidToken      = errors.New("token is invalid or has expired")
-	ErrTokenAlreadyUsed  = errors.New("refresh token has already been consumed")
+	ErrDuplicateEmail   = errors.New("a user with this email already exists")
+	ErrDuplicateOrg     = errors.New("an organization with this name already exists")
+	ErrUnauthorized     = errors.New("unauthorized credentials")
+	ErrUserNotFound     = errors.New("user not found")
+	ErrInvalidToken     = errors.New("token is invalid or has expired")
+	ErrTokenAlreadyUsed = errors.New("refresh token has already been consumed")
 )
 
 // SignUpInput contains arguments for user registration.
@@ -68,6 +69,12 @@ func (uc *SignUpUseCase) Execute(ctx context.Context, input SignUpInput) (*domai
 	existing, _ := uc.userRepo.FindByEmail(ctx, input.Email)
 	if existing != nil {
 		return nil, ErrDuplicateEmail
+	}
+
+	// AUDIT_REMEDIATION.md F-21. This path had no length or strength check at
+	// all, so it was the weakest of the four ways to set a password.
+	if err := auth.ValidatePassword(input.Password, input.Email); err != nil {
+		return nil, fmt.Errorf("password rejected: %w", err)
 	}
 
 	hashedPassword, err := uc.passwordService.HashPassword(input.Password)
@@ -541,6 +548,13 @@ func (uc *ResetPasswordUseCase) Execute(ctx context.Context, token, newPassword 
 	user, err := uc.userRepo.FindByUUID(ctx, userUUID)
 	if err != nil || user == nil || user.Email != email {
 		return ErrUserNotFound
+	}
+
+	// AUDIT_REMEDIATION.md F-21: password reset previously accepted anything
+	// the hasher would take, including a password already known to be
+	// breached.
+	if err := auth.ValidatePassword(newPassword, email); err != nil {
+		return fmt.Errorf("password rejected: %w", err)
 	}
 
 	hashedPassword, err := uc.passwordService.HashPassword(newPassword)

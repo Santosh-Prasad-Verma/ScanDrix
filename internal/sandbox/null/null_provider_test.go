@@ -2,6 +2,7 @@ package null_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +56,21 @@ func TestNullSandboxProvider(t *testing.T) {
 		t.Errorf("unexpected read lines: %s", readLines)
 	}
 
+	// Grep must report that it could not search, not that nothing matched.
+	// Returning "No matches found." presented an unperformed search as a clean
+	// vulnerability result (AUDIT_REMEDIATION.md F-39).
 	grepOut, err := rc.Grep(ctx, "pattern", "hello.txt", "")
-	if err != nil || grepOut != "No matches found." {
-		t.Errorf("unexpected grep output: %s", grepOut)
+	if err == nil {
+		t.Fatalf("expected an error: the null provider has no search backend, got output %q", grepOut)
+	}
+	if !errors.Is(err, null.ErrNoSearchBackend) {
+		t.Fatalf("expected ErrNoSearchBackend, got %v", err)
+	}
+	if grepOut != "" {
+		t.Fatalf("no output may be returned alongside the error, got %q", grepOut)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "no matches") {
+		t.Fatalf("the error must not claim a clean result: %v", err)
 	}
 
 	listOut, err := rc.ListDir(ctx, ".", 2)
@@ -65,9 +78,10 @@ func TestNullSandboxProvider(t *testing.T) {
 		t.Errorf("unexpected listDir output: %s", listOut)
 	}
 
-	execRes, err := rc.Exec(ctx, "echo test")
-	if err != nil || execRes.ExitCode != 0 {
-		t.Errorf("unexpected exec result: %v, exit %d", err, execRes.ExitCode)
+	// Exec must fail rather than report a successful command that never ran
+	// (AUDIT_REMEDIATION.md F-38).
+	if _, err := rc.Exec(ctx, "echo test"); err == nil {
+		t.Errorf("expected Exec to fail on the null provider rather than report a clean pass")
 	}
 
 	// 3. Path Traversal rejection
@@ -82,9 +96,15 @@ func TestNullSandboxProvider(t *testing.T) {
 	}
 
 	// 4. Run command
+	//
+	// The null provider must not claim a command succeeded when nothing ran
+	// (AUDIT_REMEDIATION.md F-38).
 	runRes, err := inst.Run(ctx, "whoami", nil, 5*time.Second)
-	if err != nil || runRes.ExitCode != 0 {
-		t.Errorf("run failed: %v", err)
+	if err == nil {
+		t.Fatalf("expected Run to fail on the null provider, got result %+v", runRes)
+	}
+	if runRes != nil {
+		t.Errorf("no result may be returned alongside the error, got %+v", runRes)
 	}
 
 	// 5. Cleanup

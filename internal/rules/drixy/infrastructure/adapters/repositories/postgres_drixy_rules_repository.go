@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"sync"
 	"time"
 
@@ -22,11 +23,11 @@ import (
 
 // PostgresDrixyRulesRepository implements IDrixyRulesRepository with PostgreSQL JSONB storage and thread-safe in-memory fallback.
 type PostgresDrixyRulesRepository struct {
-	client    *database.Client
-	mu        sync.RWMutex
-	memStore  map[string]*entities.DrixyRulesEntity // keyed by organizationId
-	byRuleID  map[string]*interfaces.DrixyRule
-	initOnce  sync.Once
+	client   *database.Client
+	mu       sync.RWMutex
+	memStore map[string]*entities.DrixyRulesEntity // keyed by organizationId
+	byRuleID map[string]*interfaces.DrixyRule
+	initOnce sync.Once
 }
 
 // NewPostgresDrixyRulesRepository constructs a repository instance.
@@ -40,6 +41,46 @@ func NewPostgresDrixyRulesRepository(client *database.Client) *PostgresDrixyRule
 	return repo
 }
 
+// tenantUUID converts an organization identifier into the uuid form the RLS
+// session GUCs expect.
+//
+// AUDIT_REMEDIATION.md F-37: drixy_rules carries a non-tenant-scoped
+// organization_id VARCHAR(255) column, so its policy must compare as text
+// rather than casting the column to uuid. The GUC, however, is compared
+// elsewhere as uuid, so the value handed to set_config has to be a real uuid.
+func tenantUUID(organizationID string) (uuid.UUID, error) {
+	parsed, err := uuid.Parse(organizationID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid organization id %q: %w", organizationID, err)
+	}
+	return parsed, nil
+}
+
+// withTenant runs fn inside a transaction that has the tenant RLS context set.
+//
+// Every query that names an organization MUST go through here once RLS is
+// enabled on drixy_rules. Using client.Pool directly leaves the
+// app.current_tenant_id GUC unset, the policy admits zero rows, and every write
+// is rejected -- a silent failure that looks exactly like "this workspace has
+// no rules" (AGENTS.md 2.7.2).
+func (r *PostgresDrixyRulesRepository) withTenant(ctx context.Context, organizationID string, fn func(tx pgx.Tx) error) error {
+	tenant, err := tenantUUID(organizationID)
+	if err != nil {
+		return err
+	}
+	return r.client.ExecWithTenant(ctx, tenant, fn)
+}
+
+// withSystem runs fn as a privileged cross-tenant worker, for the few
+// operations that are genuinely org-agnostic (lookup a rule by its own UUID,
+// enumerate organizations that have rules). These are administrative, not
+// user-facing reads of another tenant's data.
+func (r *PostgresDrixyRulesRepository) withSystem(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return r.client.ExecAsSystem(ctx, fn)
+}
+
+// ensureSchema creates the table when absent. DDL is not tenant-scoped, so it
+// runs as a system operation.
 func (r *PostgresDrixyRulesRepository) ensureSchema(ctx context.Context) {
 	if r.client == nil || r.client.Pool == nil {
 		return
@@ -57,7 +98,10 @@ func (r *PostgresDrixyRulesRepository) ensureSchema(ctx context.Context) {
 			CREATE INDEX IF NOT EXISTS idx_drixy_rules_org ON drixy_rules(organization_id);
 			CREATE INDEX IF NOT EXISTS idx_drixy_rules_gin ON drixy_rules USING gin (rules);
 		`
-		_, _ = r.client.Pool.Exec(ctx, query)
+		_ = r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, query)
+			return err
+		})
 	})
 }
 
@@ -87,9 +131,11 @@ func (r *PostgresDrixyRulesRepository) Create(ctx context.Context, drixyRules *i
 		var rawRules []byte
 		var createdAt, updatedAt time.Time
 
-		err = r.client.Pool.QueryRow(ctx, query, entity.OrganizationID(), rulesJSON).Scan(
-			&id, &orgID, &rawRules, &createdAt, &updatedAt,
-		)
+		err = r.withTenant(ctx, entity.OrganizationID(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, entity.OrganizationID(), rulesJSON).Scan(
+				&id, &orgID, &rawRules, &createdAt, &updatedAt,
+			)
+		})
 		if err == nil {
 			var parsed []interfaces.DrixyRule
 			_ = json.Unmarshal(rawRules, &parsed)
@@ -124,7 +170,9 @@ func (r *PostgresDrixyRulesRepository) FindByID(ctx context.Context, ruleUUID st
 			LIMIT 1;
 		`
 		var raw []byte
-		err := r.client.Pool.QueryRow(ctx, query, ruleUUID).Scan(&raw)
+		err := r.withSystem(ctx, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, ruleUUID).Scan(&raw)
+		})
 		if err == nil {
 			var rule interfaces.DrixyRule
 			if err := json.Unmarshal(raw, &rule); err == nil {
@@ -161,9 +209,11 @@ func (r *PostgresDrixyRulesRepository) FindByOrganizationID(ctx context.Context,
 		var rawRules []byte
 		var createdAt, updatedAt time.Time
 
-		err := r.client.Pool.QueryRow(ctx, query, organizationID).Scan(
-			&id, &orgID, &rawRules, &createdAt, &updatedAt,
-		)
+		err := r.withTenant(ctx, organizationID, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, organizationID).Scan(
+				&id, &orgID, &rawRules, &createdAt, &updatedAt,
+			)
+		})
 		if err == nil {
 			var parsed []interfaces.DrixyRule
 			_ = json.Unmarshal(rawRules, &parsed)
@@ -206,16 +256,22 @@ func (r *PostgresDrixyRulesRepository) FindOrganizationIDsWithRules(ctx context.
 			FROM drixy_rules
 			WHERE jsonb_array_length(rules) > 0;
 		`
-		rows, err := r.client.Pool.Query(ctx, query)
-		if err == nil {
+		var orgs []string
+		err := r.withSystem(ctx, func(tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, query)
+			if err != nil {
+				return err
+			}
 			defer rows.Close()
-			var orgs []string
 			for rows.Next() {
 				var org string
 				if err := rows.Scan(&org); err == nil {
 					orgs = append(orgs, org)
 				}
 			}
+			return rows.Err()
+		})
+		if err == nil {
 			return orgs, nil
 		}
 	}
@@ -320,8 +376,10 @@ func (r *PostgresDrixyRulesRepository) Save(ctx context.Context, entity *entitie
 			ON CONFLICT (organization_id) DO UPDATE
 			SET rules = EXCLUDED.rules, updated_at = NOW();
 		`
-		_, err = r.client.Pool.Exec(ctx, query, entity.OrganizationID(), rulesJSON)
-		if err != nil {
+		if err = r.withTenant(ctx, entity.OrganizationID(), func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, query, entity.OrganizationID(), rulesJSON)
+			return err
+		}); err != nil {
 			return fmt.Errorf("failed executing save query: %w", err)
 		}
 	}

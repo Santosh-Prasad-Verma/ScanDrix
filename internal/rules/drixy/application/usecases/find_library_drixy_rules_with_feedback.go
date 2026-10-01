@@ -36,6 +36,7 @@ func NewFindLibraryDrixyRulesWithFeedbackUseCase(
 // Execute retrieves library rules with user feedback and computes pagination.
 func (uc *FindLibraryDrixyRulesWithFeedbackUseCase) Execute(
 	ctx context.Context,
+	organizationID string,
 	filters dtos.FindLibraryDrixyRulesDto,
 	userID string,
 ) (*PaginatedLibraryDrixyRulesResponse, error) {
@@ -65,7 +66,7 @@ func (uc *FindLibraryDrixyRulesWithFeedbackUseCase) Execute(
 		filterMap["severity"] = filters.Severity
 	}
 
-	allRules, err := uc.rulesService.GetLibraryDrixyRulesWithFeedback(ctx, filterMap, userID)
+	allRules, err := uc.rulesService.GetLibraryDrixyRulesWithFeedback(ctx, organizationID, filterMap, userID)
 	if err != nil {
 		return nil, err
 	}

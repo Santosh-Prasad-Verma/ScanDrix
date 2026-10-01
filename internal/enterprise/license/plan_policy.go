@@ -25,7 +25,7 @@ var (
 		MaxSeats:             5,
 		MaxRepositories:      5,
 		MaxConcurrentReviews: 1,
-		BYOKAllowed:          true,      // Allowed when workspace supplies their own key
+		BYOKAllowed:          true, // Allowed when workspace supplies their own key
 		PriorityQueueing:     false,
 		AdvancedRulesAllowed: false,
 	}
@@ -34,7 +34,7 @@ var (
 		MonthlyTokens:        6_000_000, // 6M tokens / month (Developer tier)
 		BurstLimitPerMin:     300_000,   // 300K tokens / minute
 		MaxSeats:             10,
-		MaxRepositories:      0,         // 0 = unlimited
+		MaxRepositories:      0, // 0 = unlimited
 		MaxConcurrentReviews: 5,
 		BYOKAllowed:          true,
 		PriorityQueueing:     false,
@@ -45,8 +45,19 @@ var (
 		MonthlyTokens:        14_000_000, // 14M tokens / month (Team tier)
 		BurstLimitPerMin:     700_000,    // 700K tokens / minute
 		MaxSeats:             25,
-		MaxRepositories:      0,          // 0 = unlimited
+		MaxRepositories:      0, // 0 = unlimited
 		MaxConcurrentReviews: 15,
+		BYOKAllowed:          true,
+		PriorityQueueing:     true,
+		AdvancedRulesAllowed: true,
+	}
+
+	QuotaScale = PlanQuota{
+		MonthlyTokens:        40_000_000, // 40M tokens / month (Scale tier)
+		BurstLimitPerMin:     1_200_000,  // 1.2M tokens / minute
+		MaxSeats:             100,
+		MaxRepositories:      0, // 0 = unlimited
+		MaxConcurrentReviews: 30,
 		BYOKAllowed:          true,
 		PriorityQueueing:     true,
 		AdvancedRulesAllowed: true,
@@ -71,6 +82,8 @@ func GetPlanQuota(tier LicenseTier) PlanQuota {
 		return QuotaDeveloper
 	case TierTeam:
 		return QuotaTeam
+	case TierScale:
+		return QuotaScale
 	case TierEnterprise:
 		return QuotaEnterprise
 	default:
@@ -86,7 +99,9 @@ func NormalizeTier(tier LicenseTier) LicenseTier {
 		return TierDeveloper
 	case "PRO", "TEAM", "TEAMS", "VELOCITY":
 		return TierTeam
-	case "ENTERPRISE", "ENT", "SCALE":
+	case "SCALE":
+		return TierScale
+	case "ENTERPRISE", "ENT":
 		return TierEnterprise
 	default:
 		return TierCommunity
@@ -132,12 +147,12 @@ var enterpriseOnlyModels = map[string]bool{
 // on a target model based on their plan tier and BYOK status.
 //
 // Policy rules:
-// 1. BYOK Exception: If the customer provides their own provider API key (hasBYOK=true),
-//    they fund the inference directly and can access ANY model supported by that provider.
-// 2. Free / Community: Allowed only approved low-cost / trial models.
-// 3. Developer: Allowed high-performance workhorse models (Gemini Flash, DeepSeek, GLM, Qwen, Kimi, Luna).
-// 4. Team: Allowed all standard frontier workhorses (Claude Sonnet 5, GPT-5.6 Terra, Grok-3).
-// 5. Enterprise: Full access to all models including ultra-flagships and private endpoints.
+//  1. BYOK Exception: If the customer provides their own provider API key (hasBYOK=true),
+//     they fund the inference directly and can access ANY model supported by that provider.
+//  2. Free / Community: Allowed only approved low-cost / trial models.
+//  3. Developer: Allowed high-performance workhorse models (Gemini Flash, DeepSeek, GLM, Qwen, Kimi, Luna).
+//  4. Team: Allowed all standard frontier workhorses (Claude Sonnet 5, GPT-5.6 Terra, Grok-3).
+//  5. Enterprise: Full access to all models including ultra-flagships and private endpoints.
 func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, string) {
 	cleanModel := strings.ToLower(strings.TrimSpace(modelID))
 
@@ -182,7 +197,18 @@ func CanAccessModel(tier LicenseTier, modelID string, hasBYOK bool) (bool, strin
 		return true, ""
 	}
 
-	// 5. Enterprise tier: all models allowed
+	// 5. Scale tier
+	if normTier == TierScale {
+		if cleanModel == "claude-opus-5" || cleanModel == "claude-fable-5" || cleanModel == "gpt-5.6-sol" {
+			return false, fmt.Sprintf(
+				"model '%s' requires an Enterprise subscription or custom BYOK credentials. Current plan: Scale.",
+				modelID,
+			)
+		}
+		return true, ""
+	}
+
+	// 6. Enterprise tier: all models allowed
 	return true, ""
 }
 
@@ -194,6 +220,13 @@ func GetAllocatedModelsList(tier LicenseTier) []string {
 		return []string{
 			"claude-opus-5", "claude-fable-5", "claude-sonnet-5",
 			"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+			"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+			"qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3",
+			"gemini-2.5-flash-lite", "gemini-3.1-flash-lite",
+		}
+	case TierScale:
+		return []string{
+			"claude-sonnet-5", "gpt-5.6-terra", "gpt-5.6-luna",
 			"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
 			"qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3",
 			"gemini-2.5-flash-lite", "gemini-3.1-flash-lite",

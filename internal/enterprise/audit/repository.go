@@ -1,10 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Multi-Agent Code Review Platform
-// Copyright (c) 2026 ScanDrix Authors. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-// Domain: scandrix.dev
-// ═══════════════════════════════════════════════════════════════
-
 package audit
 
 import (
@@ -48,16 +41,23 @@ type IAuditLogRepository interface {
 
 // MemoryAuditRepository provides an in-memory, thread-safe implementation with hash chaining.
 type MemoryAuditRepository struct {
-	mu        sync.RWMutex
-	logs      []EnterpriseLogEvent
+	mu         sync.RWMutex
+	logs       []EnterpriseLogEvent
 	lastHashes map[uuid.UUID]string
 	hmacSecret []byte
 }
 
 // NewMemoryAuditRepository initializes a memory audit repository.
+//
+// SECURITY: the HMAC secret is required. It previously defaulted to a
+// hardcoded string committed to the repository, which meant the tamper-evident
+// hash chain was verifiable by anyone and forgeable by anyone
+// (AUDIT_REMEDIATION.md F-14). A nil return means the caller misconfigured the
+// audit store, which must be treated as a hard failure rather than a weaker
+// chain.
 func NewMemoryAuditRepository(hmacSecret string) *MemoryAuditRepository {
-	if hmacSecret == "" {
-		hmacSecret = "scandrix-audit-default-secret-key"
+	if strings.TrimSpace(hmacSecret) == "" {
+		return nil
 	}
 	return &MemoryAuditRepository{
 		logs:       make([]EnterpriseLogEvent, 0),

@@ -8,10 +8,12 @@ package repositories
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/contracts"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/entities"
@@ -52,7 +54,10 @@ func (r *PostgresRuleLikeRepository) ensureSchema(ctx context.Context) {
 			);
 			CREATE INDEX IF NOT EXISTS idx_drixy_rule_likes_rule ON drixy_rule_likes(rule_id);
 		`
-		_, _ = r.client.Pool.Exec(ctx, query)
+		_ = r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, query)
+			return err
+		})
 	})
 }
 
@@ -60,10 +65,30 @@ func makeLikeKey(ruleID, userID string) string {
 	return ruleID + ":" + userID
 }
 
+// withTenant opens a transaction carrying the RLS tenant context.
+//
+// AUDIT_REMEDIATION.md F-37: drixy_rule_likes had no RLS and no tenant column.
+// Migration 040 adds both. Querying through client.Pool leaves the
+// app.current_tenant_id GUC unset, the policy admits zero rows, and the call
+// looks like "no feedback recorded" rather than a permissions failure
+// (AGENTS.md 2.7.2), so every tenant-scoped read and write goes through here.
+func withTenant(ctx context.Context, client *database.Client, organizationID string, fn func(tx pgx.Tx) error) error {
+	tenant, err := uuid.Parse(organizationID)
+	if err != nil {
+		return fmt.Errorf("invalid organization id %q: %w", organizationID, err)
+	}
+	return client.ExecWithTenant(ctx, tenant, fn)
+}
+
 // SetFeedback inserts or updates feedback for a user and rule.
-func (r *PostgresRuleLikeRepository) SetFeedback(ctx context.Context, ruleID string, feedback entities.RuleFeedbackType, userID string) (*entities.RuleLikeEntity, error) {
+func (r *PostgresRuleLikeRepository) SetFeedback(ctx context.Context, organizationID, ruleID string, feedback entities.RuleFeedbackType, userID string) (*entities.RuleLikeEntity, error) {
 	if ruleID == "" {
 		return nil, errors.New("ruleId is required")
+	}
+	if organizationID == "" {
+		// Without a tenant the RLS policy in migration 040 cannot admit this
+		// row, so refuse rather than silently writing something unowned.
+		return nil, errors.New("organizationId is required")
 	}
 	if userID == "" {
 		userID = "anonymous"
@@ -81,18 +106,21 @@ func (r *PostgresRuleLikeRepository) SetFeedback(ctx context.Context, ruleID str
 
 	if r.client != nil && r.client.Pool != nil {
 		query := `
-			INSERT INTO drixy_rule_likes (rule_id, user_id, feedback, created_at, updated_at)
-			VALUES ($1, $2, $3, NOW(), NOW())
+			INSERT INTO drixy_rule_likes (rule_id, user_id, feedback, organization_id, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, NOW(), NOW())
 			ON CONFLICT (rule_id, user_id) DO UPDATE
-			SET feedback = EXCLUDED.feedback, updated_at = NOW()
+			SET feedback = EXCLUDED.feedback, updated_at = NOW(),
+			    organization_id = COALESCE(drixy_rule_likes.organization_id, EXCLUDED.organization_id)
 			RETURNING id, rule_id, user_id, feedback, created_at, updated_at;
 		`
 		var id uuid.UUID
 		var rID, uID, fb string
 		var cAt, uAt time.Time
-		err := r.client.Pool.QueryRow(ctx, query, ruleID, userID, string(feedback)).Scan(
-			&id, &rID, &uID, &fb, &cAt, &uAt,
-		)
+		err := withTenant(ctx, r.client, organizationID, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, ruleID, userID, string(feedback), organizationID).Scan(
+				&id, &rID, &uID, &fb, &cAt, &uAt,
+			)
+		})
 		if err == nil {
 			saved := entities.NewRuleLikeEntity(entities.IRuleLike{
 				ID:        id.String(),
@@ -116,7 +144,7 @@ func (r *PostgresRuleLikeRepository) SetFeedback(ctx context.Context, ruleID str
 }
 
 // FindOne retrieves existing feedback for a specific user and rule.
-func (r *PostgresRuleLikeRepository) FindOne(ctx context.Context, ruleID, userID string) (*entities.RuleLikeEntity, error) {
+func (r *PostgresRuleLikeRepository) FindOne(ctx context.Context, organizationID, ruleID, userID string) (*entities.RuleLikeEntity, error) {
 	if ruleID == "" || userID == "" {
 		return nil, nil
 	}
@@ -131,9 +159,11 @@ func (r *PostgresRuleLikeRepository) FindOne(ctx context.Context, ruleID, userID
 		var id uuid.UUID
 		var rID, uID, fb string
 		var cAt, uAt time.Time
-		err := r.client.Pool.QueryRow(ctx, query, ruleID, userID).Scan(
-			&id, &rID, &uID, &fb, &cAt, &uAt,
-		)
+		err := withTenant(ctx, r.client, organizationID, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, ruleID, userID).Scan(
+				&id, &rID, &uID, &fb, &cAt, &uAt,
+			)
+		})
 		if err == nil {
 			return entities.NewRuleLikeEntity(entities.IRuleLike{
 				ID:        id.String(),
@@ -155,7 +185,7 @@ func (r *PostgresRuleLikeRepository) FindOne(ctx context.Context, ruleID, userID
 }
 
 // CountByRule computes net positive feedback for a rule.
-func (r *PostgresRuleLikeRepository) CountByRule(ctx context.Context, ruleID string) (int, error) {
+func (r *PostgresRuleLikeRepository) CountByRule(ctx context.Context, organizationID, ruleID string) (int, error) {
 	if ruleID == "" {
 		return 0, nil
 	}
@@ -167,7 +197,9 @@ func (r *PostgresRuleLikeRepository) CountByRule(ctx context.Context, ruleID str
 			WHERE rule_id = $1 AND feedback = 'positive';
 		`
 		var cnt int
-		err := r.client.Pool.QueryRow(ctx, query, ruleID).Scan(&cnt)
+		err := withTenant(ctx, r.client, organizationID, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query, ruleID).Scan(&cnt)
+		})
 		if err == nil {
 			return cnt, nil
 		}
@@ -214,7 +246,7 @@ func (r *PostgresRuleLikeRepository) TopByLanguage(ctx context.Context, language
 }
 
 // GetAllRulesWithFeedback generates aggregated vote summaries across all rules.
-func (r *PostgresRuleLikeRepository) GetAllRulesWithFeedback(ctx context.Context, userID string) ([]contracts.RuleFeedbackSummary, error) {
+func (r *PostgresRuleLikeRepository) GetAllRulesWithFeedback(ctx context.Context, organizationID, userID string) ([]contracts.RuleFeedbackSummary, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -244,7 +276,7 @@ func (r *PostgresRuleLikeRepository) GetAllRulesWithFeedback(ctx context.Context
 }
 
 // Unlike deletes user feedback for a rule.
-func (r *PostgresRuleLikeRepository) Unlike(ctx context.Context, ruleID, userID string) (bool, error) {
+func (r *PostgresRuleLikeRepository) Unlike(ctx context.Context, organizationID, ruleID, userID string) (bool, error) {
 	if ruleID == "" || userID == "" {
 		return false, nil
 	}
@@ -254,7 +286,10 @@ func (r *PostgresRuleLikeRepository) Unlike(ctx context.Context, ruleID, userID 
 			DELETE FROM drixy_rule_likes
 			WHERE rule_id = $1 AND user_id = $2;
 		`
-		_, _ = r.client.Pool.Exec(ctx, query, ruleID, userID)
+		_ = withTenant(ctx, r.client, organizationID, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, query, ruleID, userID)
+			return err
+		})
 	}
 
 	r.mu.Lock()

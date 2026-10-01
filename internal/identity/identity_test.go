@@ -201,10 +201,13 @@ func TestAuthLifecycleAndTokenRotation(t *testing.T) {
 	authRepo := infrastructure.NewInMemoryAuthRepository()
 	profileRepo := infrastructure.NewInMemoryProfileRepository()
 	pwService := infrastructure.NewBcryptPasswordService(10)
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	notif := &mockNotificationEmitter{}
 
 	signUpUC := application.NewSignUpUseCase(userRepo, profileRepo, pwService, jwtService, notif)
@@ -215,7 +218,7 @@ func TestAuthLifecycleAndTokenRotation(t *testing.T) {
 	// 1. SignUp
 	createdUser, err := signUpUC.Execute(ctx, application.SignUpInput{
 		Email:       "alice@scandrix.dev",
-		Password:    "SuperSecretPassword123!",
+		Password:    "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 		Name:        "Alice Developer",
 		PreVerified: true,
 	})
@@ -237,7 +240,7 @@ func TestAuthLifecycleAndTokenRotation(t *testing.T) {
 	}
 
 	// 2. Login
-	tokens, err := loginUC.Execute(ctx, "alice@scandrix.dev", "SuperSecretPassword123!")
+	tokens, err := loginUC.Execute(ctx, "alice@scandrix.dev", "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8")
 	if err != nil {
 		t.Fatalf("login failed: %v", err)
 	}
@@ -278,10 +281,13 @@ func TestCliAuthFlows(t *testing.T) {
 	sessionRepo := infrastructure.NewInMemoryCliAuthSessionRepository()
 	userRepo := infrastructure.NewInMemoryUserRepository()
 	pwService := infrastructure.NewBcryptPasswordService(10)
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 
 	initLoopbackUC := application.NewInitiateCliLoginUseCase(sessionRepo, "https://app.scandrix.dev")
 	initDeviceUC := application.NewInitiateCliDeviceLoginUseCase(sessionRepo, "https://app.scandrix.dev")

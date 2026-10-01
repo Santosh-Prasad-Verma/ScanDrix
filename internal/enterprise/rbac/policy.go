@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -139,8 +140,30 @@ func NewPolicyEngine() *PolicyEngine {
 }
 
 // Can checks if a given user role has permission to perform an action on a resource.
+// NormalizeRole maps any accepted spelling of a role onto its canonical
+// models.UserRole.
+//
+// The Postgres users_role_enum stores lowercase values (owner, admin, member)
+// while the Go constants are uppercase, so a role read from the database missed
+// the policy maps entirely and an owner was denied manage on rules and members.
+// Every authorization decision normalizes first so both spellings resolve.
+func NormalizeRole(role models.UserRole) models.UserRole {
+	switch strings.ToUpper(strings.TrimSpace(string(role))) {
+	case string(models.RoleOwner):
+		return models.RoleOwner
+	case string(models.RoleAdmin):
+		return models.RoleAdmin
+	case string(models.RoleMember):
+		return models.RoleMember
+	case string(models.RoleViewer):
+		return models.RoleViewer
+	default:
+		return models.UserRole(strings.ToUpper(strings.TrimSpace(string(role))))
+	}
+}
+
 func (p *PolicyEngine) Can(role models.UserRole, action Action, resource Resource) bool {
-	rules, exists := roleMatrix[role]
+	rules, exists := roleMatrix[NormalizeRole(role)]
 	if !exists {
 		return false
 	}
@@ -164,7 +187,7 @@ func (p *PolicyEngine) Can(role models.UserRole, action Action, resource Resourc
 
 // CheckPermission validates if a given user role possesses the required legacy permission.
 func (p *PolicyEngine) CheckPermission(role models.UserRole, perm Permission) error {
-	perms, found := rolePermissions[role]
+	perms, found := rolePermissions[NormalizeRole(role)]
 	if !found {
 		return errors.New("unknown or invalid user role")
 	}
@@ -188,7 +211,7 @@ func (p *PolicyEngine) CanAccessAuditLogs(role models.UserRole) bool {
 
 // GetRolePermissions returns all active permissions for a given role.
 func (p *PolicyEngine) GetRolePermissions(role models.UserRole) []string {
-	perms, found := rolePermissions[role]
+	perms, found := rolePermissions[NormalizeRole(role)]
 	if !found {
 		return []string{}
 	}

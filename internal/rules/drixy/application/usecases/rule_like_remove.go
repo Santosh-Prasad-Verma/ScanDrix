@@ -25,6 +25,7 @@ func NewRemoveRuleLikeUseCase(ruleLikeService contracts.IRuleLikeService) *Remov
 // Execute removes previously submitted feedback.
 func (uc *RemoveRuleLikeUseCase) Execute(
 	ctx context.Context,
+	organizationID string,
 	ruleID string,
 	userID string,
 ) (bool, error) {
@@ -35,5 +36,5 @@ func (uc *RemoveRuleLikeUseCase) Execute(
 		return false, fmt.Errorf("user ID is required to remove feedback")
 	}
 
-	return uc.ruleLikeService.RemoveFeedback(ctx, ruleID, userID)
+	return uc.ruleLikeService.RemoveFeedback(ctx, organizationID, ruleID, userID)
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/mcp/guards"
 	"github.com/scandrix/backend/internal/mcp/protocol"
 )
@@ -28,16 +29,46 @@ type HTTPServer struct {
 }
 
 // NewHTTPServer constructs an HTTP router serving MCP over Streamable HTTP POST.
-func NewHTTPServer(server *Server) http.Handler {
+//
+// SECURITY (AUDIT_REMEDIATION.md F-15f): the transport requires a valid
+// session, using the same auth.Authenticator as the rest of the API. It was
+// previously mounted on the unauthenticated block, so any caller could invoke
+// tools with a self-asserted organizationId.
+//
+// A nil authenticator FAILS CLOSED with 503 rather than serving unauthenticated.
+func NewHTTPServer(server *Server, authSvc ...*auth.Authenticator) http.Handler {
 	if server == nil {
 		server = NewServer()
+	}
+
+	var authenticator *auth.Authenticator
+	if len(authSvc) > 0 {
+		authenticator = authSvc[0]
 	}
 
 	hs := &HTTPServer{server: server}
 	r := chi.NewRouter()
 
-	// 1. Guard check: SCANDRIX_MCP_SERVER_ENABLED / API_MCP_SERVER_ENABLED
+	// 1. Guard check: SCANDRIX_MCP_SERVER_ENABLED / API_MCP_SERVER_ENABLED.
+	//    Defaults to disabled, so this must be opted into.
 	r.Use(guards.McpEnabledMiddleware)
+
+	// 2. Authentication. Every MCP route is state-changing or discloses tenant
+	//    data, so all of them sit behind a verified session. When no
+	//    authenticator is supplied the transport refuses everything.
+	if authenticator != nil {
+		r.Use(authenticator.Middleware)
+	} else {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": "MCP authentication is unavailable; refusing to serve unauthenticated",
+				})
+			})
+		})
+	}
 
 	// 2. Main Code Management MCP endpoints on /mcp
 	// Supports both root (when mounted at /mcp) and explicit /mcp paths

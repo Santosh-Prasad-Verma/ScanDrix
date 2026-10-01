@@ -8,6 +8,8 @@ package config
 import (
 	_ "embed"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -54,8 +56,17 @@ func Load() (*MCPManagerConfig, error) {
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
+	// Fail closed. This previously fell back to
+	// postgres://postgres:postgres@127.0.0.1:5432/scandrix?sslmode=disable,
+	// a superuser with a trivial password, so a missing DATABASE_URL silently
+	// produced a connection with full database rights. The same function
+	// correctly refuses to guess the encryption and JWT secrets a few lines
+	// below; a database credential is no different (AUDIT_REMEDIATION.md F-46).
 	if dbURL == "" {
-		dbURL = "postgres://postgres:postgres@127.0.0.1:5432/scandrix?sslmode=disable"
+		return nil, errors.New("DATABASE_URL is required and cannot be empty")
+	}
+	if err := rejectSuperuserDSN(dbURL); err != nil {
+		return nil, err
 	}
 
 	jwtSecret := os.Getenv("API_MCP_MANAGER_JWT_SECRET")
@@ -140,4 +151,36 @@ func Load() (*MCPManagerConfig, error) {
 		DocsPath:         docsPath,
 		DocsSpecPath:     docsSpecPath,
 	}, nil
+}
+
+// rejectSuperuserDSN refuses database URLs that name a superuser account.
+//
+// AUDIT_REMEDIATION.md F-46. The MCP manager runs with whatever DATABASE_URL
+// it is given, and the previous fallback pointed it at `postgres:postgres`.
+// A superuser bypasses every row-level security policy in the schema, so a
+// single misconfigured environment turned this binary into a way to read and
+// write every tenant's data regardless of tenant context.
+//
+// The check is deliberately about the *role*, not about specific passwords: a
+// password that leaks in a log is recoverable by rotation, whereas a superuser
+// role silently defeats isolation.
+func rejectSuperuserDSN(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		// Not parseable as a URL: let the driver produce the real error rather
+		// than guessing here.
+		return nil
+	}
+	if u.User == nil {
+		return nil
+	}
+	user := u.User.Username()
+	switch strings.ToLower(user) {
+	case "postgres", "root", "admin", "superuser", "scandrix_app":
+		return fmt.Errorf(
+			"DATABASE_URL must not use a superuser account (found %q): it bypasses row-level "+
+				"security and would grant this process unrestricted access to every tenant. "+
+				"Use a least-privilege application role such as scandrix_runtime", user)
+	}
+	return nil
 }

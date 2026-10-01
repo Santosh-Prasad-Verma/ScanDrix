@@ -96,9 +96,23 @@ func NewRedisTokenBucketLimiter(rdb *redis.Client, config RateLimitConfig) *Redi
 	}
 }
 
-// SetFailClosed configures whether outages reject all requests (fail closed) or degrade to local memory (fail open).
+// SetFailClosed configures whether outages reject all requests (fail closed) or
+// degrade to local memory (fail open).
+//
+// This was never called from production code, only from a test, so the limiter
+// always ran fail-open: a Redis outage silently replaced one shared bucket with
+// a per-process one, and with N replicas every caller got N times the intended
+// limit (AUDIT_REMEDIATION.md F-29 and F-32). BuildRouter now sets this
+// explicitly from the deployment environment.
 func (l *RedisTokenBucketLimiter) SetFailClosed(failClosed bool) {
 	l.failClosed = failClosed
+}
+
+// Degraded reports whether this limiter is currently running on its local
+// fallback rather than the shared bucket. Exposed so a health check can surface
+// the degradation instead of leaving it invisible until someone is brute-forcing.
+func (l *RedisTokenBucketLimiter) Degraded() bool {
+	return l.rdb == nil || l.isCircuitOpen()
 }
 
 // isCircuitOpen checks if Redis is currently tripped due to repeated failures.
@@ -251,3 +265,34 @@ func (l *RedisTokenBucketLimiter) Allow(ctx context.Context, key string, tokens 
 
 	return res, nil
 }
+
+// UnavailableLimiter denies every request.
+//
+// It exists for the case where a distributed limiter is required but no shared
+// store was supplied. Falling back to a per-process token bucket there is the
+// defect itself: with N replicas the effective limit silently becomes N times
+// the intended one (AUDIT_REMEDIATION.md F-29/F-32). Denying is the only
+// behaviour that does not quietly weaken the control.
+type UnavailableLimiter struct {
+	reason string
+}
+
+// NewUnavailableLimiter returns a limiter that always denies, carrying the
+// reason for logs and health output.
+func NewUnavailableLimiter(reason string) *UnavailableLimiter {
+	return &UnavailableLimiter{reason: reason}
+}
+
+// Allow always denies. A short Retry-After is returned so a client that retries
+// quickly is not turned into a tight loop by the rejection itself.
+func (l *UnavailableLimiter) Allow(_ context.Context, _ string, _ float64) (*RateLimitResult, error) {
+	return &RateLimitResult{
+		Allowed:    false,
+		Degraded:   true,
+		Remaining:  0,
+		RetryAfter: 5,
+	}, nil
+}
+
+// Reason describes why the limiter is denying, for logs and health output.
+func (l *UnavailableLimiter) Reason() string { return l.reason }
