@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,18 +18,24 @@ func main() {
 	_ = godotenv.Load(".env")
 	_ = godotenv.Load("../.env")
 
-	dbURL := os.Getenv("DIRECT_URL")
+	// Migrations need privileges the runtime role deliberately lacks: CREATE
+	// EXTENSION for uuid-ossp / pgcrypto / vector is superuser-only. So the
+	// migration job reads its own DSN, and the services keep only the
+	// least-privilege DATABASE_URL. This is what stops the privileged credential
+	// from being present in every API and worker container.
+	dbURL := firstNonEmptyEnv(
+		"MIGRATION_DATABASE_URL",
+		"DIRECT_URL",
+		"SUPABASE_DATABASE_URL",
+		"SUPABASE_POOLER_URL",
+		"DATABASE_URL",
+	)
 	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
+		log.Fatal("MIGRATION_DATABASE_URL (or DATABASE_URL) environment variable is required")
 	}
-	if dbURL == "" {
-		dbURL = os.Getenv("SUPABASE_DATABASE_URL")
-	}
-	if dbURL == "" {
-		dbURL = os.Getenv("SUPABASE_POOLER_URL")
-	}
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL or SUPABASE_DATABASE_URL environment variable is required")
+	if os.Getenv("MIGRATION_DATABASE_URL") == "" {
+		log.Println("MIGRATION_DATABASE_URL is not set; falling back to a service DSN. " +
+			"Migrations may fail if that role cannot create extensions.")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -133,4 +140,15 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 			fmt.Printf("  ✔ %s\n", tableName)
 		}
 	}
+}
+
+// firstNonEmptyEnv returns the value of the first variable that is set and
+// non-blank. Order matters: the most privileged DSN must be considered first.
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
 }

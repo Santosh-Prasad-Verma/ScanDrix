@@ -18,6 +18,7 @@ import (
 	coreconfig "github.com/scandrix/backend/internal/core/infrastructure/config"
 	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/integrations/github"
 	"github.com/scandrix/backend/internal/integrations/pm"
 	"github.com/scandrix/backend/internal/llm"
@@ -130,7 +131,7 @@ func main() {
 		defer shutdownCancel()
 		_ = healthServer.Shutdown(shutdownCtx)
 	}()
-//	// Initialize Appwrite Storage client
+	//	// Initialize Appwrite Storage client
 	// ═══════════════════════════════════════════════════════════════
 	// 4. DOMAIN CLIENTS & AI GATEWAY (Storage, multi-model providers & token limiter)
 	// ═══════════════════════════════════════════════════════════════
@@ -182,6 +183,14 @@ func main() {
 		aiGatewayOpts = append(aiGatewayOpts, llm.WithMistral(cfg.MistralAPIKey))
 		slog.Info("Mistral AI provider attached to Worker")
 	}
+	if cfg.GroqAPIKey != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithGroq(cfg.GroqAPIKey))
+		slog.Info("Groq Cloud provider attached to Worker")
+	}
+	if cfg.CohereAPIKey != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithCohere(cfg.CohereAPIKey))
+		slog.Info("Cohere AI provider attached to Worker")
+	}
 	if cfg.XAIAPIKey != "" {
 		aiGatewayOpts = append(aiGatewayOpts, llm.WithXAI(cfg.XAIAPIKey))
 		slog.Info("xAI Grok provider attached to Worker")
@@ -231,7 +240,10 @@ func main() {
 
 	// Initialize Sandbox Subsystem & MicroVM Pool
 	sandboxProvider := sandbox.NewSandboxProviderFromConfig(cfg)
-	sandboxRepo := lease.NewPgSandboxLeaseRepository(dbClient.Pool)
+	// The repository takes the Client, not the raw Pool: sandbox lease work runs
+	// as a background job with no tenant, so every query must go through
+	// ExecAsSystem and carry the RLS system-worker flag.
+	sandboxRepo := lease.NewPgSandboxLeaseRepository(dbClient)
 	sandboxLeaseMgr := lease.NewSandboxLeaseManager(sandboxProvider, sandboxRepo, cfg)
 	sandboxReaper := lease.NewSandboxLeaseReaper(sandboxRepo, cfg)
 	orchestrator.SetSandboxLeaseManager(sandboxLeaseMgr)
@@ -267,6 +279,25 @@ func main() {
 
 	tracer := enterprise.NewTracer()
 
+	// Entitlement gate. The worker spends a workspace's inference budget, so it
+	// must ask what that workspace is entitled to before doing any work - the
+	// same Resolver the API and dashboard use, so the three cannot disagree.
+	// A worker booted without a resolvable entitlement still starts, but the
+	// gate refuses every task rather than running the product unpaid.
+	licenseManager, licErr := license.NewManagerFromEnv()
+	if licErr != nil {
+		slog.Error("Enterprise license configuration is invalid; reviews will be refused", "error", licErr)
+	}
+	entitlementResolver := license.NewResolver(licenseManager, database.NewLicenseStore(repo), repo)
+	executionGate := license.NewExecutionGate(entitlementResolver)
+	if licErr == nil {
+		if ent := entitlementResolver.Resolve(ctx, uuid.Nil); ent.Tier != license.TierCommunity {
+			slog.Info("Worker entitlement loaded", "tier", string(ent.Tier), "seats", ent.SeatLimit())
+		} else {
+			slog.Warn("Worker booted without an enterprise license; only Community entitlements apply")
+		}
+	}
+
 	executor := func(execCtx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
 		traceCtx, span := tracer.StartSpan(execCtx, "worker.review_execution", map[string]any{
 			"task_id":      task.TaskID.String(),
@@ -287,6 +318,38 @@ func main() {
 				task.WorkspaceID = wsID
 				slog.Info("Resolved workspace ID from repository namespace", "repo", task.RepoNamespace, "workspace_id", wsID)
 			}
+		}
+
+		// 1b. Resolve the tracked repository id.
+		//
+		// pull_request_reviews.repository_id is a foreign key into
+		// tracked_repositories. Without this the review insert violates the
+		// constraint and no review row is ever written.
+		if repo != nil && task.RepositoryID == uuid.Nil && task.RepoNamespace != "" {
+			if tr, err := repo.GetTrackedRepositoryByNamespace(traceCtx, provider, task.RepoNamespace); err == nil {
+				task.RepositoryID = tr.ID
+				slog.Info("Resolved repository ID from namespace", "repo", task.RepoNamespace, "repository_id", tr.ID)
+			} else {
+				slog.Warn("Could not resolve repository ID; review will not persist",
+					"repo", task.RepoNamespace, "error", err)
+			}
+		}
+
+		// Entitlement gate. Runs after the workspace is resolved and before any
+		// diff fetch, LLM call or SCM write, so a refused task costs nothing.
+		// The requirement comes from the task, not a hardcoded empty string: a
+		// task that declares a licensed capability is refused up front when the
+		// workspace is not entitled to it.
+		requiredFeature := license.FeatureFlag(task.RequiredFeature)
+		if decision := executionGate.CheckExecution(traceCtx, task.WorkspaceID, requiredFeature); !decision.Allowed {
+			slog.Warn("Review refused by entitlement gate",
+				"task_id", task.TaskID.String(),
+				"workspace_id", task.WorkspaceID.String(),
+				"repo", task.RepoNamespace,
+				"reason", string(decision.Reason),
+				"tier", string(decision.Tier),
+				"detail", decision.Message)
+			return nil, decision.RefusalError()
 		}
 
 		// Dynamically seed workspace token budget if workspace is known
@@ -359,6 +422,7 @@ func main() {
 		reviewTask := review.ExecutionTask{
 			ReviewID:      task.TaskID,
 			WorkspaceID:   task.WorkspaceID,
+			RepositoryID:  task.RepositoryID,
 			RepoNamespace: task.RepoNamespace,
 			PullNumber:    task.PullRequestNumber,
 			HeadSHA:       task.HeadSHA,
@@ -436,7 +500,7 @@ func main() {
 		// Self-hosted anonymous heartbeat beacon (24h schedule with transparency boot notice)
 		beaconStore := beacon.NewPostgresTelemetryStateStore(dbClient.Pool)
 		_ = beaconStore.EnsureTable(ctx)
-		beaconCollector := beacon.NewHeartbeatCollectorService(dbClient.Pool, logger)
+		beaconCollector := beacon.NewHeartbeatCollectorService(dbClient, logger)
 		beaconTransport := beacon.NewBeaconHTTPProvider(logger)
 		beaconService := beacon.NewSelfHostedBeaconService(beaconStore, beaconCollector, beaconTransport, logger)
 		cronScheduler.Register(beacon.NewBeaconCronJob(beaconService, logger))
@@ -529,9 +593,21 @@ func runOutboxRelay(ctx context.Context, repo *database.Repository, broker *queu
 					}
 
 					if err := broker.PublishWithPriority(ctx, targetQueue, evt.Payload, priority); err == nil {
-						_ = repo.MarkOutboxEventPublished(ctx, evt.ID)
+						if markErr := repo.MarkOutboxEventPublished(ctx, evt.ID); markErr != nil {
+							// Published but unmarked: the relay re-publishes after the reclaim
+							// window, so the consumer inbox claim has to dedupe it.
+							slog.Error("Outbox event published but not marked",
+								"event_id", evt.ID, "event_type", evt.EventType,
+								"queue", targetQueue, "error", markErr)
+						}
 					} else {
-						_ = repo.MarkOutboxEventFailed(ctx, evt.ID, err.Error())
+						if markErr := repo.MarkOutboxEventFailed(ctx, evt.ID, err.Error()); markErr != nil {
+							// Publish and persist both failed: the row stays PROCESSING and is
+							// only reclaimed after the 5 minute window. Never silent.
+							slog.Error("Outbox publish failed and failure could not be recorded",
+								"event_id", evt.ID, "event_type", evt.EventType,
+								"queue", targetQueue, "publish_error", err, "mark_error", markErr)
+						}
 					}
 				}
 			}
@@ -768,4 +844,3 @@ func runSandboxInvalidateConsumer(ctx context.Context, broker *queue.Broker, lea
 		}
 	}
 }
-

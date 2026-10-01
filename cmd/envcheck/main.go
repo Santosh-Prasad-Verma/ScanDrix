@@ -1,45 +1,31 @@
+// Command envcheck is ScanDrix's pre-flight environment validator.
+//
+// AUDIT_REMEDIATION.md F-76: this previously checked a hand-written list of 13
+// names while the code read several hundred, so a renamed or missing variable
+// surfaced as a runtime failure rather than a startup failure. The set of
+// variables is now generated from the source into env_contract_gen.go and
+// drift-checked by a test, so it cannot silently fall behind again.
 package main
 
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
 
-type EnvVar struct {
-	Name        string
-	Required    bool
-	Description string
-	IsSecret    bool
-}
-
-var expectedVars = []EnvVar{
-	// Core Server & Authentication
-	{Name: "APP_ENV", Required: false, Description: "Runtime environment (development, staging, production)", IsSecret: false},
-	{Name: "PORT", Required: false, Description: "HTTP listen port (default: 8080)", IsSecret: false},
-	{Name: "JWT_SECRET", Required: true, Description: "Secret key used for HMAC-SHA256 JWT signing", IsSecret: true},
-
-	// Database Connection (PostgreSQL 16 + pgvector)
-	{Name: "DATABASE_URL", Required: true, Description: "PostgreSQL connection string or individual POSTGRES_* vars", IsSecret: true},
-
-	// Message Broker (RabbitMQ)
-	{Name: "RABBITMQ_URL", Required: true, Description: "AMQP connection URL for async reviews and webhooks", IsSecret: true},
-
-	// Distributed Cache & Locks (Redis 7.2)
-	{Name: "REDIS_URL", Required: true, Description: "Redis connection URL for idempotency locks and rate limits", IsSecret: true},
-
-	// Security & Envelope Encryption
-	{Name: "KMS_MASTER_KEY", Required: false, Description: "Master 256-bit hex key for AES-GCM envelope encryption", IsSecret: true},
-
-	// Billing & Subscriptions (Razorpay Exclusive)
-	{Name: "RAZORPAY_KEY_ID", Required: false, Description: "Razorpay API Key ID (rzp_...)", IsSecret: true},
-	{Name: "RAZORPAY_WEBHOOK_SECRET", Required: false, Description: "Razorpay webhook signature secret", IsSecret: true},
-
-	// AI Engine Provider (At least one provider recommended)
-	{Name: "OPENROUTER_API_KEY", Required: false, Description: "OpenRouter LLM inference API key", IsSecret: true},
-	{Name: "OPENAI_API_KEY", Required: false, Description: "Direct OpenAI API key", IsSecret: true},
+// bootCriticalEnv is the set of variables the process genuinely cannot start
+// without: identity/signing material, the datastore, cache, and broker. Every
+// other variable the code reads is reported but never blocks startup, because
+// the rest are optional provider integrations and feature flags.
+var bootCriticalEnv = map[string]bool{
+	"DATABASE_URL":   true,
+	"JWT_SECRET":     true,
+	"KMS_MASTER_KEY": true,
+	"REDIS_URL":      true,
+	"RABBITMQ_URL":   true,
 }
 
 func main() {
@@ -47,58 +33,50 @@ func main() {
 	fmt.Println("           ScanDrix Pre-flight Environment Validator             ")
 	fmt.Println("=================================================================")
 
-	// Load local .env if exists
-	_ = godotenv.Load()
+	// Local .env is a developer convenience; real deployments inject the
+	// environment directly.
 	_ = godotenv.Load(".env")
 
 	var missingRequired []string
-	var missingOptional []string
-	validCount := 0
+	configured := 0
+	missingOptional := 0
 
-	for _, v := range expectedVars {
-		val := strings.TrimSpace(os.Getenv(v.Name))
-		if val == "" {
-			// Special fallback check for DATABASE_URL vs individual POSTGRES_*
-			if v.Name == "DATABASE_URL" {
-				host := os.Getenv("POSTGRES_HOST")
-				db := os.Getenv("POSTGRES_DB")
-				if host != "" && db != "" {
-					fmt.Printf("  [OK]   %-25s : Configured via POSTGRES_HOST / POSTGRES_DB\n", v.Name)
-					validCount++
-					continue
-				}
-			}
+	for _, c := range envContractNames {
+		if strings.TrimSpace(os.Getenv(c.Name)) != "" {
+			configured++
+			continue
+		}
 
-			if v.Required {
-				fmt.Printf("  [FAIL] %-25s : MISSING (Required: %s)\n", v.Name, v.Description)
-				missingRequired = append(missingRequired, v.Name)
-			} else {
-				fmt.Printf("  [WARN] %-25s : Not configured (Optional: %s)\n", v.Name, v.Description)
-				missingOptional = append(missingOptional, v.Name)
-			}
+		// DATABASE_URL may be assembled from the discrete POSTGRES_* values.
+		if c.Name == "DATABASE_URL" && os.Getenv("POSTGRES_HOST") != "" && os.Getenv("POSTGRES_DB") != "" {
+			configured++
+			continue
+		}
+
+		if c.Required {
+			missingRequired = append(missingRequired, c.Name)
 		} else {
-			status := "configured"
-			if v.IsSecret {
-				status = fmt.Sprintf("set (%d chars)", len(val))
-			} else {
-				status = fmt.Sprintf("set [%s]", val)
-			}
-			fmt.Printf("  [OK]   %-25s : %s\n", v.Name, status)
-			validCount++
+			missingOptional++
 		}
 	}
 
+	// Values are never printed. A variable is reported as set or unset, never
+	// echoed, so running envcheck can never leak a credential into a log or a
+	// terminal scrollback.
+	total := len(envContractNames)
+	fmt.Printf("Checked %d environment variables read by the application code.\n", total)
 	fmt.Println("-----------------------------------------------------------------")
-	fmt.Printf("Summary: %d Configured | %d Missing Required | %d Missing Optional\n",
-		validCount, len(missingRequired), len(missingOptional))
+	fmt.Printf("Configured: %d | Missing required: %d | Not configured (optional): %d\n",
+		configured, len(missingRequired), missingOptional)
 	fmt.Println("=================================================================")
 
 	if len(missingRequired) > 0 {
-		fmt.Fprintf(os.Stderr, "\n[FATAL] Missing %d required environment variable(s): %s\n",
-			len(missingRequired), strings.Join(missingRequired, ", "))
-		fmt.Fprintln(os.Stderr, "Please configure these in your .env or environment before launching ScanDrix.")
+		sort.Strings(missingRequired)
+		fmt.Fprintf(os.Stderr, "\n[FATAL] Missing %d required environment variable(s):\n  %s\n",
+			len(missingRequired), strings.Join(missingRequired, "\n  "))
+		fmt.Fprintln(os.Stderr, "Configure these in your environment before launching ScanDrix.")
 		os.Exit(1)
 	}
 
-	fmt.Println("\nAll required environment variables are set and validated.")
+	fmt.Println("\nAll required environment variables are set.")
 }

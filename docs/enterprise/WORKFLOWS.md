@@ -4,6 +4,10 @@
 **Audience:** System Architects, Staff Engineers, Enterprise DevOps  
 **Confidentiality:** Proprietary & Confidential — ScanDrix  
 
+> Conformance legend used in this doc: **[IMPLEMENTED]** = behavior exists in code today (path cited);
+> **[SPECCED]** = normative target, implementation tracked in IMPLEMENTATION.md. Flows marked SPECCED
+> must not be presented to customers as working.
+
 ---
 
 ## 1. End-to-End Pull Request Review Lifecycle
@@ -107,7 +111,11 @@ sequenceDiagram
 
 ## 3. Sandboxed Suggestion Verification Loop
 
-ScanDrix is the only platform that guarantees suggestions compile and pass tests by executing them in a microVM sandbox prior to posting.
+Candidate suggestions are executed in a microVM sandbox before posting; only passing ones earn the verified badge.
+
+> The word "only" in the original draft ("the only platform that guarantees") is withdrawn — it is
+> unmeasurable and does not belong in a production spec. The guarantee offered is the labeled one:
+> `verified` means this patch passed this build+tests in this sandbox run; anything else carries its reason.
 
 ```mermaid
 stateDiagram-v2
@@ -151,7 +159,14 @@ stateDiagram-v2
 
 ## 4. Air-Gapped Sovereign AI & BYOK Data Flow
 
-For defense, banking, healthcare, and air-gapped enterprise environments, ScanDrix guarantees **zero data leaves the customer perimeter**.
+For defense, banking, healthcare, and air-gapped enterprise environments, ScanDrix targets **no unlisted data leaving the customer perimeter**.
+
+> Egress inventory (verified): self-hosted beacon honors `SCANDRIX_TELEMETRY_DISABLED`
+> (`telemetry/beacon/transport.go:62-63`); Sentry activates only with `SENTRY_DSN` set
+> (`core/infrastructure/config/sentry.go:28-29`); PostHog is consulted on the cloud path only
+> (`featuregate/service.go`). The single `AIR_GAPPED` deny-by-default enforcement gate is **IMPLEMENTED**
+> (`AirGapGate` in `internal/platform/security/airgap.go`). Air-gapped deployments combine binary enforcement
+> with network perimeter controls (firewall/VPC) and quarterly egress audits.
 
 ```mermaid
 flowchart LR
@@ -191,9 +206,16 @@ flowchart LR
 
 ---
 
-## 5. Enterprise SCIM 2.0 Directory Lifecycle Flow
+## 5. Enterprise SCIM 2.0 Directory Lifecycle Flow **[IMPLEMENTED]**
 
 Automated developer seat provisioning, role mapping, and instant deprovisioning synchronized directly with enterprise identity providers.
+
+> Status (verified against code, production-ready): SCIM transport, constant-time bearer auth, `userName eq`
+> filtering, `startIndex`/`count` pagination (capped at 100), relational PostgreSQL persistence
+> (`scim_users`, `scim_groups`, `scim_group_members`, `scim_tenant_tokens` in migrations `035` and `037`),
+> seat-quota enforcement (`CheckSeats` → 409 Conflict on exhaustion), and `BindTenant` wiring in
+> `cmd/api/main.go` and `cmd/server/main.go` are **[IMPLEMENTED]** and certified. Production provisions
+> are tenant-isolated and enforce seat limits fail-closed.
 
 ```mermaid
 sequenceDiagram
@@ -224,31 +246,38 @@ sequenceDiagram
 
 ---
 
-## 6. Offline Asymmetric Cryptographic License Check
+## 6. Offline Asymmetric Cryptographic License Check **[IMPLEMENTED with noted deltas]**
 
 Sub-millisecond license entitlement validation without internet access.
 
+> Normative wire details (must match `internal/enterprise/license/`):
+> token = base64( JSON( `SignedLicenseToken{Payload, Signature}` ) ) read from **`SCANDRIX_LICENSE_KEY`**
+> (inline) or **`SCANDRIX_LICENSE_FILE`** (mounted secret); public key from `SCANDRIX_LICENSE_PUBLIC_KEY`.
+> The name `SCANDRIX_LICENSE_TOKEN` and dot-joined `payload.signature` strings appear in older revisions
+> and are **retired** — tokens in that shape are rejected. Grace = **7 days** (`LicenseGracePeriod`).
+> Failure mode is fail-boot with a logged error (not a panic), applied identically by `cmd/api` and `cmd/server`.
+
 ```mermaid
 flowchart TD
-    A[Customer Boots ScanDrix Enterprise Node] --> B[Read SCANDRIX_LICENSE_TOKEN from Environment / Mount]
-    B --> C[Split Token: Base64 Payload . Base64 Signature]
-    C --> D[Load Compile-Time Embedded ScanDrix Authority Public Key]
+    A[Customer Boots ScanDrix Enterprise Node] --> B[Read token from SCANDRIX_LICENSE_KEY or SCANDRIX_LICENSE_FILE]
+    B --> C[Decode envelope: base64 of JSON SignedLicenseToken]
+    C --> D[Load configured ScanDrix Authority Public Key + rotation ring]
     
     D --> E[Call ed25519.Verify pubKey, rawPayload, rawSignature]
     E --> F{Signature Valid?}
     
-    F -- No / Tampered --> G[Fatal Panic: 'Invalid Cryptographic Signature. License Corrupt.']
+    F -- No / Tampered --> G[Refuse boot: log 'invalid license configuration' and exit non-zero]
     F -- Yes --> H[Unmarshal License Claims JSON]
     
     H --> I{time.Now UTC > ExpiresAt?}
     I -- Yes: Expired --> J{Within 7-Day Grace Period?}
     J -- Yes --> K[Log Warning: 'License Expired. 7-Day Grace Window Active.']
-    J -- No --> L[Lock Engine: 'License Expired. Contact legal@scandrix.dev']
+    J -- No --> L[Gate features: entitlement invalid, tamper/expiry alert logged]
     
-    I -- No: Active --> M[Verify Optional Hardware / Cluster UUID Fingerprint]
-    M --> N{Hardware Matches?}
-    N -- No --> O[Fatal Panic: 'License bound to different hardware UUID']
-    N -- Yes --> P[Enable Enterprise Feature Bitmasks: BYOK, AIR_GAPPED, MULTI_AGENT, SCIM]
+    I -- No: Active --> M[Check optional Hardware Fingerprint + KeyID ring]
+    M --> N{Binding satisfied?}
+    N -- No --> O[Refuse boot: 'license bound to different hardware fingerprint']
+    N -- Yes --> P[Enable Enterprise Feature Flags per entitlement]
     P --> Q[Start Go Worker Daemons & Chi REST Endpoints]
 ```
 
@@ -277,11 +306,14 @@ flowchart LR
         RAW --> ROLLUP[(materialized_dora_daily_rollups)]
     end
 
-    subgraph Executive_Dashboard ["ScanDrix Analytics UI (scandrix-website)"]
+    subgraph Executive_Dashboard ["ScanDrix Analytics UI"]
         ROLLUP --> DORA_API[GET /api/v1/analytics/dora]
         DORA_API --> UI1[Deployment Frequency Graph]
         DORA_API --> UI2[Lead Time for Changes: P50/P90]
         DORA_API --> UI3[Change Failure Rate %]
         DORA_API --> UI4[Time to Restore Service MTTR]
     end
+
+> `materialized_dora_daily_rollups` DDL lives in TRD §3.5 and is the only table the dashboard
+> may read; raw-event scans are not on the dashboard path (PRD §5.1).
 ```

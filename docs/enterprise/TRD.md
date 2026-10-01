@@ -69,13 +69,13 @@ flowchart TB
 
 | Component | Technology | Rationale & Production Parameters |
 | :--- | :--- | :--- |
-| **Language & Runtime** | Go 1.25.3 | Low latency, garbage collection pauses < 1ms, native concurrency via goroutines, zero external runtime dependencies. |
-| **HTTP Routing** | `go-chi/chi/v5` | Lightweight, 100% compliant with standard `net/http`, zero allocation overhead, robust middleware chaining. |
+| **Language & Runtime** | Go 1.25.3 | Concurrent workers via goroutines, single static binaries. GC pauses are typically sub-millisecond at these heap sizes but are **not guaranteed** — the binding numbers are the RSS/latency NFRs (PRD §5.1), not runtime internals. |
+| **HTTP Routing** | `go-chi/chi/v5` | Standard `net/http`-compatible router with middleware chaining. No "zero allocation" claim — handler hot paths are profiled with `benchmem` and allocations budgeted per endpoint instead. |
 | **Database Driver** | `jackc/pgx/v5` (pgxpool) | High-performance PostgreSQL native driver with connection pooling, automatic statement preparation, and native binary protocol. |
-| **Message Broker** | `rabbitmq/amqp091-go` | Enterprise Quorum queues with Raft consensus, publisher confirms, and delayed message exchange for exponential backoff retries. |
-| **AST Parser** | Tree-sitter (CGO/Go bindings) | Concrete syntax tree parser generating full parse trees in < 5ms per file across 12+ programming languages. |
-| **Cryptographic Engine** | `golang.org/x/crypto/ed25519` | Hardware-speed digital signatures for offline license entitlement verification; AES-256-GCM for BYOK vault encryption. |
-| **Sandbox Execution** | Containerd / Firecracker MicroVM | Isolated ephemeral sandbox executing builds and tests in sub-second lifecycles with strict cgroup resource constraints. |
+| **Message Broker** | `rabbitmq/amqp091-go` | Quorum queues (durable, replicated), persistent messages, delayed-message exchange for backoff, DLQ after 5 retries. Publisher confirms are **required but not yet verified in `internal/queue`** — SPECCED as part of the Phase 1 hardening; until then the guarantee is at-least-once with ack + dedup, per PRD §5.2. |
+| **AST & Call-Graph Parser** | Pure-Go multi-language parser (`internal/codeanalysis/callgraph`) | Implemented per ADR-0003: preserves `CGO_ENABLED=0` static compilation across amd64/arm64 without CGO toolchain overhead. Parses diffs and call-sites across Go, Python, TypeScript, Rust, Java, and C/C++. |
+| **Cryptographic Engine** | `golang.org/x/crypto/ed25519` | Offline license verification (Ed25519 verify is ~tens of microseconds; the <1ms P99 in PRD §6 covers the full in-memory resolution path, excluding DB plan lookups which are cached); AES-256-GCM for BYOK vault encryption. |
+| **Sandbox Execution** | Containerd / Firecracker MicroVM | Isolated ephemeral sandbox per TRD §3.2. "Sub-second" applies to container spawn on warm hosts, **not** to full build+test verification, which is bounded by the 15s execution timeout and the 20s/PR sandbox slice (PRD §5.1). |
 
 ---
 
@@ -181,9 +181,10 @@ type VerifiedSuggestion struct {
 
 #### Container Execution Contract:
 1. **Rootless Execution:** Containers must run under an unprivileged user (`uid=10001, gid=10001`).
-2. **Resource Boundaries:** Hard memory cap of `1024 MB`, CPU quota of `1.0 vCPU`, execution timeout of `15.0 seconds`.
-3. **Network Isolation:** Network disabled (`--net=none`) to prevent sandbox escaping or outbound malicious egress.
+2. **Resource Boundaries:** Hard memory cap of `1024 MB`, CPU quota of `1.0 vCPU`, execution timeout of `15.0 seconds` per attempt, max 2 repair attempts per suggestion, **20s total sandbox slice per PR** (PRD §5.1) — overflow findings post as `unverified (budget exhausted)`.
+3. **Network Isolation:** Network disabled (`--net=none`).
 4. **Filesystem:** Read-only rootfs with an ephemeral `tmpfs` volume mounted on `/workspace`.
+5. **Degraded modes (normative):** sandbox daemon unreachable → findings post as `unverified (sandbox unavailable)`; non-buildable change (docs/config-only, unsupported language, missing toolchain) → sandbox skipped by rule with reason labeled; fully suppressed reviews still post summaries with coverage attached (PRD REQ-2.3).
 
 #### Execution Workflow in Go:
 ```go
@@ -215,8 +216,43 @@ type SandboxService interface {
 
 #### Cryptographic Architecture:
 * **Algorithm:** Pure Ed25519 (RFC 8032) asymmetric digital signature.
-* **Licensing Authority:** ScanDrix Master Key generates private Ed25519 signatures over canonical JSON payloads.
-* **On-Premise Verification:** The ScanDrix binary holds only the public verification key embedded at compile time. It can verify licenses without network access, third-party phone-home pings, or internet access.
+* **Licensing Authority:** ScanDrix Master Key generates private Ed25519 signatures over the JSON-marshaled payload (`json.Marshal` field order is deterministic for structs and is the canonical form — no separate RFC 8785 pass; signer and verifier must use the same marshaler).
+* **On-Premise Verification:** The ScanDrix binary holds only the public verification key(s) loaded from `SCANDRIX_LICENSE_PUBLIC_KEY` (base64, PEM armour accepted). It verifies licenses without network access or phone-home pings.
+* **Wire format (normative):** base64( JSON( `SignedLicenseToken{Payload, Signature}` ) ), where `Payload` is base64(payload JSON) and `Signature` is base64(Ed25519(payload bytes)). Configuration arrives via `SCANDRIX_LICENSE_KEY` (inline) or `SCANDRIX_LICENSE_FILE` (mounted secret) — see `.env.example`. Any keygen or doc showing a dot-joined `payload.signature` string is stale and will be rejected by `LoadLicense`.
+* **Rotation (REQ-7.4):** Payloads carry optional `key_id`; the manager holds a primary key plus a `key_id → key` ring. New licenses mint under the new key while old ones still verify. Rotation procedure: generate pair → register new public key on servers (overlap window) → mint with `key_id` → retire old key after all active licenses re-issued or expired.
+* **Revocation (REQ-7.4):** Expiry + re-issuance is the mechanism; a revocation list (license IDs) is checked at boot and by the daily seat-pruner. There is no OCSP-style online check (incompatible with air-gap).
+* **Hardware binding (REQ-7.2):** Optional `hardware_fingerprint` (machine-id / cluster UUID), enforced only when the deployment declares the expected value; otherwise ignored for backward compatibility.
+* **Failure mode:** Invalid/misconfigured license = fail boot with a clear error (`cmd/api` behavior); this is intentional fail-closed and applies identically to `cmd/server`.
+
+```mermaid
+flowchart LR
+    subgraph ScanDrix_HQ ["ScanDrix Security Authority"]
+        Payload[License Entitlement JSON] --> Marshal[Deterministic json.Marshal]
+        PrivKey[(Master Ed25519 Private Key)] --> Signer[Signer Service]
+        Marshal --> Signer
+        Signer --> Token[Signed License Token: base64 of JSON envelope]
+    end
+
+    subgraph Customer_Cluster ["Air-Gapped Enterprise Server"]
+        Token --> Parser[Envelope Splitter]
+        PubKey[(Configured Ed25519 Public Key + rotation ring)] --> Verifier[Cryptographic Verifier]
+        Parser --> Verifier
+        Verifier --> Valid{Valid Signature?}
+        Valid -->|Yes| FeatureGate[Unlock Enterprise Features & Seats]
+        Valid -->|No / Expired| Lockout[Gate Features & Log Tampering Alert]
+    end
+```
+
+#### Go License Verifier (implemented — `internal/enterprise/license/`):
+Authority: `validator.go` (`LicenseManager`: `IssueLicense`/`LoadLicense` with expiry+grace, `HasFeature`/`AssertFeature`, seat/repo quotas); `loader.go` (`NewManagerFromEnv`, `SCANDRIX_LICENSE_{PUBLIC_KEY,KEY,FILE}`); `entitlement.go` (single `Entitlement` from signed-license, plan-row, or community sources); `resolver.go` (`Resolver`: signed > plan-row > community, shared by controller, feature gate, and capabilities endpoint so they cannot disagree); `plan_policy.go` (quotas + `CanAccessModel` tier→model gate with BYOK bypass). The illustrative `LicenseVerifier`/`MasterPublicKeyBase64` sketch previously shown here is superseded by these files — no placeholder keys exist in code.
+
+Example token envelope (shape, not a real key):
+```json
+{
+  "payload": "<base64 of LicensePayload JSON>",
+  "signature": "<base64 of Ed25519 signature over the raw payload bytes>"
+}
+```
 
 ```mermaid
 flowchart LR
@@ -237,74 +273,16 @@ flowchart LR
     end
 ```
 
-#### Go License Verifier Implementation:
-```go
-package license
+#### Rotation & revocation key ceremony (normative):
+1. Generate the new pair offline (`ed25519.GenerateKey`); the private half never leaves the HSM/vault.
+2. Distribute the new public key to all servers (config change; old key stays registered).
+3. Mint renewed licenses with `key_id` set to the new key.
+4. After every active old-key license has expired or been re-issued, remove the old public key. The overlap window must exceed the longest outstanding `ExpiresAt`.
 
-import (
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"time"
-)
-
-// MasterPublicKeyBase64 is the embedded public key of ScanDrix Authority
-const MasterPublicKeyBase64 = "MCowBQYDK2VwAyEA9rY1bH4y+ZlK3wX..."
-
-type LicenseClaims struct {
-	LicenseID       string      `json:"license_id"`
-	CustomerName    string      `json:"customer_name"`
-	CustomerID      string      `json:"customer_id"`
-	Tier            string      `json:"tier"` // ENTERPRISE
-	IssuedAt        time.Time   `json:"issued_at"`
-	ExpiresAt       time.Time   `json:"expires_at"`
-	MaxSeats        int         `json:"max_seats"`
-	MaxRepositories int         `json:"max_repositories"`
-	Features        []string    `json:"features"`
-	HardwareBinding string      `json:"hardware_binding,omitempty"`
-}
-
-type LicenseVerifier struct {
-	publicKey ed25519.PublicKey
-}
-
-func NewLicenseVerifier(pubKeyBase64 string) (*LicenseVerifier, error) {
-	pubBytes, err := base64.StdEncoding.DecodeString(pubKeyBase64)
-	if err != nil || len(pubBytes) != ed25519.PublicKeySize {
-		return nil, errors.New("invalid Ed25519 public key")
-	}
-	return &LicenseVerifier{publicKey: pubBytes}, nil
-}
-
-func (v *LicenseVerifier) VerifyToken(payloadB64, signatureB64 string) (*LicenseClaims, error) {
-	rawPayload, err := base64.StdEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid payload base64: %w", err)
-	}
-
-	rawSignature, err := base64.StdEncoding.DecodeString(signatureB64)
-	if err != nil || len(rawSignature) != ed25519.SignatureSize {
-		return nil, errors.New("invalid Ed25519 signature format")
-	}
-
-	if !ed25519.Verify(v.publicKey, rawPayload, rawSignature) {
-		return nil, errors.New("cryptographic signature mismatch: license is invalid or forged")
-	}
-
-	var claims LicenseClaims
-	if err := json.Unmarshal(rawPayload, &claims); err != nil {
-		return nil, fmt.Errorf("malformed license claims: %w", err)
-	}
-
-	if time.Now().UTC().After(claims.ExpiresAt) {
-		return nil, fmt.Errorf("license expired on %s", claims.ExpiresAt.Format(time.RFC3339))
-	}
-
-	return &claims, nil
-}
-```
+#### Edge cases (normative):
+* **Clock skew:** `LoadLicense` checks `ExpiresAt + grace` against server UTC only; `IssuedAt` is informational (no future-issue guard). Skew of minutes-to-hours is absorbed by the 7-day grace and needs no NTP hard dependency, but deployments should still run NTP — audit timestamps assume sane clocks.
+* **Seat-count races:** Seat assignment/checkout across workers must be atomic in PostgreSQL (unique partial index or `SELECT … FOR UPDATE` in a single transaction) — concurrent SCIM provisions must never oversell the quota. Mechanism lands with SCIM persistence (IMPLEMENTATION Phase 5); until then the quota check is advisory.
+* **Multi-instance licenses:** The signed license is global per deployment; per-workspace seat rows live in PG. Failover must not double-count: seat state restores from PG backup (REQ-8.5), never reconstructed from worker memory.
 
 ---
 
@@ -351,7 +329,7 @@ ScanDrix Enterprise implements a full **RFC 7644 / RFC 7643** SCIM 2.0 server mo
 
 ### 3.5 Module: Enterprise Analytics Warehouse Schema (PostgreSQL)
 
-To achieve microsecond query latencies over millions of historical pull requests, the database schema implements PostgreSQL **declarative time-based range partitioning**.
+To achieve millisecond-scale dashboard latencies over millions of historical pull requests, the database schema implements PostgreSQL **declarative time-based range partitioning** (monthly partitions keep constraint-exclusion pruning effective; partitions still require routine `VACUUM`/bloat monitoring — "zero fragmentation" is not claimed).
 
 ```sql
 -- Core Pull Request Event Warehouse Table (Partitioned by Month)
@@ -373,7 +351,7 @@ CREATE TABLE IF NOT EXISTS analytics_pull_request_events (
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
--- Partition Examples (Zero fragmentation, instant historical pruning)
+-- Partition Examples (monthly; constraint exclusion prunes history scans)
 CREATE TABLE IF NOT EXISTS analytics_pr_events_2026_q1 PARTITION OF analytics_pull_request_events
     FOR VALUES FROM ('2026-01-01 00:00:00+00') TO ('2026-04-01 00:00:00+00');
 
@@ -396,9 +374,56 @@ ALTER TABLE analytics_pull_request_events ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_analytics_pr_events ON analytics_pull_request_events
     FOR ALL
     USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID);
+
+-- Daily DORA rollups (the dashboard read path; WORKFLOWS §7 depends on this table)
+CREATE TABLE IF NOT EXISTS materialized_dora_daily_rollups (
+    workspace_id UUID NOT NULL,
+    day DATE NOT NULL,
+    deployment_frequency INT NOT NULL DEFAULT 0,
+    lead_time_p50_seconds INT,
+    lead_time_p90_seconds INT,
+    change_failure_rate_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+    mttr_seconds INT,
+    review_turnaround_p50_seconds INT,
+    review_turnaround_p90_seconds INT,
+    suggestion_acceptance_rate_pct NUMERIC(5,2),
+    PRIMARY KEY (workspace_id, day)
+);
+
+ALTER TABLE materialized_dora_daily_rollups ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_dora_rollups ON materialized_dora_daily_rollups
+    FOR ALL
+    USING (workspace_id = NULLIF(current_setting('app.current_tenant_id', true), '')::UUID);
+-- Refreshed by the DORA aggregator cron (6h cadence); dashboard queries hit
+-- this table only, never the raw partitioned events.
 ```
 
 ---
+
+## 3b. Database privilege posture
+
+Every long-running service connects to PostgreSQL as `scandrix_runtime`
+(`NOSUPERUSER`, `NOBYPASSRLS`), so row-level security is enforced rather than bypassed. Only
+the one-shot migration job uses the owner role, because `CREATE EXTENSION` requires superuser.
+
+| Service | Role |
+|---|---|
+| `scandrix-migrate` | `scandrix_app` (owner) |
+| `scandrix-api`, `scandrix-webhooks`, `scandrix-worker` | `scandrix_runtime` |
+
+Engineering contract:
+
+- Every query against an RLS table states its context — `ExecWithTenant` when the caller has a
+  workspace, `ExecAsSystem` for identity resolution that precedes one. A bare pool call matches
+  zero rows under the runtime role without erroring, which is the specific failure this prevents.
+- Adding a table means enabling **and** forcing RLS plus a policy in the same migration.
+- Adding a system-worker bypass to a policy requires naming the background job that needs it in
+  the migration comment. Blanket bypasses are rejected.
+
+Rollout record, per-table inventory, credentials and rollback:
+`docs/LEAST_PRIVILEGE_ROLLOUT.md`. Known remaining gaps are listed there rather than in this
+document so there is one source of truth.
 
 ## 4. Hardware Sizing & Capacity Guidelines
 

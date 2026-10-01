@@ -49,3 +49,40 @@ Complete engineering specification and visual architecture for the next-generati
 - [Enterprise Visual Workflows & Sequence Architecture](enterprise/WORKFLOWS.md): Comprehensive Mermaid diagrams for multi-agent councils, sandbox runners, and air-gapped BYOK.
 - [Enterprise Engineering Implementation Plan](enterprise/IMPLEMENTATION.md): Phased execution roadmap, interfaces, test matrix, and verification criteria.
 
+### 5. Architecture (system anatomy)
+- [System Architecture Overview](architecture/overview.md): binaries, ports, C4-style container map, request paths, sync/async rules.
+- [Repository & Module Map](architecture/repository-map.md): all 13 `cmd/` + 51 `internal/` packages with anchor files, plus where new code goes.
+- [Data Model](architecture/data-model.md): 47 tables, ERD, RLS contract, growth/retention status.
+- [Event & Queue Catalog](architecture/event-catalog.md): exchanges/queues, payloads, outbox/inbox guarantees, debug order.
+- [Deployment Topology](architecture/deployment-topology.md): SaaS/dedicated/self-hosted/air-gapped, ports, scaling units, failure domains.
+- [Frontend Architecture](architecture/frontend-architecture.md): dashboard routes, auth/session flow, conventions, honest EE surface status.
+- [Glossary](architecture/glossary.md): canonical terms + status vocabulary (IMPLEMENTED/STUB/SPECCED/TARGET).
+
+### 6. Reference (contracts integrators build against)
+- [Configuration Reference](reference/configuration.md): every environment variable — purpose, rotation impact, air-gap relevance.
+- [API Reference](reference/api-reference.md): routes, auth, RBAC/feature gates, conventions. STUB/SPECCED rows are marked and must not be sold as working.
+
+### 7. Evaluation (how quality numbers are earned)
+- [Methodology](evaluation/methodology.md): golden corpus, frozen metric definitions, CI gates. No scorecard number ships without its corpus version attached.
+
+### 8. Operations (how it runs at 3am)
+- [Rotation Runbooks](operations/rotation-runbooks.md): one procedure per secret (REQ-8.3).
+- [Backup, Restore & DR](operations/backup-restore.md): RPO/RTO per tier, seat-reconciliation rule (REQ-8.5).
+- [Runbooks](operations/runbooks.md): queue drain, webhook floods, license expiry, compromise, failover, sandbox outage.
+- [Upgrade & Migration](operations/upgrade-migration.md): numbering policy, compat matrix, release checklist.
+- [SLOs & Error Budgets](operations/slo-error-budgets.md): PRD §5 as alerts, paging, and budget policy.
+
+### 9. Least-Privilege Rollout (current infrastructure security state)
+- [Status & Remaining Work](LEAST_PRIVILEGE_ROLLOUT.md): verified vs unverified, the two RLS contexts every query must declare, the 5 remaining items with requirements and implementation, credentials checklist, rollback.
+
+### 10. Security (how it is certified and sold)
+- [Threat Model](security/threat-model.md): per-boundary threats, mitigations with code pointers, residuals.
+- [Security Whitepaper](security/security-whitepaper.md): customer-facing, every claim evidenced; alignment vs certification never interchanged.
+- [Egress Allowlist & Audit](security/egress-allowlist.md): default-deny table per mode + quarterly audit (PRD §6 gate).
+- [DPA Support Pack](security/dpa-support.md): processing summary, residency, breach SLA, subject rights, audit rights.
+
+### 11. Decisions (why things are the way they are)
+- [ADR-0001](decisions/ADR-0001-grace-period.md): 7-day grace. [ADR-0002](decisions/ADR-0002-license-envelope.md): envelope format. [ADR-0003](decisions/ADR-0003-parser-build.md): CGO-vs-pure-Go fork (open). [ADR-0004](decisions/ADR-0004-canonical-rbac.md): single RBAC matrix. [ADR-0005](decisions/ADR-0005-no-parallel-trees.md): extend, don't duplicate.
+
+> Honesty rule for the whole tree: IMPLEMENTED / STUB / SPECCED / TARGET labels are normative. A doc that presents a SPECCED behavior as working is a defect — file it like one.
+

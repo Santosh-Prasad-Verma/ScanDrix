@@ -39,92 +39,54 @@ gantt
 
 #### Objectives:
 1. Provide a standalone offline license key generation CLI (`cmd/scandrix-keygen`).
-2. Implement compile-time public-key verification in `internal/enterprise/license/verifier.go`.
-3. Support local LLMs (vLLM, Ollama, DeepSeek-R1) via standard OpenAI-compatible HTTP interface without external telemetry egress.
+2. Extend `internal/enterprise/license/` (validator/loader/entitlement/resolver) with `KeyID` rotation-ring verification and optional hardware-fingerprint binding — no new `verifier.go`; that name is retired.
+3. Support local LLMs (vLLM, Ollama, DeepSeek-R1) via standard OpenAI-compatible HTTP interface without external telemetry egress (new provider under the existing `internal/llm` gateway, not a parallel tree).
 
-#### File Inventory:
-* **[NEW]** `cmd/scandrix-keygen/main.go` — CLI for ScanDrix authority to issue signed tokens.
-* **[MODIFY]** [ScanDrix/internal/enterprise/license/verifier.go](file:///home/tarun/Videos/kodus-ai/ScanDrix/internal/enterprise/license/verifier.go) — Asymmetric Ed25519 verification.
-* **[NEW]** `internal/llm/providers/sovereign/local_provider.go` — Air-gapped local LLM provider.
-* **[NEW]** `internal/core/crypto/kms_byok.go` — Multi-tenant AWS KMS / Vault envelope encryption.
+#### File Inventory (paths must exist or be created here — no parallel duplicates):
+* **[NEW]** `cmd/scandrix-keygen/main.go` — CLI for the ScanDrix authority to issue signed tokens. Emits **only** the envelope format from `license.IssueLicense` (base64 of JSON `SignedLicenseToken`); dot-joined output is forbidden.
+* **[MODIFY]** `internal/enterprise/license/models.go` — add `KeyID`, `HardwareFingerprint` (omitempty, backward compatible); set `LicenseGracePeriod = 7*24h`.
+* **[MODIFY]** `internal/enterprise/license/validator.go` — key-ID ring selection + fingerprint enforcement.
+* **[MODIFY]** `internal/enterprise/license/loader.go` — `SCANDRIX_HARDWARE_FINGERPRINT` wiring.
+* **[MODIFY]** `internal/enterprise/license/*_test.go` — rotation overlap, fingerprint accept/reject, grace boundary.
+* **[NEW]** sovereign provider inside `internal/llm` (gateway option, e.g. local endpoint transport) — not `internal/llm/providers/sovereign/` from scratch unless the gateway cannot carry it.
+* **[MODIFY]** `internal/core/crypto/crypto_service.go` — multi-tenant KMS/Vault envelope encryption for BYOK (extend; do not add `kms_byok.go` beside it).
 
 #### Implementation Contract (`cmd/scandrix-keygen/main.go`):
+Authority tooling calls `license.IssueLicense(payload, privKey)` and prints the returned token verbatim:
 ```go
-package main
-
-import (
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
-	"flag"
-	"fmt"
-	"os"
-	"time"
-
-	"github.com/google/uuid"
-	"github.com/scandrix/backend/internal/enterprise/license"
-)
-
-func main() {
-	customer := flag.String("customer", "", "Customer Organization Name")
-	seats := flag.Int("seats", 100, "Maximum Developer Seats")
-	days := flag.Int("days", 365, "Validity duration in days")
-	privKeyB64 := flag.String("privkey", "", "Master Ed25519 Private Key Base64")
-	flag.Parse()
-
-	if *customer == "" || *privKeyB64 == "" {
-		fmt.Println("Usage: scandrix-keygen -customer <name> -privkey <b64> -seats <num> -days <num>")
-		os.Exit(1)
-	}
-
-	privBytes, _ := base64.StdEncoding.DecodeString(*privKeyB64)
-	privKey := ed25519.PrivateKey(privBytes)
-
-	claims := license.LicensePayload{
-		LicenseID:       uuid.New(),
-		CustomerName:    *customer,
-		CustomerID:      uuid.New().String(),
-		Tier:            license.TierEnterprise,
-		IssuedAt:        time.Now().UTC(),
-		ExpiresAt:       time.Now().UTC().AddDate(0, 0, *days),
-		MaxSeats:        *seats,
-		MaxRepositories: 0, // unlimited
-		Features: []string{
-			string(license.FeatureSSOSAML),
-			string(license.FeatureSCIM),
-			string(license.FeatureAuditWarehouse),
-			string(license.FeatureMultiAgentDeliberation),
-			string(license.FeatureBYOK),
-			string(license.FeatureAirGapped),
-			string(license.FeatureDORAMetrics),
-		},
-	}
-
-	payloadJSON, _ := json.Marshal(claims)
-	signature := ed25519.Sign(privKey, payloadJSON)
-
-	token := fmt.Sprintf("%s.%s",
-		base64.StdEncoding.EncodeToString(payloadJSON),
-		base64.StdEncoding.EncodeToString(signature),
-	)
-
-	fmt.Printf("\nGenerated ScanDrix Enterprise License Token:\n\n%s\n\n", token)
-}
+token, err := license.IssueLicense(license.LicensePayload{
+    LicenseID:           uuid.New(),
+    CustomerName:        *customer,
+    CustomerID:          cid,
+    Tier:                license.NormalizeTier(license.LicenseTier(*tier)),
+    IssuedAt:            time.Now().UTC(),
+    ExpiresAt:           time.Now().UTC().AddDate(0, 0, *days),
+    MaxSeats:            *seats,
+    MaxRepositories:     0, // unlimited
+    Features:            enterpriseFeatures, // code FeatureFlag values, see PRD REQ-7.2 table
+    KeyID:               *keyID,             // rotation identifier, "" = primary key
+    HardwareFingerprint: *hardware,         // "" = unbound
+}, privKey)
+if err != nil { /* fail, non-zero exit */ }
+fmt.Println(token) // envelope format — loads via LicenseManager.LoadLicense unmodified
 ```
+A `verify` subcommand loads the token through `NewManagerFromEnv` + `LoadLicense` as the acceptance check. The prior draft contract (manual `payload.signature` dot-format) is withdrawn: tokens in that shape are rejected.
 
 ---
 
 ### Phase 2: Tree-sitter AST & Call-Graph Impact Extractor
+
+#### Step 0 (blocking decision, before any parser work):
+CGO vs pure-Go. The production `Dockerfile` builds with `CGO_ENABLED=0` and no CGO exists in the tree: either (a) enable CGO in the builder stage with an `amd64/arm64` matrix and per-language grammar vendoring, or (b) select pure-Go parsers per language. Decision recorded in the phase kickoff note with the chosen matrix. Parse-success acceptance (either path): ≥99% of files <500KB parse without error on the golden corpus; failures degrade to diff-only context with a label, never a silent skip.
 
 #### Objectives:
 1. Parse pull request files into concrete syntax trees in memory without shell-outs.
 2. Extract modified function, method, and struct declarations.
 3. Traverse repository files to map all call sites calling modified symbols.
 
-#### File Inventory:
-* **[NEW]** `internal/codeanalysis/ast/treesitter_engine.go` — Tree-sitter grammar loader.
-* **[NEW]** `internal/codeanalysis/callgraph/symbol_indexer.go` — In-memory symbol repository indexer.
-* **[NEW]** `internal/codeanalysis/callgraph/impact_analyzer.go` — Downstream breaking change detector.
+#### File Inventory (extend existing engines — no parallel trees):
+* **[MODIFY]** `internal/codeanalysis/ast/` — add Tree-sitter grammar loading to the existing analyzer (no standalone `treesitter_engine.go` beside it unless the current engine cannot carry it).
+* **[MODIFY]** `internal/review/` + `internal/codeanalysis/` — cross-file symbol index and `AnalyzeDiff(ctx, repoID, diffText) → ImpactReport` impact analysis wired into the orchestrator's context bundle (WORKFLOWS §1, step L), not a separate `callgraph/` product.
 
 #### Implementation Contract (`impact_analyzer.go`):
 ```go
@@ -167,12 +129,8 @@ type ImpactAnalyzer interface {
 1. Dispatch parallel Goroutine workers for Architect, Security, and Performance agents.
 2. Implement the Arbiter Judge to cross-examine candidate issues, eliminate subjective nits, and filter scores < 0.92.
 
-#### File Inventory:
-* **[NEW]** `internal/review/aiengine/multiagent/orchestrator.go` — Deliberation orchestrator.
-* **[NEW]** `internal/review/aiengine/multiagent/architect_agent.go` — Lead Architect Agent.
-* **[NEW]** `internal/review/aiengine/multiagent/appsec_agent.go` — Red-Team Security Agent.
-* **[NEW]** `internal/review/aiengine/multiagent/performance_agent.go` — Performance Engineer Agent.
-* **[NEW]** `internal/review/aiengine/multiagent/arbiter_judge.go` — Adjudication Judge.
+#### File Inventory (extend `internal/review/` — the `aiengine/` package exists; add the council there):
+* **[MODIFY]** `internal/review/aiengine/` — deliberation orchestrator + Architect / AppSec / Performance specialists + Arbiter Judge (fan-out below), reusing `context_pack_assembler.go` and `llm_response_processor.go`. No `internal/review/aiengine/multiagent/` parallel package.
 
 #### Implementation Contract (`orchestrator.go`):
 ```go
@@ -226,10 +184,8 @@ func (o *MultiAgentOrchestrator) Deliberate(ctx context.Context, input ReviewInp
 2. Run build & test suites.
 3. Automatically repair compilation errors via a 2-iteration feedback loop before posting to PR.
 
-#### File Inventory:
-* **[NEW]** `internal/sandbox/executor/container_runner.go` — Rootless container executor.
-* **[NEW]** `internal/sandbox/verifier/patch_verifier.go` — Patch apply and test runner.
-* **[NEW]** `internal/sandbox/repair/self_correction_loop.go` — Error log feedback loop.
+#### File Inventory (extend the existing sandbox subsystem — no `executor/verifier/repair` parallel tree):
+* **[MODIFY]** `internal/sandbox/` (+ `internal/core/repositories` sandbox-lease repo) — rootless container runner honoring TRD §3.2 (uid 10001, 1024MB/1vCPU/15s, `--net=none`, RO rootfs + tmpfs `/workspace`), patch-apply + build/test verification, and the ≤2-attempt self-correction loop feeding compiler logs back to the Arbiter.
 
 ---
 
@@ -239,12 +195,11 @@ func (o *MultiAgentOrchestrator) Deliberate(ctx context.Context, input ReviewInp
 1. Implement standard RFC 7644 SCIM 2.0 endpoints for automated user provisioning.
 2. Deploy partitioned PostgreSQL tables for high-throughput DORA metric rollups.
 
-#### File Inventory:
-* **[NEW]** `internal/api/controllers/scim_user_controller.go` — SCIM 2.0 `/scim/v2/Users` handler.
-* **[NEW]** `internal/api/controllers/scim_group_controller.go` — SCIM 2.0 `/scim/v2/Groups` handler.
-* **[NEW]** `internal/enterprise/scim/scim_service.go` — User provisioning & seat tracking logic.
-* **[NEW]** `migrations/020_enterprise_partitioned_analytics.sql` — PostgreSQL range partitions & indexes.
-* **[NEW]** `internal/analytics/dora_calculator.go` — DORA 4-pillar metric calculations.
+#### File Inventory (extend existing services — no parallel controllers):
+* **[IMPLEMENTED]** `internal/enterprise/scim/handler.go` — PostgreSQL persistence for users, groups, and tokens (`scim_users`, `scim_groups`, `scim_tenant_tokens` in migrations `035` and `037`), seat-quota 409 enforcement, wired via `BindTenant` in `cmd/api/main.go` and `cmd/server/main.go`.
+* **[IMPLEMENTED]** `internal/api/controllers/sso_config_controller.go` — per-workspace persistence to `sso_configs` table (migration `031`) with verified IDP enforcement.
+* **[IMPLEMENTED]** migration `038_partitioned_analytics_dora.sql` — range-partitioned `analytics_pull_request_events` (monthly partitions) + `materialized_dora_daily_rollups` with strict Row-Level Security (`scandrix_runtime` least privilege).
+* **[IMPLEMENTED]** `internal/database/dora_repository.go` + `internal/cron/dora_aggregator.go` — 4-pillar DORA aggregation from real warehouse events, adhering strictly to Master Rule 2.7 (nil pointers + explicit `unavailable` reasons when unmeasured).
 
 ---
 
@@ -253,7 +208,7 @@ func (o *MultiAgentOrchestrator) Deliberate(ctx context.Context, input ReviewInp
 Every phase must pass automated verification before being promoted:
 
 ```bash
-# 1. Verify Go compilation across all daemons
+# 1. Verify Go compilation across all daemons (+ keygen once Phase 1 lands it)
 go build -o /dev/null ./cmd/api
 go build -o /dev/null ./cmd/worker
 go build -o /dev/null ./cmd/webhooks
@@ -262,9 +217,21 @@ go build -o /dev/null ./cmd/scandrix-keygen
 # 2. Run unit and integration test matrix
 go test -v -race -timeout 120s ./internal/enterprise/... ./internal/review/...
 
-# 3. Static security analysis (gosec)
-gosec -quiet ./internal/enterprise/...
+# 3. Static security analysis
+gosec -quiet ./internal/enterprise/... ./internal/api/... ./internal/auth/...
 
-# 4. License compliance check
-# Ensures no third-party AGPL code is statically linked
+# 4. License compliance check (tool: go-licenses; allowlist: no AGPL/CPAL in
+#    commercial binaries). Fails the phase on any unapproved license.
+go-licenses check ./cmd/... --allowed=MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
+
+# 5. Eval gate (Phases 2-4, and before quoting any §6 quality number):
+#    frozen golden PR corpus with ground-truth labels; precision/recall from
+#    CI; threshold + corpus version recorded with the number. Unmeasured
+#    quality claims stay out of releases and customer material.
+go test ./evals/... -run 'TestGolden|TestPrecision|TestRecall'
+
+# 6. Egress audit gate (Phase 1 air-gap work): automated test asserting no
+#    outbound calls outside the allowlist with AIR_GAPPED enforcement on and
+#    all three off-switches set; quarterly re-run recorded per PRD §6.
+go test ./internal/... -run 'TestAirGappedEgress'
 ```
