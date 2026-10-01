@@ -34,13 +34,27 @@ BEGIN
     END IF;
 END $$;
 
--- Grant schema and table permissions to scandrix_app
-GRANT USAGE ON SCHEMA public TO scandrix_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO scandrix_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO scandrix_app;
+-- Grant schema and table permissions to scandrix_app.
+--
+-- Guarded because the role is only created when a password is supplied. In CI,
+-- and anywhere else the role is provisioned out-of-band or not at all, the
+-- GRANTs below raised 42704 "role does not exist" and rolled the whole
+-- migration back. Skipping the grants is safe: with no runtime role there is
+-- nothing to grant to, and the RLS work that follows still applies.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_app') THEN
+        RAISE NOTICE 'Skipping grants to scandrix_app: the role does not exist.';
+        RETURN;
+    END IF;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO scandrix_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO scandrix_app;
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO scandrix_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO scandrix_app';
+    EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO scandrix_app';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO scandrix_app';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO scandrix_app';
+END
+$$;
 
 -- Add encrypted webhook secret support to tracked_repositories and integration_connections
 ALTER TABLE tracked_repositories ADD COLUMN IF NOT EXISTS webhook_secret_enc TEXT NOT NULL DEFAULT '';

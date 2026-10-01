@@ -50,4 +50,17 @@ CREATE POLICY system_only_revoked_access_tokens ON revoked_access_tokens
     USING (current_setting('app.is_system_worker', true) = 'true')
     WITH CHECK (current_setting('app.is_system_worker', true) = 'true');
 
-GRANT SELECT, INSERT, DELETE ON revoked_access_tokens TO scandrix_runtime;
+-- Guarded: the least-privilege runtime role is provisioned out-of-band (see
+-- migrations/ops/002_least_privilege_runtime_role.sql) and does not exist in
+-- CI, where an unguarded GRANT raised 42704 and rolled the whole migration
+-- back. With no runtime role there is nothing to grant to; the RLS policy
+-- above still applies to whatever role ends up reading the table.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_runtime') THEN
+        RAISE NOTICE 'Skipping grants to scandrix_runtime: the role does not exist.';
+        RETURN;
+    END IF;
+    EXECUTE 'GRANT SELECT, INSERT, DELETE ON revoked_access_tokens TO scandrix_runtime';
+END
+$$;

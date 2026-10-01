@@ -239,27 +239,30 @@ func (c *AuthController) SetCacheClient(client *cache.Client) {
 	// per-account limit was really "the limit, times the replica count" and an
 	// operator could not tell from logs that the control had been removed
 	// (AUDIT_REMEDIATION.md F-28/F-29/F-32).
-	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+	// RedisTokenBucket never returns nil: when no shared store is available and
+	// distributed limiting is required it returns an UnavailableLimiter that
+	// fails closed, so the outcome is decided there rather than here.
+	c.rateLimiter = limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
 		Capacity:          10,
 		RefillRatePerSec:  0.1,
 		ExpirationTimeout: 15 * time.Minute,
-	}); l != nil {
-		c.rateLimiter = l
-	}
-	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+	})
+	// RedisTokenBucket never returns nil: when no shared store is available and
+	// distributed limiting is required it returns an UnavailableLimiter that
+	// fails closed, so the outcome is decided there rather than here.
+	c.registerRateLimiter = limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
 		Capacity:          3,
 		RefillRatePerSec:  0.001,
 		ExpirationTimeout: 2 * time.Hour,
-	}); l != nil {
-		c.registerRateLimiter = l
-	}
-	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+	})
+	// RedisTokenBucket never returns nil: when no shared store is available and
+	// distributed limiting is required it returns an UnavailableLimiter that
+	// fails closed, so the outcome is decided there rather than here.
+	c.accountLimiter = limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
 		Capacity:          15,
 		RefillRatePerSec:  0.25,
 		ExpirationTimeout: 15 * time.Minute,
-	}); l != nil {
-		c.accountLimiter = l
-	}
+	})
 }
 
 // SetRequireEmailVerification toggles email confirmation requirement before issuing access tokens.

@@ -127,12 +127,16 @@ func (c *LicenseController) handleGetLicense(w http.ResponseWriter, r *http.Requ
 
 	ent := c.resolveEntitlement(r.Context(), wsID)
 
+	// OrganizationName is deliberately left empty here. It used to be seeded
+	// with string(ent.Tier), which is harmless when a license row exists because
+	// the value below overwrites it -- but for a workspace with no active
+	// license the response reported the tier ("COMMUNITY") as the organization
+	// name, which is simply wrong.
 	resp := dtos.LicenseResponse{
-		OrganizationName: string(ent.Tier),
-		PlanTier:         string(ent.Tier),
-		TotalSeats:       ent.SeatLimit(),
-		ExpiresAt:        ent.ExpiresAt,
-		FeaturesEnabled:  ent.FeatureList(),
+		PlanTier:        string(ent.Tier),
+		TotalSeats:      ent.SeatLimit(),
+		ExpiresAt:       ent.ExpiresAt,
+		FeaturesEnabled: ent.FeatureList(),
 	}
 
 	var lic *models.OrganizationLicense
