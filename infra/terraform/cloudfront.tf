@@ -28,19 +28,10 @@ resource "aws_cloudfront_distribution" "main" {
     allowed_methods = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods  = ["GET", "HEAD"]
 
-    # Pass through headers, cookies, and query strings for dynamic backend/API
-    forwarded_values {
-      query_string = true
-      headers      = ["Host", "Authorization", "Accept", "Content-Type", "Origin", "User-Agent"]
-
-      cookies {
-        forward = "all"
-      }
-    }
-
-    min_ttl     = 0
-    default_ttl = 0
-    max_ttl     = 86400
+    # Replaces the deprecated forwarded_values block. See
+    # cloudfront-policies.tf for what is forwarded and why.
+    cache_policy_id          = aws_cloudfront_cache_policy.api.id
+    origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
   }
 
   # Static assets cache behavior (can cache for 1 day)
@@ -53,18 +44,8 @@ resource "aws_cloudfront_distribution" "main" {
     allowed_methods = ["GET", "HEAD", "OPTIONS"]
     cached_methods  = ["GET", "HEAD"]
 
-    forwarded_values {
-      query_string = false
-      headers      = ["Origin"]
-
-      cookies {
-        forward = "none"
-      }
-    }
-
-    min_ttl     = 0
-    default_ttl = 86400
-    max_ttl     = 31536000
+    cache_policy_id          = aws_cloudfront_cache_policy.static.id
+    origin_request_policy_id = aws_cloudfront_origin_request_policy.static.id
   }
 
   restrictions {

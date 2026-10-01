@@ -125,6 +125,17 @@ resource "aws_ecs_task_definition" "api" {
       image     = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
       essential = true
 
+      # The shared image hardcodes a Dockerfile HEALTHCHECK on 8080, which is
+      # correct here but wrong for the worker. ECS ignores the image health
+      # check, so each task definition states its own. AUDIT_REMEDIATION.md F-64.
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 30
+      }
+
       portMappings = [
         {
           containerPort = 8080
@@ -179,6 +190,14 @@ resource "aws_ecs_task_definition" "webhooks" {
       image     = "${aws_ecr_repository.webhooks.repository_url}:${var.webhooks_image_tag}"
       essential = true
 
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 30
+      }
+
       portMappings = [
         {
           containerPort = 8081
@@ -226,8 +245,28 @@ resource "aws_ecs_task_definition" "worker" {
       image     = "${aws_ecr_repository.worker.repository_url}:${var.worker_image_tag}"
       essential = true
 
+      # The worker serves its probe on 8082 (WORKER_HEALTH_PORT), not the 8080
+      # default baked into the shared Dockerfile. AUDIT_REMEDIATION.md F-64.
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -qO- http://localhost:8082/health || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 30
+      }
+
+      portMappings = [
+        {
+          containerPort = 8082
+          hostPort      = 8082
+          protocol      = "tcp"
+        }
+      ]
+
       environment = [
-        { name = "ENVIRONMENT", value = var.environment }
+        { name = "ENVIRONMENT", value = var.environment },
+        { name = "WORKER_HEALTH_PORT", value = "8082" },
+        { name = "HEALTH_PROBE_PORT", value = "8082" }
       ]
 
       secrets = [

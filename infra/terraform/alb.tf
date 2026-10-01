@@ -8,7 +8,16 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
-  enable_deletion_protection = false
+  # Was hardcoded to false, so a stray apply could delete the load balancer in
+  # front of production. AUDIT_REMEDIATION.md F-66.
+  enable_deletion_protection = var.alb_deletion_protection
+
+  # Without this the ALB kept no record of inbound requests.
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.bucket
+    prefix  = "alb"
+    enabled = true
+  }
 
   tags = {
     Name = "${var.project_name}-${var.environment}-alb"

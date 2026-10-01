@@ -13,13 +13,16 @@ terraform {
   }
 
   # Uncomment and configure with your S3 bucket & DynamoDB table for remote state locking:
-  # backend "s3" {
-  #   bucket         = "scandrix-terraform-state"
-  #   key            = "production/terraform.tfstate"
-  #   region         = "ap-south-1"
-  #   dynamodb_table = "scandrix-terraform-locks"
-  #   encrypt        = true
-  # }
+  # Backend arguments cannot come from variables - they are resolved during
+  # `terraform init`, before variables exist. So the block declares the type
+  # only and the arguments are supplied at init time:
+  #
+  #   cp backend.hcl.example backend.hcl && $EDITOR backend.hcl
+  #   terraform init -backend-config=backend.hcl
+  #
+  # AUDIT_REMEDIATION.md F-59: state was local-only, so it was neither shared
+  # across operators nor versioned, and a lost workstation lost the state.
+  backend "s3" {}
 }
 
 provider "aws" {
@@ -41,19 +44,19 @@ provider "aws" {
       cloudformation         = "http://localhost:4566"
       cloudfront             = "http://localhost:4566"
       cloudwatch             = "http://localhost:4566"
-      dynamodb       = "http://localhost:4566"
-      ec2            = "http://localhost:4566"
-      ecr            = "http://localhost:4566"
-      ecs            = "http://localhost:4566"
-      elasticache    = "http://localhost:4566"
-      elb            = "http://localhost:4566"
-      elbv2          = "http://localhost:4566"
-      iam            = "http://localhost:4566"
-      logs           = "http://localhost:4566"
-      route53        = "http://localhost:4566"
-      s3             = "http://localhost:4566"
-      secretsmanager = "http://localhost:4566"
-      sts            = "http://localhost:4566"
+      dynamodb               = "http://localhost:4566"
+      ec2                    = "http://localhost:4566"
+      ecr                    = "http://localhost:4566"
+      ecs                    = "http://localhost:4566"
+      elasticache            = "http://localhost:4566"
+      elb                    = "http://localhost:4566"
+      elbv2                  = "http://localhost:4566"
+      iam                    = "http://localhost:4566"
+      logs                   = "http://localhost:4566"
+      route53                = "http://localhost:4566"
+      s3                     = "http://localhost:4566"
+      secretsmanager         = "http://localhost:4566"
+      sts                    = "http://localhost:4566"
     }
   }
 
