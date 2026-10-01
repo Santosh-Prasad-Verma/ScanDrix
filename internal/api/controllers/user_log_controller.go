@@ -26,16 +26,16 @@ type UserLogRepository interface {
 
 // SettingsAuditLogRecord represents a change to code review settings.
 type SettingsAuditLogRecord struct {
-	ID             uuid.UUID  `json:"id"`
-	WorkspaceID    uuid.UUID  `json:"workspaceId"`
-	TeamID         *uuid.UUID `json:"teamId,omitempty"`
-	RepositoryID   *uuid.UUID `json:"repositoryId,omitempty"`
-	ActorID        string     `json:"actorId"`
-	ActorEmail     string     `json:"actorEmail"`
-	Action         string     `json:"action"`
-	PreviousState  any        `json:"previousState,omitempty"`
-	NewState       any        `json:"newState,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspaceId"`
+	TeamID        *uuid.UUID `json:"teamId,omitempty"`
+	RepositoryID  *uuid.UUID `json:"repositoryId,omitempty"`
+	ActorID       string     `json:"actorId"`
+	ActorEmail    string     `json:"actorEmail"`
+	Action        string     `json:"action"`
+	PreviousState any        `json:"previousState,omitempty"`
+	NewState      any        `json:"newState,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
 }
 
 // UserLogController manages user status changes and code review setting audit logs.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestAuthRateLimiterThrottling(t *testing.T) {
 	ctrl.SetRateLimiter(testLimiter)
 	router := ctrl.Routes()
 
-	loginBody := `{"email":"admin@example.com","password":"secretpassword"}`
+	loginBody := `{"email":"admin@example.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8"}`
 
 	// 1. Send 3 valid requests -> Should all pass through without 429
 	for i := 1; i <= 3; i++ {
@@ -82,7 +83,7 @@ func TestAuthFailClosedWhenRepoNil(t *testing.T) {
 	router := ctrl.Routes()
 
 	// 1. /login must fail with 503 Service Unavailable when repo is nil
-	loginPayload := `{"email":"engineer@company.com","password":"StrongPassword123!"}`
+	loginPayload := `{"email":"engineer@company.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8"}`
 	reqLogin := httptest.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(loginPayload))
 	wLogin := httptest.NewRecorder()
 	router.ServeHTTP(wLogin, reqLogin)
@@ -92,7 +93,7 @@ func TestAuthFailClosedWhenRepoNil(t *testing.T) {
 	}
 
 	// 2. /register must fail with 503 Service Unavailable when repo is nil
-	regPayload := `{"email":"engineer@company.com","password":"StrongPassword123!","display_name":"Engineer"}`
+	regPayload := `{"email":"engineer@company.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","display_name":"Engineer"}`
 	reqReg := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(regPayload))
 	wReg := httptest.NewRecorder()
 	router.ServeHTTP(wReg, reqReg)
@@ -144,7 +145,16 @@ func TestAuthProtectedEndpoints(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized for tampered token, got %d", wTampered.Code)
 	}
 
-	// 3. Call /logout with refresh token
+	// 3. Call /logout with refresh token.
+	//
+	// This controller was built with a nil repository, and logout cannot end a
+	// session without one: the access token has to be revoked server-side, and
+	// with no store the only honest answer is "the session could not be ended".
+	// It previously returned 200 here, which told the caller they were logged
+	// out while their bearer token kept working (AUDIT_REMEDIATION.md F-18).
+	// Cookies are still cleared, which is why the cookie-flag test above can
+	// keep exercising this endpoint; see logout_revocation_test.go for the
+	// successful path with a real repository.
 	logoutPayload, _ := json.Marshal(dtos.LogoutRequest{
 		RefreshToken: refreshToken,
 	})
@@ -152,8 +162,12 @@ func TestAuthProtectedEndpoints(t *testing.T) {
 	wLogout := httptest.NewRecorder()
 	router.ServeHTTP(wLogout, reqLogout)
 
-	if wLogout.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK from /logout, got %d", wLogout.Code)
+	if wLogout.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from /logout when no repository is available, got %d: %s",
+			wLogout.Code, wLogout.Body.String())
+	}
+	if len(wLogout.Result().Cookies()) == 0 {
+		t.Error("logout must still clear the session cookies even when it cannot revoke")
 	}
 }
 
@@ -509,8 +523,13 @@ func TestCLILoginInfoEndpoint(t *testing.T) {
 		t.Fatalf("failed init device flow: %v", err)
 	}
 
-	// Query login-info by user_code
-	reqCode := httptest.NewRequest(http.MethodGet, "/cli/auth/login-info?user_code="+initDevice.UserCode, nil)
+	// Query login-info by device_code.
+	//
+	// This used to query by user_code, which is short and human-typable, so an
+	// unauthenticated caller could enumerate codes and confirm which existed
+	// (AUDIT_REMEDIATION.md F-31). device_code is the high-entropy secret the CLI
+	// already holds and is what login-poll requires.
+	reqCode := httptest.NewRequest(http.MethodGet, "/cli/auth/login-info?device_code="+initDevice.DeviceCode, nil)
 	wCode := httptest.NewRecorder()
 	router.ServeHTTP(wCode, reqCode)
 
@@ -524,6 +543,32 @@ func TestCLILoginInfoEndpoint(t *testing.T) {
 	}
 	if codeResp["mode"] != "device" {
 		t.Errorf("expected mode: device, got %v", codeResp["mode"])
+	}
+	// The browser user agent was a fingerprinting aid the CLI does not need.
+	if _, leaked := codeResp["userAgent"]; leaked {
+		t.Error("login-info must not return the session user agent")
+	}
+
+	// F-31 regression: a user code on its own must reveal nothing at all.
+	reqUserCode := httptest.NewRequest(http.MethodGet, "/cli/auth/login-info?user_code="+initDevice.UserCode, nil)
+	wUserCode := httptest.NewRecorder()
+	router.ServeHTTP(wUserCode, reqUserCode)
+	if wUserCode.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when only a user_code is supplied, got %d: %s",
+			wUserCode.Code, wUserCode.Body.String())
+	}
+	var userCodeResp map[string]any
+	_ = json.Unmarshal(wUserCode.Body.Bytes(), &userCodeResp)
+	if userCodeResp["found"] == true {
+		t.Error("a user code must not be sufficient to query login-info")
+	}
+
+	// No credential at all is likewise rejected rather than answered.
+	reqNone := httptest.NewRequest(http.MethodGet, "/cli/auth/login-info", nil)
+	wNone := httptest.NewRecorder()
+	router.ServeHTTP(wNone, reqNone)
+	if wNone.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 with no credential, got %d: %s", wNone.Code, wNone.Body.String())
 	}
 
 	// 3. Query with nonexistent state -> found: false
@@ -960,7 +1005,7 @@ func TestHeaderSpoofingRateLimitIsolation(t *testing.T) {
 	ctrl.SetRateLimiter(testLimiter)
 	router := ctrl.Routes()
 
-	loginBody := `{"email":"admin@example.com","password":"secretpassword"}`
+	loginBody := `{"email":"admin@example.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8"}`
 
 	// 1. Send 2 requests from client IP 198.51.100.50
 	for i := 1; i <= 2; i++ {
@@ -1023,7 +1068,7 @@ func TestRegisterDisposableEmailRejected(t *testing.T) {
 
 	for idx, email := range disposableEmails {
 		t.Run(email, func(t *testing.T) {
-			payload := fmt.Sprintf(`{"email":"%s","password":"SecurePassword123!","workspace_name":"Spam Org"}`, email)
+			payload := fmt.Sprintf(`{"email":"%s","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","workspace_name":"Spam Org"}`, email)
 			req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(payload))
 			req.RemoteAddr = fmt.Sprintf("192.168.1.%d:12345", idx+50)
 			w := httptest.NewRecorder()
@@ -1045,7 +1090,7 @@ func TestRegisterHoneypotTriggered(t *testing.T) {
 	router := ctrl.Routes()
 
 	// Honeypot website_url is filled by an automated scraper/bot
-	botPayload := `{"email":"legit@gmail.com","password":"SecurePassword123!","workspace_name":"My Workspace","website_url":"https://spam-link.com"}`
+	botPayload := `{"email":"legit@gmail.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","workspace_name":"My Workspace","website_url":"https://spam-link.com"}`
 	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(botPayload))
 	req.RemoteAddr = "192.168.1.51:12345"
 	w := httptest.NewRecorder()
@@ -1072,7 +1117,7 @@ func TestRegisterRateLimiterThrottling(t *testing.T) {
 	ctrl.SetRegisterRateLimiter(testLimiter)
 	router := ctrl.Routes()
 
-	registerBody := `{"email":"newuser@gmail.com","password":"SecurePassword123!","workspace_name":"Test Workspace"}`
+	registerBody := `{"email":"newuser@gmail.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","workspace_name":"Test Workspace"}`
 
 	// First 2 requests pass rate limit
 	for i := 1; i <= 2; i++ {
@@ -1106,7 +1151,7 @@ func TestRegisterCustomBlockedDomains(t *testing.T) {
 	ctrl.SetBlockedEmailDomains([]string{"scamdomain.com", "phishing.org"})
 	router := ctrl.Routes()
 
-	blockedPayload := `{"email":"attacker@scamdomain.com","password":"SecurePassword123!","workspace_name":"Scam Team"}`
+	blockedPayload := `{"email":"attacker@scamdomain.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","workspace_name":"Scam Team"}`
 	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString(blockedPayload))
 	req.RemoteAddr = "192.168.1.52:12345"
 	w := httptest.NewRecorder()
@@ -1253,7 +1298,7 @@ func TestPasswordResetTokenRoundTripParsing(t *testing.T) {
 	}
 
 	// 1. Sending valid reset token without DB initialized returns 503 (repo nil), confirming payload parsing succeeded
-	resetBody := fmt.Sprintf(`{"token":"%s","new_password":"NewSecurePassword123!"}`, token)
+	resetBody := fmt.Sprintf(`{"token":"%s","new_password":"NewZq7-Kv4-Mn9-Tb2-Xc6-Rp8"}`, token)
 	req := httptest.NewRequest(http.MethodPost, "/reset-password", bytes.NewBufferString(resetBody))
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -1265,7 +1310,7 @@ func TestPasswordResetTokenRoundTripParsing(t *testing.T) {
 	}
 
 	// 2. Sending corrupted token fails with 400 Bad Request
-	corruptedBody := `{"token":"invalid.token","new_password":"NewSecurePassword123!"}`
+	corruptedBody := `{"token":"invalid.token","new_password":"NewZq7-Kv4-Mn9-Tb2-Xc6-Rp8"}`
 	reqCorrupt := httptest.NewRequest(http.MethodPost, "/reset-password", bytes.NewBufferString(corruptedBody))
 	wCorrupt := httptest.NewRecorder()
 	router.ServeHTTP(wCorrupt, reqCorrupt)
@@ -1280,7 +1325,19 @@ func TestSecureCookieFlagsEvaluation(t *testing.T) {
 	ctrl := controllers.NewAuthController(authService, nil)
 	router := ctrl.Routes()
 
-	// 1. Non-TLS request in development does not set Secure flag
+	// 1. Secure is now applied by DEFAULT, including to a plain-HTTP request.
+	//
+	// AUDIT_REMEDIATION.md F-19: this assertion used to require Secure=false
+	// for a non-TLS development request, which is the fail-open behaviour the
+	// finding describes -- browsers then send the session cookie over
+	// plaintext HTTP. The corrected contract is that the attribute is on unless
+	// an operator explicitly opts out.
+	for _, k := range []string{"ENVIRONMENT", "APP_ENV", "SCANDRIX_ENV", "GO_ENV", "COOKIE_SECURE"} {
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("unset %s: %v", k, err)
+		}
+	}
 	reqDev := httptest.NewRequest(http.MethodPost, "/logout", bytes.NewBufferString(`{}`))
 	wDev := httptest.NewRecorder()
 	router.ServeHTTP(wDev, reqDev)
@@ -1288,8 +1345,8 @@ func TestSecureCookieFlagsEvaluation(t *testing.T) {
 	cookiesDev := wDev.Result().Cookies()
 	for _, c := range cookiesDev {
 		if c.Name == "scandrix_token" {
-			if c.Secure {
-				t.Errorf("expected Secure=false in local non-TLS request, got true")
+			if !c.Secure {
+				t.Errorf("expected Secure=true by default on a non-TLS request, got false")
 			}
 			if !c.HttpOnly {
 				t.Errorf("expected HttpOnly=true, got false")
@@ -1297,7 +1354,8 @@ func TestSecureCookieFlagsEvaluation(t *testing.T) {
 		}
 	}
 
-	// 2. HTTPS request sets Secure=true
+	// 2. Secure stays on, and a client-supplied header cannot change it.
+	//    X-Forwarded-Proto is no longer an input to this decision.
 	reqTLS := httptest.NewRequest(http.MethodPost, "/logout", bytes.NewBufferString(`{}`))
 	reqTLS.Header.Set("X-Forwarded-Proto", "https")
 	wTLS := httptest.NewRecorder()
@@ -1309,7 +1367,7 @@ func TestSecureCookieFlagsEvaluation(t *testing.T) {
 		if c.Name == "scandrix_token" {
 			foundTLS = true
 			if !c.Secure {
-				t.Errorf("expected Secure=true for X-Forwarded-Proto: https, got false")
+				t.Errorf("expected Secure=true, got false")
 			}
 		}
 	}
@@ -1430,8 +1488,3 @@ func TestSSODomainVerificationAndTestConnectionEndpoints(t *testing.T) {
 		t.Fatalf("Expected 400 on empty SAML response, got %d", wCb.Code)
 	}
 }
-
-
-
-
-

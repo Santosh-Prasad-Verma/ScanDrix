@@ -342,8 +342,10 @@ func (c *ReviewController) handleListFindings(w http.ResponseWriter, r *http.Req
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]models.CodeFinding{})
+		// An empty findings list is indistinguishable from "this review is
+		// clean", so an unavailable source must not be rendered as a pass
+		// (AUDIT_REMEDIATION.md F-10).
+		http.Error(w, `{"error":"review findings unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 

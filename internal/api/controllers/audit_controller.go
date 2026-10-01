@@ -70,8 +70,9 @@ func (c *AuditController) handleListAuditLogs(w http.ResponseWriter, r *http.Req
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]any{})
+		// An empty list is indistinguishable from "no audit events", so an
+		// unavailable source must not be rendered as an empty result.
+		http.Error(w, `{"error":"audit logs unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -113,7 +114,12 @@ func (c *AuditController) handleExportSIEM(w http.ResponseWriter, r *http.Reques
 	}
 
 	if c.repo == nil {
-		w.WriteHeader(http.StatusOK)
+		// A SIEM export that returns 200 with an empty body is read by a SOC
+		// as "zero security events in this period". That is the most dangerous
+		// possible failure mode for an audit trail, so an unavailable source
+		// must be an error (AUDIT_REMEDIATION.md F-10).
+		slog.Error("audit.export.no_data_source", "workspace_id", wsID)
+		http.Error(w, `{"error":"audit export unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 

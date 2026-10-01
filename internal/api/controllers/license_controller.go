@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -24,9 +25,17 @@ type LicenseRepository interface {
 	ActivateLicense(ctx context.Context, wsID uuid.UUID, licenseKey, orgName, planTier string, totalSeats int, expiresAt time.Time, features []string) error
 }
 
+// LicenseVerifier verifies a submitted license token against the vendor public key.
+type LicenseVerifier interface {
+	LoadLicense(token string) (*license.LicensePayload, error)
+	Entitlement() *license.Entitlement
+}
+
 // LicenseController manages enterprise seat allocations, subscriptions, and air-gapped license files.
 type LicenseController struct {
-	repo LicenseRepository
+	repo     LicenseRepository
+	verifier LicenseVerifier
+	resolver *license.Resolver
 }
 
 // NewLicenseController initializes the license controller with repository persistence.
@@ -35,6 +44,60 @@ func NewLicenseController(repo LicenseRepository) *LicenseController {
 		repo = nil
 	}
 	return &LicenseController{repo: repo}
+}
+
+// WithVerifier attaches the signed-license verifier used to validate activation keys.
+func (c *LicenseController) WithVerifier(v LicenseVerifier) *LicenseController {
+	if isNilInterface(v) {
+		c.verifier = nil
+	} else {
+		c.verifier = v
+	}
+	c.buildResolver()
+	return c
+}
+
+// WithResolver attaches a prebuilt entitlement resolver, so this controller and
+// the feature gate always agree on what a workspace is entitled to.
+func (c *LicenseController) WithResolver(r *license.Resolver) *LicenseController {
+	c.resolver = r
+	return c
+}
+
+func (c *LicenseController) buildResolver() {
+	manager, _ := c.verifier.(*license.LicenseManager)
+	c.resolver = license.NewResolver(manager, licenseStoreAdapter{repo: c.repo})
+}
+
+// licenseStoreAdapter exposes the controller repository as a license.Store.
+type licenseStoreAdapter struct {
+	repo LicenseRepository
+}
+
+func (a licenseStoreAdapter) GetActiveLicense(ctx context.Context, wsID uuid.UUID) (*license.StoredLicense, error) {
+	if a.repo == nil {
+		return nil, nil
+	}
+	lic, err := a.repo.GetActiveLicense(ctx, wsID)
+	if err != nil || lic == nil {
+		return nil, err
+	}
+	return &license.StoredLicense{
+		Tier:       lic.PlanTier,
+		Features:   lic.FeaturesEnabled,
+		MaxSeats:   lic.TotalSeats,
+		CustomerNm: lic.OrganizationName,
+		ExpiresAt:  lic.ExpiresAt,
+	}, nil
+}
+
+// resolveEntitlement produces the single authoritative entitlement for a
+// workspace by delegating to the shared resolver.
+func (c *LicenseController) resolveEntitlement(ctx context.Context, wsID uuid.UUID) *license.Entitlement {
+	if c.resolver == nil {
+		c.buildResolver()
+	}
+	return c.resolver.Resolve(ctx, wsID)
 }
 
 // Routes mounts enterprise license management endpoints.
@@ -62,41 +125,35 @@ func (c *LicenseController) handleGetLicense(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	ent := c.resolveEntitlement(r.Context(), wsID)
+
+	resp := dtos.LicenseResponse{
+		OrganizationName: string(ent.Tier),
+		PlanTier:         string(ent.Tier),
+		TotalSeats:       ent.SeatLimit(),
+		ExpiresAt:        ent.ExpiresAt,
+		FeaturesEnabled:  ent.FeatureList(),
+	}
+
 	var lic *models.OrganizationLicense
 	if c.repo != nil {
-		var err error
-		lic, err = c.repo.GetActiveLicense(r.Context(), wsID)
-		if err != nil {
+		if lic, err = c.repo.GetActiveLicense(r.Context(), wsID); err != nil {
 			http.Error(w, `{"error":"failed loading license"}`, http.StatusInternalServerError)
 			return
 		}
 	}
-
-	if lic == nil {
-		// Standard Community Edition default when no enterprise license activated
-		lic = &models.OrganizationLicense{
-			LicenseKey:       "SCANDRIX-COMMUNITY-EDITION",
-			OrganizationName: "Community Tier",
-			PlanTier:         "COMMUNITY",
-			TotalSeats:       5,
-			AllocatedSeats:   1,
-			ExpiresAt:        time.Now().AddDate(10, 0, 0),
-			IsAirGapped:      false,
-			FeaturesEnabled:  []string{"automated_reviews", "custom_rules"},
-		}
+	if lic != nil {
+		resp.LicenseKey = lic.LicenseKey
+		resp.OrganizationName = lic.OrganizationName
+		resp.AllocatedSeats = lic.AllocatedSeats
+		resp.IsAirGapped = lic.IsAirGapped
+	} else {
+		resp.LicenseKey = ""
+		resp.AllocatedSeats = 0
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dtos.LicenseResponse{
-		LicenseKey:       lic.LicenseKey,
-		OrganizationName: lic.OrganizationName,
-		PlanTier:         lic.PlanTier,
-		TotalSeats:       lic.TotalSeats,
-		AllocatedSeats:   lic.AllocatedSeats,
-		ExpiresAt:        lic.ExpiresAt,
-		IsAirGapped:      lic.IsAirGapped,
-		FeaturesEnabled:  lic.FeaturesEnabled,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (c *LicenseController) handleActivateLicense(w http.ResponseWriter, r *http.Request) {
@@ -112,19 +169,32 @@ func (c *LicenseController) handleActivateLicense(w http.ResponseWriter, r *http
 	}
 
 	var req dtos.ActivateLicenseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.LicenseKey == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.LicenseKey) == "" {
 		http.Error(w, `{"error":"license_key is required"}`, http.StatusBadRequest)
 		return
 	}
 
-	expiresAt := time.Now().AddDate(1, 0, 0)
-	features := []string{
-		"saml_sso", "scim_provisioning", "custom_rules", "audit_log_cef",
-		"unlimited_repos", "priority_ai_router", "on_prem_workers",
+	if c.verifier == nil {
+		http.Error(w, `{"error":"license verification is not configured on this deployment"}`, http.StatusServiceUnavailable)
+		return
 	}
 
-	err = c.repo.ActivateLicense(r.Context(), wsID, req.LicenseKey, "Enterprise Customer", "ENTERPRISE", 500, expiresAt, features)
+	payload, err := c.verifier.LoadLicense(strings.TrimSpace(req.LicenseKey))
 	if err != nil {
+		slog.Warn("Rejected license activation", "error", err)
+		http.Error(w, `{"error":"license key is invalid"}`, http.StatusUnprocessableEntity)
+		return
+	}
+
+	orgName := payload.CustomerName
+	if strings.TrimSpace(orgName) == "" {
+		orgName = "Licensed Customer"
+	}
+
+	if err := c.repo.ActivateLicense(
+		r.Context(), wsID, req.LicenseKey, orgName,
+		string(payload.Tier), payload.MaxSeats, payload.ExpiresAt, payload.Features,
+	); err != nil {
 		http.Error(w, `{"error":"failed activating license"}`, http.StatusInternalServerError)
 		return
 	}
@@ -132,9 +202,11 @@ func (c *LicenseController) handleActivateLicense(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":      "ACTIVATED",
-		"license_key": req.LicenseKey,
-		"valid_until": expiresAt,
+		"status":     "ACTIVATED",
+		"tier":       string(payload.Tier),
+		"seats":      payload.MaxSeats,
+		"features":   payload.Features,
+		"expires_at": payload.ExpiresAt.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -145,23 +217,30 @@ func (c *LicenseController) handleGetSeats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var lic *models.OrganizationLicense
+	ent := c.resolveEntitlement(r.Context(), wsID)
+
+	allocatedSeats := 0
 	if c.repo != nil {
-		lic, _ = c.repo.GetActiveLicense(r.Context(), wsID)
+		if lic, err := c.repo.GetActiveLicense(r.Context(), wsID); err == nil && lic != nil {
+			allocatedSeats = lic.AllocatedSeats
+		}
 	}
-	totalSeats := 10
-	allocatedSeats := 1
-	if lic != nil {
-		totalSeats = lic.TotalSeats
-		allocatedSeats = lic.AllocatedSeats
+
+	totalSeats := ent.SeatLimit()
+	availableSeats := -1
+	if totalSeats > 0 {
+		availableSeats = totalSeats - allocatedSeats
+		if availableSeats < 0 {
+			availableSeats = 0
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"total_seats":     totalSeats,
 		"allocated_seats": allocatedSeats,
-		"available_seats": totalSeats - allocatedSeats,
-		"active_users":    allocatedSeats,
+		"available_seats": availableSeats,
+		"unlimited":       totalSeats == 0,
 	})
 }
 
@@ -172,38 +251,33 @@ func (c *LicenseController) handleGetStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var lic *models.OrganizationLicense
-	if c.repo != nil {
-		lic, _ = c.repo.GetActiveLicense(r.Context(), wsID)
+	ent := c.resolveEntitlement(r.Context(), wsID)
+
+	subStatus := "active"
+	if !ent.Valid {
+		subStatus = "expired"
 	}
 
-	valid := true
-	subStatus := "active"
-	plan := "COMMUNITY"
-	totalSeats := 10
-	features := []string{"automated_reviews", "custom_rules"}
-	expiresAt := time.Now().AddDate(10, 0, 0)
-
-	if lic != nil {
-		plan = lic.PlanTier
-		totalSeats = lic.TotalSeats
-		features = lic.FeaturesEnabled
-		expiresAt = lic.ExpiresAt
-		if time.Now().After(lic.ExpiresAt) {
-			valid = false
-			subStatus = "expired"
-		}
+	resp := map[string]any{
+		"valid":              ent.Valid,
+		"subscriptionStatus": subStatus,
+		"plan":               string(ent.Tier),
+		"seats":              ent.SeatLimit(),
+		"features":           ent.FeatureList(),
+		"source":             string(ent.Source),
+		"repositoryLimit":    ent.RepoLimit(),
+	}
+	if !ent.ExpiresAt.IsZero() {
+		resp["expiresAt"] = ent.ExpiresAt.UTC().Format(time.RFC3339)
+	} else {
+		resp["expiresAt"] = nil
+	}
+	if ent.Reason != "" {
+		resp["reason"] = ent.Reason
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"valid":              valid,
-		"subscriptionStatus": subStatus,
-		"plan":               plan,
-		"seats":              totalSeats,
-		"features":           features,
-		"expiresAt":          expiresAt.Format(time.RFC3339),
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (c *LicenseController) handleGetOrgStatus(w http.ResponseWriter, r *http.Request) {
@@ -213,22 +287,18 @@ func (c *LicenseController) handleGetOrgStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var lic *models.OrganizationLicense
-	if c.repo != nil {
-		lic, _ = c.repo.GetActiveLicense(r.Context(), wsID)
-	}
+	ent := c.resolveEntitlement(r.Context(), wsID)
 
-	valid := true
 	subStatus := "active"
-	if lic != nil && time.Now().After(lic.ExpiresAt) {
-		valid = false
+	if !ent.Valid {
 		subStatus = "expired"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"valid":              valid,
+		"valid":              ent.Valid,
 		"subscriptionStatus": subStatus,
+		"plan":               string(ent.Tier),
 	})
 }
 
@@ -274,12 +344,51 @@ func (c *LicenseController) handleAssignLicense(w http.ResponseWriter, r *http.R
 	})
 }
 
+// handleGetRemovableSeats reports the real seat position for the workspace.
+// The previous version returned a hardcoded empty list and a constant "ok"
+// status without reading anything, which reported success for every workspace
+// including over-quota and unlicensed ones.
+//
+// Candidate seat IDs are not computed here: there is no persisted seat
+// assignment model yet, so any identifier list would be invented. When that
+// model lands it should populate candidates from real assignments.
 func (c *LicenseController) handleGetRemovableSeats(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	ent := c.resolveEntitlement(r.Context(), wsID)
+	if ent == nil {
+		http.Error(w, `{"error":"entitlement unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	allocatedSeats := 0
+	if c.repo != nil {
+		if lic, err := c.repo.GetActiveLicense(r.Context(), wsID); err == nil && lic != nil {
+			allocatedSeats = lic.AllocatedSeats
+		}
+	}
+
+	totalSeats := ent.SeatLimit()
+	availableSeats := -1
+	if totalSeats > 0 {
+		availableSeats = totalSeats - allocatedSeats
+		if availableSeats < 0 {
+			availableSeats = 0
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"removableSeats": []string{},
-		"count":          0,
-		"status":         "ok",
+		"total_seats":      totalSeats,
+		"allocated_seats":  allocatedSeats,
+		"available_seats":  availableSeats,
+		"seats_remaining":  c.resolver.SeatsRemaining(r.Context(), wsID),
+		"tier":             string(ent.Tier),
+		"candidates_ready": false,
 	})
 }
 

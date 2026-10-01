@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -18,6 +20,7 @@ import (
 	"github.com/scandrix/backend/internal/auth/cliauth"
 	"github.com/scandrix/backend/internal/auth/mailer"
 	"github.com/scandrix/backend/internal/auth/oauth"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
 	"github.com/scandrix/backend/pkg/models"
@@ -50,18 +53,30 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 		JWTSecret:    jwtSecret,
 	})
 
-	// 1. Test Public Healthz
+	// 1. Readiness/health must FAIL CLOSED when the database is unreachable.
+	// This router is built with a nil repo, so a 503 is the correct answer. The
+	// previous inline handler defaulted dbStatus to "ok" when cfg.Repo was nil
+	// and reported healthy with no database at all.
 	reqHealth := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	wHealth := httptest.NewRecorder()
 	router.ServeHTTP(wHealth, reqHealth)
-	if wHealth.Code != http.StatusOK {
-		t.Fatalf("expected 200 for /healthz, got %d", wHealth.Code)
+	if wHealth.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from /healthz with no database, got %d", wHealth.Code)
+	}
+
+	// Liveness must stay 200 regardless: it reports the process, not deps, so a
+	// database blip does not get the container killed and restarted.
+	reqLive := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	wLive := httptest.NewRecorder()
+	router.ServeHTTP(wLive, reqLive)
+	if wLive.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /livez, got %d", wLive.Code)
 	}
 
 	// 2. Test User Registration (Repo is nil -> Expect 503 Service Unavailable fail-closed)
 	regBody, _ := json.Marshal(dtos.RegisterRequest{
 		Email:         "lead@techcorp.com",
-		Password:      "SecurePassword123!",
+		Password:      "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 		DisplayName:   "Tech Lead",
 		WorkspaceName: "TechCorp Global",
 	})
@@ -110,18 +125,21 @@ func TestAPIRouterEndToEnd(t *testing.T) {
 	}
 
 	// 5. Test Cockpit Metrics
+	//
+	// This router is built with Repo: nil, so the honest answer is 503. It
+	// used to answer 200 with a fabricated 100% pass rate, reporting a
+	// perfect security posture for a workspace with no data at all
+	// (AUDIT_REMEDIATION.md F-07).
 	reqCockpit := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/cockpit", nil)
 	reqCockpit.Header.Set("Authorization", "Bearer "+accessToken)
 	wCockpit := httptest.NewRecorder()
 	router.ServeHTTP(wCockpit, reqCockpit)
-	if wCockpit.Code != http.StatusOK {
-		t.Fatalf("expected 200 for /api/v1/workspaces/cockpit, got %d", wCockpit.Code)
+	if wCockpit.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for /api/v1/workspaces/cockpit with no repository, got %d: %s",
+			wCockpit.Code, wCockpit.Body.String())
 	}
-
-	var cockpit dtos.CockpitMetricsResponse
-	_ = json.NewDecoder(wCockpit.Body).Decode(&cockpit)
-	if cockpit.TotalReviews < 0 || cockpit.PassRatePercentage < 0 {
-		t.Fatalf("unexpected cockpit metrics: %+v", cockpit)
+	if strings.Contains(wCockpit.Body.String(), "pass_rate_percentage") {
+		t.Fatalf("a nil repository must not yield a metric: %s", wCockpit.Body.String())
 	}
 
 	// 6. Test Token Usage & Quotas
@@ -315,7 +333,7 @@ func TestSecondaryAuthRoutesRateLimiting(t *testing.T) {
 	}
 
 	// 2. Verify POST /cli/authorize/approve is protected (repo is nil -> 503 rather than panic or 404)
-	approveBody := `{"user_code":"ABCD-EFGH","email":"test@example.com","password":"secretpassword","action":"login"}`
+	approveBody := `{"user_code":"ABCD-EFGH","email":"test@example.com","password":"Zq7-Kv4-Mn9-Tb2-Xc6-Rp8","action":"login"}`
 	reqApprove := httptest.NewRequest(http.MethodPost, "/cli/authorize/approve", bytes.NewBufferString(approveBody))
 	reqApprove.RemoteAddr = "192.0.2.1:12345"
 	wApprove := httptest.NewRecorder()
@@ -396,8 +414,18 @@ func TestAPIRouterMCPEndToEnd(t *testing.T) {
 		JWTSecret:   jwtSecret,
 	})
 
+	// MCP requires a session: the transport is authenticated and disabled by
+	// default (AUDIT_REMEDIATION.md F-15f), so these requests carry a token.
+	mcpTok, _, err := authService.GenerateTokenPairWithEmail(
+		uuid.New(), uuid.New(), models.RoleOwner, "mcp-e2e@scandrix.internal")
+	if err != nil {
+		t.Fatalf("mint mcp token: %v", err)
+	}
+	mcpAuth := "Bearer " + mcpTok
+
 	// 1. GET /api/v1/mcp must return 405 Method Not Allowed with Allow: POST
 	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/mcp", nil)
+	reqGet.Header.Set("Authorization", mcpAuth)
 	wGet := httptest.NewRecorder()
 	router.ServeHTTP(wGet, reqGet)
 	if wGet.Code != http.StatusMethodNotAllowed {
@@ -411,6 +439,7 @@ func TestAPIRouterMCPEndToEnd(t *testing.T) {
 	initPayload := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
 	reqPost := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", bytes.NewReader(initPayload))
 	reqPost.Header.Set("Content-Type", "application/json")
+	reqPost.Header.Set("Authorization", mcpAuth)
 	wPost := httptest.NewRecorder()
 	router.ServeHTTP(wPost, reqPost)
 	if wPost.Code != http.StatusOK {
@@ -421,6 +450,7 @@ func TestAPIRouterMCPEndToEnd(t *testing.T) {
 	listPayload := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	reqIssues := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/issues", bytes.NewReader(listPayload))
 	reqIssues.Header.Set("Content-Type", "application/json")
+	reqIssues.Header.Set("Authorization", mcpAuth)
 	wIssues := httptest.NewRecorder()
 	router.ServeHTTP(wIssues, reqIssues)
 	if wIssues.Code != http.StatusOK {
@@ -429,6 +459,7 @@ func TestAPIRouterMCPEndToEnd(t *testing.T) {
 
 	// 4. GET /api/v1/mcp/issues must return 405 Method Not Allowed
 	reqIssuesGet := httptest.NewRequest(http.MethodGet, "/api/v1/mcp/issues", nil)
+	reqIssuesGet.Header.Set("Authorization", mcpAuth)
 	wIssuesGet := httptest.NewRecorder()
 	router.ServeHTTP(wIssuesGet, reqIssuesGet)
 	if wIssuesGet.Code != http.StatusMethodNotAllowed {
@@ -436,3 +467,104 @@ func TestAPIRouterMCPEndToEnd(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesRouteIsReachableThroughTheFullRouter proves the capabilities
+// TestSSODomainVerificationRequiresSession pins AUDIT_REMEDIATION.md F-11.
+//
+// /sso/domains/verify-dns and /confirm-token were registered on the
+// unauthenticated route block and resolved the target workspace from the request
+// body when the context carried none, so an anonymous caller could drive domain
+// verification for a workspace it did not belong to. They must now be
+// unreachable without a valid session.
+func TestSSODomainVerificationRequiresSession(t *testing.T) {
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
+	router := api.BuildRouter(api.RouterConfig{
+		Repo:        nil,
+		AuthService: authService,
+		AppBaseURL:  "https://app.scandrix.dev",
+		JWTSecret:   jwtSecret,
+	})
+
+	victimWorkspace := uuid.New()
+	body := fmt.Sprintf(`{"domain":"victim-corp.com","workspace_id":%q}`, victimWorkspace)
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/auth/sso/domains/verify-dns"},
+		{http.MethodPost, "/api/v1/auth/sso/domains/confirm-token"},
+		{http.MethodPost, "/api/v1/auth/sso/domains/request-verification"},
+		{http.MethodGet, "/api/v1/auth/sso/domains/status"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			// Exactly 401: a 404 here would mean the route is unreachable for
+			// legitimate callers too, which would pass a weaker assertion while
+			// silently breaking the feature.
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for anonymous %s, got %d", tc.path, w.Code)
+			}
+		})
+	}
+}
+
+// endpoint is mounted on both the root and the /api/v1 router, and answers a
+// community plan for a workspace with no license configured. Building the real
+// router also proves no route registration panics at startup.
+func TestCapabilitiesRouteIsReachableThroughTheFullRouter(t *testing.T) {
+	jwtSecret := "test-jwt-secret-key-123456789012"
+	authService := auth.NewAuthenticator(jwtSecret)
+	streamHub := review.NewStreamHub()
+	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
+	deviceFlow := cliauth.NewDeviceFlowManager(cliauth.NewInMemorySessionStore(), "https://app.scandrix.dev")
+	oauthService := oauth.NewOAuthService(
+		oauth.ProviderConfig{ClientID: "mock-gh-client-id", ClientSecret: "mock-gh-secret"},
+		oauth.ProviderConfig{ClientID: "mock-gl-client-id", ClientSecret: "mock-gl-secret"},
+	)
+
+	router := api.BuildRouter(api.RouterConfig{
+		Repo:         nil,
+		AuthService:  authService,
+		StreamHub:    streamHub,
+		Evaluator:    evaluator,
+		DeviceFlow:   deviceFlow,
+		OAuthService: oauthService,
+		Mailer:       mailer.NewNoopSender(),
+		AppBaseURL:   "https://app.scandrix.dev",
+		JWTSecret:    jwtSecret,
+	})
+
+	wsID := uuid.New()
+	userID := uuid.New()
+	token, err := authService.GenerateToken(userID, wsID, models.RoleMember)
+	if err != nil {
+		t.Fatalf("failed generating token: %v", err)
+	}
+
+	for _, path := range []string{"/capabilities", "/api/v1/capabilities"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d: %s", path, rec.Code, rec.Body.String())
+		}
+
+		var caps license.Capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &caps); err != nil {
+			t.Fatalf("failed decoding %s response: %v", path, err)
+		}
+		if caps.Tier != string(license.TierCommunity) {
+			t.Fatalf("expected COMMUNITY from %s with no license configured, got %s", path, caps.Tier)
+		}
+		if caps.Features[string(license.FeatureSSOSAML)] {
+			t.Fatalf("%s must not report SSO for an unlicensed workspace", path)
+		}
+		if !caps.Features[string(license.FeatureBYOK)] {
+			t.Fatalf("%s must report BYOK for an unlicensed workspace", path)
+		}
+	}
+}

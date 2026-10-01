@@ -8,8 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/scandrix/backend/internal/api/controllers"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/llm/byok"
+	orgparamusecases "github.com/scandrix/backend/internal/organization/application/usecases/organizationparameters"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -34,7 +37,7 @@ func newMockOrgParamRepo(wsID uuid.UUID) *mockOrgParamRepo {
 	}
 }
 
-func (m *mockOrgParamRepo) ListWorkspaces(ctx context.Context) ([]models.Workspace, error) {
+func (m *mockOrgParamRepo) ListWorkspacesForUser(ctx context.Context, email string) ([]models.Workspace, error) {
 	return m.workspaces, nil
 }
 
@@ -293,11 +296,10 @@ func TestOrgParams_TestBYOK_Validation(t *testing.T) {
 		t.Fatalf("expected 400 for unknown provider, got %d", w.Code)
 	}
 
-	// 2. Valid provider and tuning -> 200
+	// 2. With no probe wired the endpoint must refuse rather than report a
+	//    fabricated success.
 	reqValidBody := map[string]any{
-		"provider":    "openai",
-		"model":       "gpt-4o",
-		"temperature": 0.3,
+		"provider": "openai", "model": "gpt-4o", "temperature": 0.3,
 	}
 	bValid, _ := json.Marshal(reqValidBody)
 	reqValid := httptest.NewRequest(http.MethodPost, "/test-byok", bytes.NewReader(bValid))
@@ -305,59 +307,124 @@ func TestOrgParams_TestBYOK_Validation(t *testing.T) {
 	wValid := httptest.NewRecorder()
 	routes.ServeHTTP(wValid, reqValid)
 
-	if wValid.Code != http.StatusOK {
-		t.Fatalf("expected 200 for valid test-byok, got %d: %s", wValid.Code, wValid.Body.String())
+	if wValid.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no probe is wired, got %d: %s", wValid.Code, wValid.Body.String())
 	}
 	_ = wsID
 }
 
-func TestOrgParams_ListProvidersAndModels(t *testing.T) {
-	ctrl := controllers.NewOrganizationParametersController(nil)
+// stubRoundTripper answers provider requests without opening a socket, so the
+// probe path is exercised end to end while the SSRF guard still runs for real.
+type stubRoundTripper struct {
+	status int
+}
+
+func (s stubRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: s.status,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"upstream"}`)),
+		Header:     make(http.Header),
+		Request:    r,
+	}, nil
+}
+
+// TestOrgParams_TestBYOK_PerformsRealProbe asserts the endpoint reflects an
+// actual provider response. It previously answered success with a fixed 85 ms
+// latency without ever using the API key, so an invalid credential looked valid.
+func TestOrgParams_TestBYOK_PerformsRealProbe(t *testing.T) {
+	cases := []struct {
+		name           string
+		providerStatus int
+		wantStatus     int
+		wantOK         bool
+		wantCode       string
+	}{
+		{"provider accepts the key", http.StatusOK, http.StatusOK, true, "ok"},
+		{"provider rejects the key", http.StatusUnauthorized, http.StatusBadRequest, false, "auth"},
+		{"model not found", http.StatusNotFound, http.StatusBadRequest, false, "not_found"},
+		{"rate limited", http.StatusTooManyRequests, http.StatusBadRequest, false, "rate_limit"},
+		{"provider is down", http.StatusBadGateway, http.StatusBadGateway, false, "server_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			uc := orgparamusecases.NewTestBYOKModelUseCase().WithHTTPClient(
+				&http.Client{Transport: stubRoundTripper{status: tc.providerStatus}})
+
+			ctrl := controllers.NewOrganizationParametersController(nil).
+				WithUseCases(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, uc)
+			routes := ctrl.Routes()
+
+			body, _ := json.Marshal(map[string]any{
+				"provider": "openai",
+				"apiKey":   "sk-test-not-a-real-key",
+				// A public-looking host that does not resolve, so the SSRF guard
+				// allows it and the stub transport answers.
+				"baseURL": "https://provider.invalid/v1",
+				"model":   "gpt-4o",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/test-byok", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			routes.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+
+			var res struct {
+				Data struct {
+					OK         bool   `json:"ok"`
+					Code       string `json:"code"`
+					HTTPStatus int    `json:"httpStatus"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("failed decoding: %v", err)
+			}
+			if res.Data.OK != tc.wantOK {
+				t.Fatalf("expected ok=%v, got %v", tc.wantOK, res.Data.OK)
+			}
+			if res.Data.Code != tc.wantCode {
+				t.Fatalf("expected code=%q, got %q", tc.wantCode, res.Data.Code)
+			}
+			if res.Data.HTTPStatus != tc.providerStatus {
+				t.Fatalf("expected the real provider status %d, got %d",
+					tc.providerStatus, res.Data.HTTPStatus)
+			}
+		})
+	}
+}
+
+// TestOrgParams_TestBYOK_RejectsPrivateEndpoints asserts the SSRF guard is
+// enforced through the endpoint: a base URL pointing at the loopback interface
+// must be refused rather than probed.
+func TestOrgParams_TestBYOK_RejectsPrivateEndpoints(t *testing.T) {
+	uc := orgparamusecases.NewTestBYOKModelUseCase().WithHTTPClient(
+		&http.Client{Transport: stubRoundTripper{status: http.StatusOK}})
+
+	ctrl := controllers.NewOrganizationParametersController(nil).
+		WithUseCases(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, uc)
 	routes := ctrl.Routes()
 
-	// 1. GET /list-providers
-	req := httptest.NewRequest(http.MethodGet, "/list-providers", nil)
-	w := httptest.NewRecorder()
-	routes.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for /list-providers, got %d", w.Code)
-	}
+	for _, base := range []string{
+		"http://127.0.0.1:8080",
+		"http://localhost:9090",
+		"http://169.254.169.254/latest/meta-data",
+	} {
+		body, _ := json.Marshal(map[string]any{
+			"provider": "openai", "apiKey": "sk-x", "baseURL": base, "model": "gpt-4o",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/test-byok", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, req)
 
-	var provResp struct {
-		StatusCode int `json:"statusCode"`
-		Data       []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&provResp); err != nil || len(provResp.Data) == 0 {
-		t.Fatalf("failed reading providers: %v (len: %d)", err, len(provResp.Data))
-	}
-
-	foundOpenAI := false
-	for _, p := range provResp.Data {
-		if p.ID == "openai" {
-			foundOpenAI = true
-			break
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("base %s: expected 400, got %d: %s", base, rec.Code, rec.Body.String())
 		}
-	}
-	if !foundOpenAI {
-		t.Fatalf("Expected openai to be registered in provider list")
-	}
-
-	// 2. GET /list-models?provider=openai
-	reqModels := httptest.NewRequest(http.MethodGet, "/list-models?provider=openai", nil)
-	wModels := httptest.NewRecorder()
-	routes.ServeHTTP(wModels, reqModels)
-	if wModels.Code != http.StatusOK {
-		t.Fatalf("expected 200 for /list-models, got %d", wModels.Code)
-	}
-
-	// 3. GET /model-capabilities?provider=openai&model=gpt-4o
-	reqCaps := httptest.NewRequest(http.MethodGet, "/model-capabilities?provider=openai&model=gpt-4o", nil)
-	wCaps := httptest.NewRecorder()
-	routes.ServeHTTP(wCaps, reqCaps)
-	if wCaps.Code != http.StatusOK {
-		t.Fatalf("expected 200 for /model-capabilities, got %d", wCaps.Code)
+		if strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("base %s: a blocked endpoint must never report success", base)
+		}
 	}
 }

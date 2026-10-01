@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	scandrixMiddleware "github.com/scandrix/backend/internal/api/middleware"
 	"net/http"
 	"strings"
 	"time"
@@ -14,9 +15,9 @@ import (
 
 // CliReviewController orchestrates CLI and public review endpoints matching NestJS CliReviewController.
 type CliReviewController struct {
-	engine        *clireview.Engine
-	keyValidator  *clireview.KeyValidator
-	trialLimiter  *clireview.TrialRateLimiter
+	engine           *clireview.Engine
+	keyValidator     *clireview.KeyValidator
+	trialLimiter     *clireview.TrialRateLimiter
 	ingester         *clireview.SessionIngester
 	sessionStore     *clireview.SessionStore
 	publicService    *clireview.PublicPrService
@@ -68,14 +69,13 @@ func (c *CliReviewController) Routes() chi.Router {
 
 	// Public GitHub PR review endpoints
 	r.Post("/public/review-pr", c.handlePublicReviewPr)
-	r.Get("/public/review/jobs/{jobId}", c.handleGetJobStatus)
+	r.Get("/public/review/jobs/{jobId}", c.handleGetPublicJobStatus)
 	r.Get("/public/featured-reviews", c.handleListFeaturedReviews)
 	r.Get("/public/featured-reviews/{slug}", c.handleGetFeaturedReviewBySlug)
 
 	// Telemetry & session capture endpoints
 	r.Post("/sessions/events", c.handleSessionEvent)
 	r.Post("/memory/captures", c.handleMemoryCapture)
-	r.Post("/business-validation", c.HandleBusinessValidation)
 
 	return r
 }
@@ -100,7 +100,7 @@ func (c *CliReviewController) TrialRoutes() chi.Router {
 func (c *CliReviewController) PublicRoutes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/review-pr", c.handlePublicReviewPr)
-	r.Get("/review/jobs/{jobId}", c.handleGetJobStatus)
+	r.Get("/review/jobs/{jobId}", c.handleGetPublicJobStatus)
 	r.Get("/featured-reviews", c.handleListFeaturedReviews)
 	r.Get("/featured-reviews/{slug}", c.handleGetFeaturedReviewBySlug)
 	return r
@@ -228,7 +228,82 @@ func (c *CliReviewController) handleReview(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleGetJobStatus serves the authenticated /cli/review/jobs/{jobId} mount.
+//
+// The job is scoped to the caller's own organization. JobRecord.Input carries
+// OrganizationID, so the owner is known at lookup time rather than being
+// unverifiable: before this, any authenticated tenant could read another
+// tenant's job -- file paths, line numbers and security findings -- if they
+// learned the job id (AUDIT_REMEDIATION.md F-15d).
 func (c *CliReviewController) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	authResult := c.authenticate(r)
+	if authResult == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+		return
+	}
+
+	jobIDStr := chi.URLParam(r, "jobId")
+	jobID, err := uuid.Parse(jobIDStr)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid job UUID"})
+		return
+	}
+
+	if c.engine == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Review engine not initialized"})
+		return
+	}
+
+	rec, found := c.engine.GetJobRecord(jobID)
+	if !found {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Job not found"})
+		return
+	}
+
+	// Tenant boundary. A trial job has no owning organization, so it is not
+	// readable here either -- it is served by the public handler below, which
+	// has its own trial-only gate.
+	//
+	// OrganizationID is a pointer on the validated key: a key with no
+	// organization cannot be used to prove ownership, so a missing value denies
+	// rather than allows.
+	jobOrg := strings.TrimSpace(rec.Input.OrganizationID)
+	callerOrg := ""
+	if authResult.OrganizationID != nil {
+		callerOrg = strings.TrimSpace(*authResult.OrganizationID)
+	}
+	if jobOrg == "" || callerOrg == "" || !strings.EqualFold(jobOrg, callerOrg) {
+		// 404, not 403: confirming that a job exists in another tenant is itself
+		// a disclosure.
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Job not found"})
+		return
+	}
+
+	status, ok := c.engine.GetJobStatus(jobID)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Job not found"})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleGetPublicJobStatus serves /cli/public/review/jobs/{jobId} for the public
+// pull-request trial flow, which is unauthenticated by design.
+//
+// It returns a job only when that job was created in trial mode. Without this
+// gate, making the public mount readable again would re-open exactly the
+// cross-tenant disclosure F-15d describes: the route shares the job table with
+// authenticated tenant reviews, so an unauthenticated caller who learned any job
+// uuid could read it.
+func (c *CliReviewController) handleGetPublicJobStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	jobIDStr := chi.URLParam(r, "jobId")
@@ -245,8 +320,17 @@ func (c *CliReviewController) handleGetJobStatus(w http.ResponseWriter, r *http.
 		return
 	}
 
-	status, found := c.engine.GetJobStatus(jobID)
-	if !found {
+	rec, found := c.engine.GetJobRecord(jobID)
+	if !found || !rec.Input.IsTrialMode {
+		// 404 for both "no such job" and "not a trial job", so this cannot be
+		// used to probe for tenant job ids.
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Job not found"})
+		return
+	}
+
+	status, ok := c.engine.GetJobStatus(jobID)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Job not found"})
 		return
@@ -354,14 +438,35 @@ func (c *CliReviewController) handlePublicReviewPr(w http.ResponseWriter, r *htt
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "prUrl is required"})
 		return
 	}
+	// Rate-limit identity (AUDIT_REMEDIATION.md F-48).
+	//
+	// This used to fall back to "anon-" + a fresh uuid when no fingerprint was
+	// supplied, so the 2-per-hour trial quota was bypassed by simply omitting the
+	// field: every request landed in its own bucket. A client-supplied
+	// fingerprint is no better as a limit key, since an attacker can send any
+	// value they like.
+	//
+	// The limiter is therefore keyed on the trusted client address as resolved by
+	// the proxy-aware extractor, which a client cannot forge by choosing a header.
+	// The client fingerprint is retained for analytics only.
+	//
+	// If no client address can be determined, the request is refused rather than
+	// given a synthetic identity: granting an unkeyed bucket is the bug being
+	// fixed. Users behind one NAT share a bucket, which is a deliberate and
+	// conservative trade-off for a trial quota.
+	clientIP := scandrixMiddleware.ExtractClientIP(r)
+	if clientIP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "client address could not be determined for rate limiting",
+		})
+		return
+	}
 	if body.Fingerprint == "" {
 		body.Fingerprint = r.Header.Get("X-Fingerprint")
 	}
-	if body.Fingerprint == "" {
-		body.Fingerprint = "anon-" + uuid.New().String()
-	}
 
-	result := c.publicService.Execute(r.Context(), body.PRURL, body.Fingerprint)
+	result := c.publicService.Execute(r.Context(), body.PRURL, clientIP)
 	if !result.OK {
 		w.WriteHeader(result.StatusCode)
 		_ = json.NewEncoder(w).Encode(result)
@@ -442,25 +547,5 @@ func (c *CliReviewController) handleMemoryCapture(w http.ResponseWriter, r *http
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success":   true,
 		"captureId": capture.CaptureID,
-	})
-}
-
-func (c *CliReviewController) HandleBusinessValidation(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	var body struct {
-		PRURL        string `json:"prUrl,omitempty"`
-		PRNumber     int    `json:"prNumber,omitempty"`
-		RepositoryID string `json:"repositoryId,omitempty"`
-		TaskURL      string `json:"taskUrl,omitempty"`
-		Diff         string `json:"diff,omitempty"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-
-	// Return successful acceptance response
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success": true,
-		"status":  "QUEUED",
-		"message": "ScanDrix business logic validation triggered",
 	})
 }

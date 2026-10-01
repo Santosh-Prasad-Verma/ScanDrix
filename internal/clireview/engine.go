@@ -130,6 +130,18 @@ func (e *Engine) EnqueueReview(ctx context.Context, input EnqueueCliReviewInput)
 	}, nil
 }
 
+// GetJobRecord returns the stored record for a job, including its input, so
+// callers can enforce an ownership or trial-mode check before returning status
+// (AUDIT_REMEDIATION.md F-15d). GetJobStatus alone cannot make that decision:
+// JobStatusResponse deliberately carries no organization.
+func (e *Engine) GetJobRecord(jobID uuid.UUID) (*JobRecord, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	rec, ok := e.jobs[jobID]
+	return rec, ok
+}
+
 // GetJobStatus retrieves current status and results for a job.
 func (e *Engine) GetJobStatus(jobID uuid.UUID) (*try.JobStatusResponse, bool) {
 	e.mu.RLock()

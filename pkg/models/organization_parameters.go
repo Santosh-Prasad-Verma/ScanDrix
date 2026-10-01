@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Code Review Platform
-// Copyright (c) 2026 ScanDrix AI. All rights reserved.
-// ═══════════════════════════════════════════════════════════════
-
 package models
 
 import (
@@ -16,22 +11,22 @@ import (
 type OrganizationParametersKey string
 
 const (
-	OrgParamCategoryWorkitemTypes            OrganizationParametersKey = "category_workitems_type"
-	OrgParamTimezoneConfig                   OrganizationParametersKey = "timezone_config"
-	OrgParamReviewModeConfig                 OrganizationParametersKey = "review_mode_config"
-	OrgParamDrixyFineTuningConfig            OrganizationParametersKey = "drixy_fine_tuning_config"
-	OrgParamAutoJoinConfig                   OrganizationParametersKey = "auto_join_config"
-	OrgParamBYOKConfig                       OrganizationParametersKey = "byok_config"
-	OrgParamCockpitMetricsVisibility         OrganizationParametersKey = "cockpit_metrics_visibility"
-	OrgParamAutoLicenseAssignment            OrganizationParametersKey = "auto_license_assignment"
-	OrgParamAutoLicenseAllowedUsers          OrganizationParametersKey = "auto_license_allowed_users"
-	OrgParamModelOverrides                   OrganizationParametersKey = "model_overrides"
-	OrgParamCodeReviewPreset                 OrganizationParametersKey = "code_review_preset"
-	OrgParamLicenseKey                       OrganizationParametersKey = "license_key"
-	OrgParamLicenseAssignedUsers             OrganizationParametersKey = "license_assigned_users"
-	OrgParamFirstReviewAt                    OrganizationParametersKey = "first_review_at"
-	OrgParamSpendLimitConfig                 OrganizationParametersKey = "spend_limit_config"
-	OrgParamGlobalRulesSourceRepositories    OrganizationParametersKey = "global_rules_source_repositories"
+	OrgParamCategoryWorkitemTypes         OrganizationParametersKey = "category_workitems_type"
+	OrgParamTimezoneConfig                OrganizationParametersKey = "timezone_config"
+	OrgParamReviewModeConfig              OrganizationParametersKey = "review_mode_config"
+	OrgParamDrixyFineTuningConfig         OrganizationParametersKey = "drixy_fine_tuning_config"
+	OrgParamAutoJoinConfig                OrganizationParametersKey = "auto_join_config"
+	OrgParamBYOKConfig                    OrganizationParametersKey = "byok_config"
+	OrgParamCockpitMetricsVisibility      OrganizationParametersKey = "cockpit_metrics_visibility"
+	OrgParamAutoLicenseAssignment         OrganizationParametersKey = "auto_license_assignment"
+	OrgParamAutoLicenseAllowedUsers       OrganizationParametersKey = "auto_license_allowed_users"
+	OrgParamModelOverrides                OrganizationParametersKey = "model_overrides"
+	OrgParamCodeReviewPreset              OrganizationParametersKey = "code_review_preset"
+	OrgParamLicenseKey                    OrganizationParametersKey = "license_key"
+	OrgParamLicenseAssignedUsers          OrganizationParametersKey = "license_assigned_users"
+	OrgParamFirstReviewAt                 OrganizationParametersKey = "first_review_at"
+	OrgParamSpendLimitConfig              OrganizationParametersKey = "spend_limit_config"
+	OrgParamGlobalRulesSourceRepositories OrganizationParametersKey = "global_rules_source_repositories"
 )
 
 // String helpers for OrganizationParametersKey

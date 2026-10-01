@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -35,13 +34,22 @@ func (c *AuthController) handleOAuthAuthorize(w http.ResponseWriter, r *http.Req
 	}
 
 	// Generate CSRF state via server-side store (one-time-use, 10-min TTL)
-	state, err := c.oauthStateStore.Generate(provider)
+	// State + PKCE verifier + ID-token nonce are minted together and held
+	// server-side. The verifier never reaches the browser: only its S256
+	// challenge does. AUDIT_REMEDIATION.md.
+	state, codeVerifier, nonce, err := c.oauthStateStore.GeneratePKCE(provider)
 	if err != nil {
 		http.Error(w, `{"error":"failed generating CSRF state"}`, http.StatusInternalServerError)
 		return
 	}
 
-	authURL, err := c.oauthService.GetAuthorizationURL(provider, state)
+	// Bind the state to this browser (AUDIT_REMEDIATION.md F-16). The state
+	// store proves the token is unused and unexpired; this cookie proves the
+	// callback arrives in the same browser that started the flow. Lax (not
+	// Strict) is required: the provider returns here with a top-level GET.
+	setAuthCookie(w, r, "scandrix_oauth_state", c.oauthStateStore.Bind(state), 600)
+
+	authURL, err := c.oauthService.GetAuthorizationURLWithPKCE(provider, state, oauth.S256Challenge(codeVerifier), nonce)
 	if err != nil {
 		slog.Warn("Failed generating OAuth authorization URL", "provider", provider, "error", err)
 		http.Error(w, `{"error":"failed generating OAuth authorization URL"}`, http.StatusBadRequest)
@@ -87,13 +95,34 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Validate CSRF state parameter (one-time-use, provider-bound)
-	if c.oauthStateStore == nil || !c.oauthStateStore.Validate(state, provider) {
+	// The state token must be presented by the same browser that requested it.
+	// Without this an attacker can complete their own OAuth flow and then send
+	// a victim straight to the callback with the attacker's code and state.
+	// AUDIT_REMEDIATION.md F-16.
+	if c.oauthStateStore == nil || !c.oauthStateStore.VerifyBinding(state, getAuthCookie(r, "scandrix_oauth_state")) {
+		http.Error(w, `{"error":"OAuth state does not match this browser session"}`, http.StatusForbidden)
+		return
+	}
+
+	// Consume the state and recover the PKCE verifier bound to it. Consume is
+	// single-use, so this is also the CSRF check.
+	if c.oauthStateStore == nil {
+		http.Error(w, `{"error":"invalid or expired OAuth state parameter"}`, http.StatusForbidden)
+		return
+	}
+	codeVerifier, nonce, ok := c.oauthStateStore.Consume(state, provider)
+	if !ok {
 		http.Error(w, `{"error":"invalid or expired OAuth state parameter"}`, http.StatusForbidden)
 		return
 	}
 
-	oauthProfile, err := c.oauthService.ExchangeCode(r.Context(), provider, code)
+	oauthProfile, err := c.oauthService.ExchangeCodeWithPKCE(r.Context(), provider, code, codeVerifier)
+	if err != nil {
+		slog.Warn("OAuth code exchange failed", "provider", provider, "error", err)
+		http.Error(w, `{"error":"OAuth authentication failed"}`, http.StatusUnauthorized)
+		return
+	}
+	_ = nonce
 	if err != nil {
 		slog.Warn("OAuth code exchange failed", "provider", provider, "error", err)
 		http.Error(w, `{"error":"OAuth authentication failed"}`, http.StatusUnauthorized)
@@ -174,21 +203,21 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Complete CLI device login if session cookie exists
-	if cliCookie, err := r.Cookie("scandrix_cli_code"); err == nil && cliCookie.Value != "" && c.deviceFlow != nil {
+	if cliCode := getAuthCookie(r, "scandrix_cli_code"); cliCode != "" && c.deviceFlow != nil {
 		profile := &models.AccountProfile{
 			ID:          userID,
 			WorkspaceID: wsID,
 			Email:       oauthProfile.Email,
 			Role:        userRole,
 		}
-		_ = c.deviceFlow.CompleteDeviceLogin(r.Context(), cliCookie.Value, accessToken, refreshToken, profile)
+		_ = c.deviceFlow.CompleteDeviceLogin(r.Context(), cliCode, accessToken, refreshToken, profile)
 	}
 
 	// Set session cookie
-	setAuthCookie(w, r, "scandrix_token", accessToken, 30*86400)
+	setAuthCookie(w, r, "scandrix_token", accessToken, int(auth.DefaultAccessTokenTTL.Seconds()))
 
 	if r.Method == http.MethodGet {
-		if cliCookie, err := r.Cookie("scandrix_cli_code"); err == nil && cliCookie.Value != "" {
+		if getAuthCookie(r, "scandrix_cli_code") != "" {
 			http.Redirect(w, r, "/cli/authorize?status=approved", http.StatusFound)
 			return
 		}
@@ -217,285 +246,3 @@ func (c *AuthController) handleOAuthCallback(w http.ResponseWriter, r *http.Requ
 		},
 	})
 }
-
-// PostOAuthRequest defines the payload sent by web frontend NextAuth OAuth login or direct API callers.
-type PostOAuthRequest struct {
-	Name         string `json:"name"`
-	Email        string `json:"email"`
-	RefreshToken string `json:"refreshToken"`
-	Token        string `json:"token"`
-	AccessToken  string `json:"accessToken"`
-	AuthProvider string `json:"authProvider"`
-	Provider     string `json:"provider"`
-}
-
-// handlePostOAuth authenticates or registers users via OAuth from the web frontend (NextAuth).
-func (c *AuthController) handlePostOAuth(w http.ResponseWriter, r *http.Request) {
-	var req PostOAuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
-		return
-	}
-
-	if c.repo == nil {
-		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	req.Name = strings.TrimSpace(req.Name)
-	req.AuthProvider = strings.TrimSpace(strings.ToLower(req.AuthProvider))
-	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
-	if req.RefreshToken == "" {
-		if strings.TrimSpace(req.Token) != "" {
-			req.RefreshToken = strings.TrimSpace(req.Token)
-		} else if strings.TrimSpace(req.AccessToken) != "" {
-			req.RefreshToken = strings.TrimSpace(req.AccessToken)
-		}
-	}
-	if req.AuthProvider == "" && strings.TrimSpace(req.Provider) != "" {
-		req.AuthProvider = strings.TrimSpace(strings.ToLower(req.Provider))
-	}
-
-	var accountName string
-	var repoCount int
-	provider := models.SCMProvider(req.AuthProvider)
-	if provider == "" {
-		if strings.HasPrefix(req.RefreshToken, "glpat-") {
-			provider = models.ProviderGitLab
-		} else {
-			provider = models.ProviderGitHub
-		}
-	}
-
-	// If provider token is passed, resolve email and identity from GitHub or GitLab if missing
-	if req.RefreshToken != "" {
-		if provider == models.ProviderGitHub {
-			ghReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user", nil)
-			ghReq.Header.Set("Authorization", "Bearer "+req.RefreshToken)
-			ghReq.Header.Set("Accept", "application/vnd.github.v3+json")
-			if ghResp, err := http.DefaultClient.Do(ghReq); err == nil {
-				defer ghResp.Body.Close()
-				if ghResp.StatusCode == http.StatusOK {
-					var ghUser struct {
-						ID                int64  `json:"id"`
-						Login             string `json:"login"`
-						Name              string `json:"name"`
-						Email             string `json:"email"`
-						PublicRepos       int    `json:"public_repos"`
-						TotalPrivateRepos int    `json:"total_private_repos"`
-					}
-					if json.NewDecoder(ghResp.Body).Decode(&ghUser) == nil && ghUser.Login != "" {
-						accountName = ghUser.Login
-						repoCount = ghUser.PublicRepos + ghUser.TotalPrivateRepos
-						if req.Name == "" {
-							if ghUser.Name != "" {
-								req.Name = ghUser.Name
-							} else {
-								req.Name = ghUser.Login
-							}
-						}
-						if req.Email == "" && ghUser.Email != "" {
-							req.Email = strings.TrimSpace(strings.ToLower(ghUser.Email))
-						}
-					}
-				}
-			}
-
-			// If email is still empty (e.g. private on GitHub profile), query /user/emails
-			if req.Email == "" {
-				emReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user/emails", nil)
-				emReq.Header.Set("Authorization", "Bearer "+req.RefreshToken)
-				emReq.Header.Set("Accept", "application/vnd.github.v3+json")
-				if emResp, err := http.DefaultClient.Do(emReq); err == nil {
-					defer emResp.Body.Close()
-					if emResp.StatusCode == http.StatusOK {
-						var emails []struct {
-							Email    string `json:"email"`
-							Primary  bool   `json:"primary"`
-							Verified bool   `json:"verified"`
-						}
-						if json.NewDecoder(emResp.Body).Decode(&emails) == nil {
-							for _, e := range emails {
-								if e.Primary && e.Email != "" {
-									req.Email = strings.TrimSpace(strings.ToLower(e.Email))
-									break
-								}
-							}
-							if req.Email == "" && len(emails) > 0 && emails[0].Email != "" {
-								req.Email = strings.TrimSpace(strings.ToLower(emails[0].Email))
-							}
-						}
-					}
-				}
-			}
-
-			// If still empty, fall back to GitHub noreply format
-			if req.Email == "" && accountName != "" {
-				req.Email = fmt.Sprintf("%s@users.noreply.github.com", accountName)
-			}
-		} else if provider == models.ProviderGitLab {
-			glReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://gitlab.com/api/v4/user", nil)
-			glReq.Header.Set("Authorization", "Bearer "+req.RefreshToken)
-			glReq.Header.Set("PRIVATE-TOKEN", req.RefreshToken)
-			if glResp, err := http.DefaultClient.Do(glReq); err == nil {
-				defer glResp.Body.Close()
-				if glResp.StatusCode == http.StatusOK {
-					var glUser struct {
-						ID       int64  `json:"id"`
-						Username string `json:"username"`
-						Name     string `json:"name"`
-						Email    string `json:"email"`
-					}
-					if json.NewDecoder(glResp.Body).Decode(&glUser) == nil && glUser.Username != "" {
-						accountName = glUser.Username
-						if req.Name == "" {
-							if glUser.Name != "" {
-								req.Name = glUser.Name
-							} else {
-								req.Name = glUser.Username
-							}
-						}
-						if req.Email == "" && glUser.Email != "" {
-							req.Email = strings.TrimSpace(strings.ToLower(glUser.Email))
-						}
-					}
-				}
-			}
-
-			if req.Email == "" {
-				emReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://gitlab.com/api/v4/user/emails", nil)
-				emReq.Header.Set("Authorization", "Bearer "+req.RefreshToken)
-				emReq.Header.Set("PRIVATE-TOKEN", req.RefreshToken)
-				if emResp, err := http.DefaultClient.Do(emReq); err == nil {
-					defer emResp.Body.Close()
-					if emResp.StatusCode == http.StatusOK {
-						var emails []struct {
-							Email string `json:"email"`
-						}
-						if json.NewDecoder(emResp.Body).Decode(&emails) == nil && len(emails) > 0 && emails[0].Email != "" {
-							req.Email = strings.TrimSpace(strings.ToLower(emails[0].Email))
-						}
-					}
-				}
-			}
-
-			if req.Email == "" && accountName != "" {
-				req.Email = fmt.Sprintf("%s@users.noreply.gitlab.com", accountName)
-			}
-
-			glProjReq, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://gitlab.com/api/v4/projects?membership=true&per_page=100", nil)
-			glProjReq.Header.Set("Authorization", "Bearer "+req.RefreshToken)
-			glProjReq.Header.Set("PRIVATE-TOKEN", req.RefreshToken)
-			if glProjResp, err := http.DefaultClient.Do(glProjReq); err == nil {
-				defer glProjResp.Body.Close()
-				if glProjResp.StatusCode == http.StatusOK {
-					var projects []any
-					if json.NewDecoder(glProjResp.Body).Decode(&projects) == nil {
-						repoCount = len(projects)
-					}
-				}
-			}
-		}
-	}
-
-	if req.Email == "" {
-		http.Error(w, `{"error":"valid email is required"}`, http.StatusBadRequest)
-		return
-	}
-
-	if req.Name == "" {
-		req.Name = strings.Split(req.Email, "@")[0]
-	}
-
-	user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
-	if err != nil {
-		newWsID := uuid.New()
-		wsName := req.Name + "'s Workspace"
-		slug := strings.ToLower(strings.ReplaceAll(req.Name, " ", "-")) + "-" + newWsID.String()[:8]
-		ws := &models.Workspace{
-			ID:        newWsID,
-			Slug:      slug,
-			Name:      wsName,
-			Status:    models.TenantStatusActive,
-			CreatedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
-		}
-		placeholderHash, _ := auth.HashPassword(uuid.New().String())
-		user, err = c.repo.CreateWorkspaceWithUser(r.Context(), ws, req.Email, placeholderHash, "owner", req.Name)
-		if err != nil {
-			slog.Error("Failed creating user account from OAuth", "error", err, "email", req.Email)
-			http.Error(w, `{"error":"failed creating user account from OAuth"}`, http.StatusInternalServerError)
-			return
-		}
-	}
-
-	userID := user.UUID
-	if user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
-		http.Error(w, `{"error":"user is not assigned to an active workspace"}`, http.StatusForbidden)
-		return
-	}
-	wsID := *user.OrganizationID
-	userRole := models.UserRole(user.Role)
-
-	// If provider token is passed, save/upsert the integration connection
-	if req.RefreshToken != "" {
-		if accountName == "" {
-			accountName = req.Name
-		}
-		_ = c.repo.UpsertIntegrationConnection(r.Context(), wsID, provider, accountName, req.RefreshToken, true, repoCount)
-	}
-
-	_ = c.repo.TouchAccountActivity(r.Context(), wsID, user.Email)
-
-	accessToken, refreshToken, err := c.authService.GenerateTokenPairWithEmail(userID, wsID, userRole, req.Email)
-	if err != nil {
-		http.Error(w, `{"error":"failed generating tokens"}`, http.StatusInternalServerError)
-		return
-	}
-
-	_ = c.repo.CreateRefreshToken(r.Context(), userID, refreshToken, time.Now().Add(30*24*time.Hour))
-
-	// Complete CLI device login if session cookie exists
-	if cliCookie, err := r.Cookie("scandrix_cli_code"); err == nil && cliCookie.Value != "" && c.deviceFlow != nil {
-		profile := &models.AccountProfile{
-			ID:          userID,
-			WorkspaceID: wsID,
-			Email:       req.Email,
-			Role:        userRole,
-		}
-		_ = c.deviceFlow.CompleteDeviceLogin(r.Context(), cliCookie.Value, accessToken, refreshToken, profile)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"statusCode":   http.StatusOK,
-		"accessToken":  accessToken,
-		"refreshToken": refreshToken,
-		"tokenType":    "Bearer",
-		"expiresIn":    86400,
-		"user": map[string]any{
-			"id":             userID,
-			"organizationId": wsID,
-			"email":          req.Email,
-			"name":           req.Name,
-			"role":           userRole,
-		},
-		"data": map[string]any{
-			"accessToken":  accessToken,
-			"refreshToken": refreshToken,
-			"tokenType":    "Bearer",
-			"expiresIn":    86400,
-			"user": map[string]any{
-				"id":             userID,
-				"organizationId": wsID,
-				"email":          req.Email,
-				"name":           req.Name,
-				"role":           userRole,
-			},
-		},
-	})
-}
-
-// HandleCheckEmail checks if an email address is already registered in the system.

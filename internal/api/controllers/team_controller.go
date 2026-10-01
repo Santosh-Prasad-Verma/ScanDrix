@@ -3,8 +3,11 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -12,6 +15,7 @@ import (
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	teamusecases "github.com/scandrix/backend/internal/organization/application/usecases/team"
 	memberusecases "github.com/scandrix/backend/internal/organization/application/usecases/teammembers"
 	teamclikeydomain "github.com/scandrix/backend/internal/organization/domain/teamclikey"
@@ -23,10 +27,10 @@ import (
 type TeamRepository interface {
 	CreateTeam(ctx context.Context, wsID uuid.UUID, name, description string) (*models.Team, error)
 	ListTeams(ctx context.Context, wsID uuid.UUID) ([]models.Team, error)
-	ListTeamMembers(ctx context.Context, teamID uuid.UUID) ([]models.TeamMember, error)
+	ListTeamMembers(ctx context.Context, wsID, teamID uuid.UUID) ([]models.TeamMember, error)
 	GetUserByEmail(ctx context.Context, email string) (*database.UserRecord, error)
-	AddTeamMember(ctx context.Context, teamID, userID uuid.UUID, email, role string) error
-	RemoveTeamMember(ctx context.Context, teamID, userID uuid.UUID) error
+	AddTeamMember(ctx context.Context, wsID, teamID, userID uuid.UUID, email, role string) error
+	RemoveTeamMember(ctx context.Context, wsID, teamID, userID uuid.UUID) error
 	ListAPIKeys(ctx context.Context, workspaceID uuid.UUID) ([]*models.TeamCLIKey, error)
 	SaveAPIKey(ctx context.Context, id, workspaceID uuid.UUID, name, keyHash, prefix string, expiresAt *time.Time) error
 	RevokeAPIKey(ctx context.Context, workspaceID, keyID uuid.UUID) error
@@ -42,6 +46,7 @@ type TeamController struct {
 	deleteMemberUC              *memberusecases.DeleteTeamMemberUseCase
 	getMembersUC                *memberusecases.GetTeamMembersUseCase
 	cliKeyService               teamclikeydomain.ITeamCliKeyService
+	entitlementResolver         *license.Resolver
 }
 
 // NewTeamController initializes the team controller with repository persistence.
@@ -50,6 +55,113 @@ func NewTeamController(repo TeamRepository) *TeamController {
 		repo = nil
 	}
 	return &TeamController{repo: repo}
+}
+
+// HandleListWorkspaceCLIKeys lists every active CLI key in the workspace.
+//
+// The dashboard needs a workspace-scoped view of CLI credentials, and the
+// team-scoped route only covers one team. This reads the same table through the
+// existing repository query; the key material itself is never returned, only the
+// prefix and metadata, because the plaintext key is shown once at creation.
+func (c *TeamController) HandleListWorkspaceCLIKeys(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	keys, err := c.repo.ListAPIKeys(r.Context(), wsID)
+	if err != nil {
+		slog.Error("Failed listing workspace CLI keys", "error", err)
+		http.Error(w, `{"error":"failed listing CLI keys"}`, http.StatusInternalServerError)
+		return
+	}
+
+	type cliKeyResponse struct {
+		ID         string  `json:"id"`
+		Name       string  `json:"name"`
+		Prefix     string  `json:"prefix"`
+		Active     bool    `json:"active"`
+		TeamID     *string `json:"teamId,omitempty"`
+		CreatedAt  string  `json:"createdAt"`
+		LastUsedAt *string `json:"lastUsedAt,omitempty"`
+		ExpiresAt  *string `json:"expiresAt,omitempty"`
+	}
+
+	out := make([]cliKeyResponse, 0, len(keys))
+	for _, k := range keys {
+		if k == nil {
+			continue
+		}
+		item := cliKeyResponse{
+			ID:        k.ID.String(),
+			Name:      k.Name,
+			Prefix:    k.KeyPrefix,
+			Active:    k.Active,
+			CreatedAt: k.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		if k.TeamID != nil {
+			teamID := k.TeamID.String()
+			item.TeamID = &teamID
+		}
+		if k.LastUsedAt != nil {
+			formatted := k.LastUsedAt.UTC().Format(time.RFC3339)
+			item.LastUsedAt = &formatted
+		}
+		if k.ExpiresAt != nil {
+			formatted := k.ExpiresAt.UTC().Format(time.RFC3339)
+			item.ExpiresAt = &formatted
+		}
+		out = append(out, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": out, "total": len(out)})
+}
+
+// HandleRevokeWorkspaceCLIKey deactivates a CLI key in the workspace.
+//
+// The key row is kept and marked inactive rather than deleted, so the audit
+// trail retains the record that a credential existed. Ownership is enforced by
+// the workspace scope in the repository query, not by the caller-supplied id.
+func (c *TeamController) HandleRevokeWorkspaceCLIKey(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	keyID, err := uuid.Parse(strings.TrimSpace(chi.URLParam(r, "keyId")))
+	if err != nil {
+		http.Error(w, `{"error":"invalid key id"}`, http.StatusBadRequest)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := c.repo.RevokeAPIKey(r.Context(), wsID, keyID); err != nil {
+		slog.Error("Failed revoking CLI key", "error", err)
+		http.Error(w, `{"error":"failed revoking CLI key"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": keyID.String(), "active": false})
+}
+
+// WithEntitlements attaches the entitlement resolver used to enforce seat
+// quotas when members are invited.
+func (c *TeamController) WithEntitlements(r *license.Resolver) *TeamController {
+	c.entitlementResolver = r
+	return c
 }
 
 // WithUseCases injects the Clean Architecture domain use cases and services.
@@ -201,7 +313,7 @@ func (c *TeamController) handleListTeams(w http.ResponseWriter, r *http.Request)
 
 	res := make([]dtos.TeamResponse, 0, len(teams))
 	for _, t := range teams {
-		members, _ := c.repo.ListTeamMembers(r.Context(), t.ID)
+		members, _ := c.repo.ListTeamMembers(r.Context(), wsID, t.ID)
 		res = append(res, dtos.TeamResponse{
 			ID:          t.ID,
 			WorkspaceID: t.WorkspaceID,
@@ -275,7 +387,7 @@ func (c *TeamController) handleListTeamMembers(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	members, err := c.repo.ListTeamMembers(r.Context(), teamID)
+	members, err := c.repo.ListTeamMembers(r.Context(), wsID, teamID)
 	if err != nil {
 		http.Error(w, `{"error":"failed listing members"}`, http.StatusInternalServerError)
 		return
@@ -322,6 +434,15 @@ func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Requ
 		inviterEmail = p.Email
 	}
 
+	// Seat quota is enforced on the backend before any member is written, so a
+	// workspace at its limit cannot grow past it (Master Rule 4.3).
+	if c.entitlementResolver != nil && wsID != uuid.Nil {
+		if err := c.entitlementResolver.CheckSeats(r.Context(), wsID, 1); err != nil {
+			writeSeatError(w, err)
+			return
+		}
+	}
+
 	if c.createMemberUC != nil && wsID != uuid.Nil {
 		role := memberdomain.RoleMember
 		if req.Role == models.RoleAdmin || req.Role == models.RoleOwner {
@@ -364,7 +485,7 @@ func (c *TeamController) handleAddTeamMember(w http.ResponseWriter, r *http.Requ
 		userID = uuid.New()
 	}
 
-	err = c.repo.AddTeamMember(r.Context(), teamID, userID, req.Email, string(req.Role))
+	err = c.repo.AddTeamMember(r.Context(), wsID, teamID, userID, req.Email, string(req.Role))
 	if err != nil {
 		http.Error(w, `{"error":"failed adding member"}`, http.StatusInternalServerError)
 		return
@@ -409,11 +530,14 @@ func (c *TeamController) handleRemoveTeamMember(w http.ResponseWriter, r *http.R
 	}
 
 	if c.repo == nil {
-		w.WriteHeader(http.StatusNoContent)
+		// This answered 204 No Content without removing anything, so a caller
+		// would believe a team member had been removed while the membership
+		// remained active (AUDIT_REMEDIATION.md F-10).
+		http.Error(w, `{"error":"cannot remove team member: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	if err := c.repo.RemoveTeamMember(r.Context(), teamID, userID); err != nil {
+	if err := c.repo.RemoveTeamMember(r.Context(), wsID, teamID, userID); err != nil {
 		http.Error(w, `{"error":"failed removing team member"}`, http.StatusInternalServerError)
 		return
 	}
@@ -463,6 +587,15 @@ func (c *TeamController) handleInviteTeamMembers(w http.ResponseWriter, r *http.
 	inviterEmail := ""
 	if p, ok := auth.AccountProfileFromContext(r.Context()); ok && p != nil {
 		inviterEmail = p.Email
+	}
+
+	// Seat quota is enforced on the backend before any member is written, so a
+	// workspace at its limit cannot grow past it (Master Rule 4.3).
+	if c.entitlementResolver != nil && wsID != uuid.Nil {
+		if err := c.entitlementResolver.CheckSeats(r.Context(), wsID, len(req.Members)); err != nil {
+			writeSeatError(w, err)
+			return
+		}
 	}
 
 	if c.createMemberUC != nil && wsID != uuid.Nil {
@@ -604,6 +737,16 @@ func (c *TeamController) handleListTeamCLIKeys(w http.ResponseWriter, r *http.Re
 				KeyPrefix: k.KeyPrefix,
 				CreatedAt: k.CreatedAt,
 				ExpiresAt: k.ExpiresAt,
+				Config:    k.Config,
+				Active:    k.Active,
+				LastUsedAt: func() *time.Time {
+					// Normalised to UTC so the client does not have to guess a zone.
+					if k.LastUsedAt == nil {
+						return nil
+					}
+					t := k.LastUsedAt.UTC()
+					return &t
+				}(),
 			})
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -666,6 +809,10 @@ func (c *TeamController) handleCreateTeamCLIKey(w http.ResponseWriter, r *http.R
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		// Active and Config are included so a freshly created key maps through
+		// the same shape as a listed one. The dashboard used to synthesise
+		// createdAt locally and assume a key prefix, which made a new key look
+		// different from the same key after a refresh.
 		_ = json.NewEncoder(w).Encode(dtos.APIKeyResponse{
 			ID:        keyEntity.UUID,
 			Name:      keyEntity.Name,
@@ -673,6 +820,8 @@ func (c *TeamController) handleCreateTeamCLIKey(w http.ResponseWriter, r *http.R
 			PlainKey:  rawKey,
 			CreatedAt: keyEntity.CreatedAt,
 			ExpiresAt: keyEntity.ExpiresAt,
+			Config:    keyEntity.Config,
+			Active:    keyEntity.Active,
 		})
 		return
 	}
@@ -787,4 +936,36 @@ func (c *TeamController) handleUpdateTeamCLIKeyConfig(w http.ResponseWriter, r *
 		"config":      req.Config,
 		"updatedAt":   time.Now().UTC(),
 	})
+}
+
+// writeSeatError maps a seat-quota failure onto an HTTP response. A quota
+// refusal is 409 Conflict because the request is well formed but conflicts with
+// the workspace's current entitlement; an unreadable seat count is 503, because
+// the check failed closed and retrying may succeed.
+func writeSeatError(w http.ResponseWriter, err error) {
+	var limitErr *license.SeatLimitError
+	if errors.As(err, &limitErr) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":          limitErr.Error(),
+			"code":           "seat_quota_exceeded",
+			"seatsLimit":     limitErr.Limit,
+			"seatsUsed":      limitErr.Used,
+			"seatsRequested": limitErr.Requested,
+		})
+		return
+	}
+
+	if errors.Is(err, license.ErrSeatsUnavailable) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "seat quota could not be verified; no members were added",
+			"code":  "seat_check_unavailable",
+		})
+		return
+	}
+
+	http.Error(w, `{"error":"failed processing member request"}`, http.StatusInternalServerError)
 }

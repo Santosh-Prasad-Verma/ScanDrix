@@ -141,4 +141,3 @@ func TestReviewControllerTriggerReviewMemberAccepted(t *testing.T) {
 		t.Fatalf("expected 202 Accepted for member role, got: %d (%s)", rec.Code, rec.Body.String())
 	}
 }
-

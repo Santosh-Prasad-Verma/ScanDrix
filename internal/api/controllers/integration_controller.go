@@ -18,7 +18,6 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-
 // IntegrationRepository defines the data access contract for external platform integrations (Clean Architecture).
 type IntegrationRepository interface {
 	ListIntegrationConnections(ctx context.Context, wsID uuid.UUID) ([]models.IntegrationConnection, error)
@@ -82,7 +81,6 @@ func (c *IntegrationController) ConfigRoutes() chi.Router {
 	r.Get("/get-integration-configs-by-integration-category", c.handleGetIntegrationConfigsByCategory)
 	return r
 }
-
 
 func (c *IntegrationController) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
 	wsID, err := auth.WorkspaceFromContext(r.Context())
@@ -155,7 +153,6 @@ func (c *IntegrationController) handleConnectSCM(w http.ResponseWriter, r *http.
 		"account":  accountName,
 	})
 }
-
 
 func (c *IntegrationController) handleConnectPM(w http.ResponseWriter, r *http.Request) {
 	wsID, err := auth.WorkspaceFromContext(r.Context())
@@ -681,4 +678,3 @@ func (c *IntegrationController) resolveGitLabIdentity(ctx context.Context, token
 	}
 	return "", 0
 }
-

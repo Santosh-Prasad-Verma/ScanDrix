@@ -87,23 +87,32 @@ func (c *SpendLimitController) handleGetStatus(w http.ResponseWriter, r *http.Re
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if eval == nil {
-			_ = json.NewEncoder(w).Encode(nil)
+			// No limit is configured. A bare null cannot distinguish that from a
+			// broken evaluation, so the state is stated explicitly and the
+			// counters are reported as absent rather than as a measured zero.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"configured": false,
+				"reason":     "no spend limit is configured for this workspace",
+			})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(eval)
+		// The evaluation already serialises to camelCase, so it is returned whole
+		// with a configured marker rather than re-projected field by field.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"configured": true,
+			"status":     eval,
+		})
 		return
 	}
 
 	if c.repo == nil {
+		// Without a data source the spend status cannot be measured. Reporting a
+		// $250 budget here would present an invented budget as a real one.
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.SpendLimitEvaluation{
-			SpentUSD:            0.0,
-			LimitUSD:            250.0,
-			PercentageUsed:      0.0,
-			IsOverLimit:         false,
-			MonthlyBudgetUSD:    250.0,
-			AlertThresholdPct:   85.0,
-			NotificationEnabled: true,
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":      "spend status is not available on this deployment",
+			"configured": false,
 		})
 		return
 	}

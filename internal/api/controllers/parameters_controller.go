@@ -21,7 +21,7 @@ import (
 
 // ParametersRepository defines the data access contract for workspace parameter configurations (Clean Architecture).
 type ParametersRepository interface {
-	ListWorkspaces(ctx context.Context) ([]models.Workspace, error)
+	ListWorkspacesForUser(ctx context.Context, email string) ([]models.Workspace, error)
 	GetWorkspaceParameters(ctx context.Context, wsID uuid.UUID) (reviewParams, orgParams []byte, err error)
 	UpdateWorkspaceReviewParameters(ctx context.Context, wsID uuid.UUID, reviewParams []byte) error
 	UpdateWorkspaceOrgParameters(ctx context.Context, wsID uuid.UUID, orgParams []byte) error
@@ -101,8 +101,12 @@ func (c *ParametersController) handleFindByKey(w http.ResponseWriter, r *http.Re
 
 	// If workspace is not in JWT context, try looking up from DB
 	if wsID == uuid.Nil && c.repo != nil {
-		if wsList, err := c.repo.ListWorkspaces(r.Context()); err == nil && len(wsList) > 0 {
-			wsID = wsList[0].ID
+		// Scoped to the caller: an unscoped list would hand this user an
+		// arbitrary tenant workspace.
+		if email, e := auth.CallerEmail(r.Context()); e == nil {
+			if wsList, err := c.repo.ListWorkspacesForUser(r.Context(), email); err == nil && len(wsList) > 0 {
+				wsID = wsList[0].ID
+			}
 		}
 	}
 
@@ -260,9 +264,9 @@ func (c *ParametersController) handleCreateOrUpdate(w http.ResponseWriter, r *ht
 func (c *ParametersController) handleCreateOrUpdateCodeReview(w http.ResponseWriter, r *http.Request) {
 	wsID, _ := auth.WorkspaceFromContext(r.Context())
 	var req struct {
-		ConfigValue             any    `json:"configValue"`
-		RepositoryID            string `json:"repositoryId,omitempty"`
-		DirectoryID             string `json:"directoryId,omitempty"`
+		ConfigValue             any      `json:"configValue"`
+		RepositoryID            string   `json:"repositoryId,omitempty"`
+		DirectoryID             string   `json:"directoryId,omitempty"`
 		DirectoryPaths          []string `json:"directoryPaths,omitempty"`
 		OrganizationAndTeamData struct {
 			TeamID string `json:"teamId"`
@@ -678,7 +682,7 @@ func (c *ParametersController) handleCentralizedConfigDownload(w http.ResponseWr
 
 func defaultCodeReviewConfigMap() map[string]any {
 	return map[string]any{
-		"ignorePaths": []string{"vendor/**", "node_modules/**", "*.min.js", "*.lock"},
+		"ignorePaths":  []string{"vendor/**", "node_modules/**", "*.min.js", "*.lock"},
 		"baseBranches": []string{"main", "master", "develop"},
 		"reviewOptions": map[string]bool{
 			"security":        true,
@@ -686,9 +690,9 @@ func defaultCodeReviewConfigMap() map[string]any {
 			"maintainability": true,
 			"style":           false,
 		},
-		"ignoredTitleKeywords":                  []string{"[WIP]", "WIP:", "[DRAFT]"},
-		"automatedReviewActive":                 true,
-		"showStatusFeedback":                    true,
+		"ignoredTitleKeywords":  []string{"[WIP]", "WIP:", "[DRAFT]"},
+		"automatedReviewActive": true,
+		"showStatusFeedback":    true,
 		"reviewCadence": map[string]any{
 			"type": "automatic",
 		},
@@ -697,19 +701,19 @@ func defaultCodeReviewConfigMap() map[string]any {
 			"behaviourForExistingDescription": "replace",
 		},
 		"suggestionControl": map[string]any{
-			"groupingMode":            "full",
-			"limitationType":          "pr",
-			"maxSuggestions":          15,
-			"severityLevelFilter":                  "low",
-			"applyFiltersToDrixyRules":             true,
+			"groupingMode":             "full",
+			"limitationType":           "pr",
+			"maxSuggestions":           15,
+			"severityLevelFilter":      "low",
+			"applyFiltersToDrixyRules": true,
 		},
-		"pullRequestApprovalActive":                  false,
+		"pullRequestApprovalActive":                 false,
 		"scandrixConfigFileOverridesWebPreferences": true,
-		"isRequestChangesActive":                false,
-		"runOnDraft":                            false,
-		"codeReviewVersion":                     "v2",
-		"ideRulesSyncEnabled":                   true,
-		"enableCommittableSuggestions":          true,
+		"isRequestChangesActive":                    false,
+		"runOnDraft":                                false,
+		"codeReviewVersion":                         "v2",
+		"ideRulesSyncEnabled":                       true,
+		"enableCommittableSuggestions":              true,
 		"customMessages": map[string]any{
 			"enabled": false,
 		},

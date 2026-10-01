@@ -295,16 +295,20 @@ type CliReviewsQuery struct {
 
 // CliReviewSummary is the dashboard representation of a historical CLI review.
 type CliReviewSummary struct {
-	ID            string    `json:"id"`
-	CorrelationID string    `json:"correlationId"`
-	Summary       string    `json:"summary"`
-	IssuesCount   int       `json:"issuesCount"`
-	FilesAnalyzed int       `json:"filesAnalyzed"`
-	Duration      int64     `json:"duration"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UserEmail     string    `json:"userEmail,omitempty"`
-	Branch        string    `json:"branch,omitempty"`
+	ID string `json:"id"`
+	// OrganizationID is the owning tenant. Every read path filters on it;
+	// without it a review is not attributable to anyone and the filter is
+	// unenforceable. AUDIT_REMEDIATION.md F-15c.
+	OrganizationID string    `json:"organizationId"`
+	CorrelationID  string    `json:"correlationId"`
+	Summary        string    `json:"summary"`
+	IssuesCount    int       `json:"issuesCount"`
+	FilesAnalyzed  int       `json:"filesAnalyzed"`
+	Duration       int64     `json:"duration"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UserEmail      string    `json:"userEmail,omitempty"`
+	Branch         string    `json:"branch,omitempty"`
 }
 
 // 7. Trace Decision & Public PR Models
@@ -427,6 +431,7 @@ type PublicPrMetadata struct {
 	Assignees       []PublicPrAssignee    `json:"assignees"`
 	Body            string                `json:"body,omitempty"`
 }
+
 // ParsedPrURL breaks down a GitHub pull request URL.
 type ParsedPrURL struct {
 	Owner    string `json:"owner"`
@@ -619,5 +624,3 @@ type CodeSuggestion struct {
 	Confidence     string `json:"confidence,omitempty"`
 	Type           string `json:"type,omitempty"`
 }
-
-

@@ -1,6 +1,7 @@
 package dtos
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,14 @@ type APIKeyResponse struct {
 	PlainKey  string     `json:"plain_key,omitempty"` // Only shown on creation
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Config carries the key's stored settings, including the capability flags
+	// the dashboard toggles. It was previously dropped on read, so a key whose
+	// permissions had been set always came back looking unconfigured.
+	Config json.RawMessage `json:"config,omitempty"`
+	// Active and LastUsedAt are real columns; without them the dashboard had to
+	// guess, and showed every key as "never used".
+	Active     bool       `json:"active"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 }
 
 // RefreshTokenRequest defines payload for rotating tokens.

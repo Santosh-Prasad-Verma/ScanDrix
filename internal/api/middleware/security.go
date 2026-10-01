@@ -128,6 +128,30 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 
 // CSRFProtection validates cross-origin state-mutating requests (POST/PUT/PATCH/DELETE)
 // against unauthorized cross-site invocations (Master Rule 5.4).
+// isCSRFExemptCLIStartPath reports whether a /cli path is a CLI device-flow
+// initiation endpoint that legitimately arrives without an Authorization header.
+//
+// The previous rule was `strings.HasPrefix(path, "/cli")`, which exempted every
+// /cli route from CSRF (AUDIT_REMEDIATION.md F-26) -- including
+// /cli/business-validation, which turned out to be reachable with nothing but an
+// ambient session cookie. A prefix match cannot express "this specific route is
+// safe", so the safe set is listed.
+//
+// Everything else under /cli now gets the standard Sec-Fetch-Site / Origin
+// check. Routes that authenticate with a bearer token or an API key are already
+// exempt above via the Authorization header test, which is why they need no entry
+// here.
+func isCSRFExemptCLIStartPath(path string) bool {
+	switch path {
+	case "/api/v1/cli/auth/login-init",
+		"/api/v1/cli/auth/device-init",
+		"/api/v1/cli/authorize/approve":
+		return true
+	default:
+		return false
+	}
+}
+
 func CSRFProtection(allowedOrigins []string) func(http.Handler) http.Handler {
 	allowedMap := make(map[string]bool)
 	for _, o := range allowedOrigins {
@@ -152,11 +176,21 @@ func CSRFProtection(allowedOrigins []string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Webhooks, OAuth callbacks, and CLI device authorization bypass browser CSRF checks
+			// Webhooks and OAuth callbacks bypass browser CSRF checks. Neither
+			// consumes an ambient session cookie: webhooks are authenticated by
+			// provider signature, OAuth callbacks by the state parameter.
 			if strings.HasPrefix(r.URL.Path, "/api/v1/webhooks") ||
-				strings.HasPrefix(r.URL.Path, "/api/v1/auth/oauth") ||
-				strings.HasPrefix(r.URL.Path, "/api/v1/auth/cli") ||
-				strings.HasPrefix(r.URL.Path, "/cli") {
+				strings.HasPrefix(r.URL.Path, "/api/v1/auth/oauth") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// CLI device-flow *initiation* must stay exempt: the browser is the
+			// party being redirected away from, so a strict Sec-Fetch-Site/Origin
+			// check on a top-level navigation rejects the real flow. The security
+			// decision here rests on what each route authenticates with, not on
+			// the path prefix -- so it is enumerated rather than matched loosely.
+			if isCSRFExemptCLIStartPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -499,4 +533,3 @@ func TierRateLimit(tl *TierAwareRateLimiter, resolver TierPlanResolver) func(htt
 		})
 	}
 }
-

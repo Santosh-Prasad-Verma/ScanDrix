@@ -403,12 +403,19 @@ func (c *BillingController) handlePaymentFailed(w http.ResponseWriter, r *http.R
 	}
 
 	if c.repo != nil && wsID != uuid.Nil {
-		_ = c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
+		if err := c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
 			ID:          uuid.New(),
 			WorkspaceID: wsID,
 			EventType:   "billing.payment_failed",
 			Payload:     body,
-		})
+		}); err != nil {
+			// Fail closed: acknowledging now would drop the event permanently.
+			// 5xx makes the provider redeliver the webhook.
+			slog.Error("Failed to enqueue billing outbox event",
+				"event_type", "billing.payment_failed", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to record billing event"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -450,12 +457,19 @@ func (c *BillingController) handleTrialExpiring(w http.ResponseWriter, r *http.R
 	}
 
 	if c.repo != nil && wsID != uuid.Nil {
-		_ = c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
+		if err := c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
 			ID:          uuid.New(),
 			WorkspaceID: wsID,
 			EventType:   "billing.trial_expiring",
 			Payload:     body,
-		})
+		}); err != nil {
+			// Fail closed: acknowledging now would drop the event permanently.
+			// 5xx makes the provider redeliver the webhook.
+			slog.Error("Failed to enqueue billing outbox event",
+				"event_type", "billing.trial_expiring", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to record billing event"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -535,12 +549,19 @@ func (c *BillingController) handlePlanChanged(w http.ResponseWriter, r *http.Req
 		_ = c.repo.UpgradeWorkspacePlan(r.Context(), wsID, planName, maxSeats, expiresAt, features)
 
 		// Record outbox event
-		_ = c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
+		if err := c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
 			ID:          uuid.New(),
 			WorkspaceID: wsID,
 			EventType:   "billing.plan_changed",
 			Payload:     body,
-		})
+		}); err != nil {
+			// Fail closed: acknowledging now would drop the event permanently.
+			// 5xx makes the provider redeliver the webhook.
+			slog.Error("Failed to enqueue billing outbox event",
+				"event_type", "billing.plan_changed", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to record billing event"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -551,4 +572,3 @@ func (c *BillingController) handlePlanChanged(w http.ResponseWriter, r *http.Req
 		"disabled_rules": disabledCount,
 	})
 }
-

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
+	scandrixMiddleware "github.com/scandrix/backend/internal/api/middleware"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/auth/cliauth"
 	"github.com/scandrix/backend/internal/auth/clitokens"
@@ -25,9 +27,7 @@ import (
 	"github.com/scandrix/backend/internal/cache"
 	"github.com/scandrix/backend/internal/cache/limiter"
 	"github.com/scandrix/backend/internal/database"
-	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/pkg/models"
-	scandrixMiddleware "github.com/scandrix/backend/internal/api/middleware"
 )
 
 // base64Encoding is the URL-safe, no-padding base64 decoder for reset tokens.
@@ -49,11 +49,18 @@ type AuthRepository interface {
 	UpsertIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenPlain string, isConnected bool, repoCount int) error
 	VerifyCLIToken(ctx context.Context, rawKey string) (workspaceID uuid.UUID, profile *models.AccountProfile, err error)
 	GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*models.Workspace, error)
-	GetTeamByID(ctx context.Context, id uuid.UUID) (*models.Team, error)
+	GetTeamByID(ctx context.Context, wsID, id uuid.UUID) (*models.Team, error)
 	ListTeams(ctx context.Context, wsID uuid.UUID) ([]models.Team, error)
 	GetOrganizationByEmailDomain(ctx context.Context, domain string) (*uuid.UUID, error)
 	ListAPIKeys(ctx context.Context, workspaceID uuid.UUID) ([]*models.TeamCLIKey, error)
 	RevokeAPIKey(ctx context.Context, workspaceID, keyID uuid.UUID) error
+	// RevokeAccessTokensUpTo invalidates every outstanding access token for the
+	// user up to a cutoff. Used by logout so a copied bearer token stops working
+	// immediately instead of surviving for its full lifetime (F-18).
+	RevokeAccessTokensUpTo(ctx context.Context, userID uuid.UUID, cutoffIssuedAt int64) error
+	// IsAccessTokenRevoked backs the middleware's revocation check (F-18).
+	// A returned error is not "not revoked": the caller rejects the request.
+	IsAccessTokenRevoked(ctx context.Context, userID uuid.UUID, issuedAt int64) (bool, error)
 }
 
 // AuthController handles identity, login, tokens, CLI API keys, OAuth, SAML, and device flows.
@@ -97,8 +104,8 @@ func NewAuthController(authService *auth.Authenticator, repo AuthRepository) *Au
 		ExpirationTimeout: 15 * time.Minute,
 	})
 	regLimiter := limiter.NewTokenBucketLimiter(limiter.RateLimitConfig{
-		Capacity:          3,      // Max burst of 3 account signups per IP
-		RefillRatePerSec:  0.001,  // ~3-4 signups per hour per IP
+		Capacity:          3,     // Max burst of 3 account signups per IP
+		RefillRatePerSec:  0.001, // ~3-4 signups per hour per IP
 		ExpirationTimeout: 2 * time.Hour,
 	})
 	acctLimiter := limiter.NewTokenBucketLimiter(limiter.RateLimitConfig{
@@ -115,7 +122,7 @@ func NewAuthController(authService *auth.Authenticator, repo AuthRepository) *Au
 		failedLogins:        make(map[string]*failedLoginEntry),
 		repo:                repo,
 		samlHandler:         saml,
-		domainVerifier:      sso.NewDomainVerifierService(nil, false),
+		domainVerifier:      sso.NewDomainVerifierService(nil, domainVerificationCloudMode()),
 		testWorkbench:       sso.NewSSOTestSessionWorkbench(saml, nil),
 		appBaseURL:          defaultAppBaseURL(),
 		loopbackMgr:         cliauth.NewLoopbackManager(defaultAppBaseURL()),
@@ -128,6 +135,19 @@ func defaultAppBaseURL() string {
 		return strings.TrimRight(u, "/")
 	}
 	return "http://localhost:3000"
+}
+
+// domainVerificationCloudMode reports whether the deployment runs as a hosted
+// multi-tenant service, which additionally requires the contact email to belong
+// to the domain being verified.
+//
+// This was previously hardcoded to false at the construction site, so the
+// hosted-only tightening silently never applied anywhere
+// (AUDIT_REMEDIATION.md F-11). It now follows the same environment convention
+// already used by SystemController.
+func domainVerificationCloudMode() bool {
+	return strings.EqualFold(os.Getenv("SCANDRIX_CLOUD_MODE"), "true") ||
+		strings.EqualFold(os.Getenv("API_CLOUD_MODE"), "true")
 }
 
 // SetSAMLHandler configures the SAML 2.0 Identity Provider handler.
@@ -203,22 +223,42 @@ func (c *AuthController) SetAccountLimiter(tb limiter.RateLimiter) {
 // SetCacheClient attaches the Redis cache client and activates distributed rate limiting across API pods.
 func (c *AuthController) SetCacheClient(client *cache.Client) {
 	c.cacheClient = client
-	if client != nil && client.RawClient() != nil {
-		c.rateLimiter = limiter.NewRedisTokenBucketLimiter(client.RawClient(), limiter.RateLimitConfig{
-			Capacity:          10,
-			RefillRatePerSec:  0.1,
-			ExpirationTimeout: 15 * time.Minute,
-		})
-		c.registerRateLimiter = limiter.NewRedisTokenBucketLimiter(client.RawClient(), limiter.RateLimitConfig{
-			Capacity:          3,
-			RefillRatePerSec:  0.001,
-			ExpirationTimeout: 2 * time.Hour,
-		})
-		c.accountLimiter = limiter.NewRedisTokenBucketLimiter(client.RawClient(), limiter.RateLimitConfig{
-			Capacity:          15,
-			RefillRatePerSec:  0.25,
-			ExpirationTimeout: 15 * time.Minute,
-		})
+
+	var rdb *redis.Client
+	if client != nil {
+		rdb = client.RawClient()
+	}
+
+	// limiter.RedisTokenBucket applies the shared deployment policy: Redis-backed
+	// and fail-closed outside development when a store exists, denying when one is
+	// required and absent, and a plain local bucket only for single-process
+	// environments.
+	//
+	// Previously these three buckets defaulted to per-process memory and the
+	// Redis variant silently degraded to it on any outage, so a login or
+	// per-account limit was really "the limit, times the replica count" and an
+	// operator could not tell from logs that the control had been removed
+	// (AUDIT_REMEDIATION.md F-28/F-29/F-32).
+	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+		Capacity:          10,
+		RefillRatePerSec:  0.1,
+		ExpirationTimeout: 15 * time.Minute,
+	}); l != nil {
+		c.rateLimiter = l
+	}
+	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+		Capacity:          3,
+		RefillRatePerSec:  0.001,
+		ExpirationTimeout: 2 * time.Hour,
+	}); l != nil {
+		c.registerRateLimiter = l
+	}
+	if l := limiter.RedisTokenBucket(rdb, limiter.RateLimitConfig{
+		Capacity:          15,
+		RefillRatePerSec:  0.25,
+		ExpirationTimeout: 15 * time.Minute,
+	}); l != nil {
+		c.accountLimiter = l
 	}
 }
 
@@ -271,8 +311,12 @@ func (c *AuthController) Routes() chi.Router {
 	r.Post("/sso/saml/callback/{organizationId}", c.HandleSAMLACS)
 
 	// SSO Domain Verification & Connection Test Workbench
-	r.Post("/sso/domains/verify-dns", c.HandleVerifyDomainDNS)
-	r.Post("/sso/domains/confirm-token", c.HandleConfirmDomainToken)
+	//
+	// /sso/domains/verify-dns and /confirm-token used to be registered on the
+	// unauthenticated block and trusted a workspace id taken from the request
+	// body, so an anonymous caller could drive the verification state machine
+	// for a workspace it did not belong to (AUDIT_REMEDIATION.md F-11). They
+	// are now mounted with the rest of the domain workbench, behind a session.
 	r.Get("/sso/test-connection/result", c.HandleGetSSOConnectionTestResult)
 	r.Post("/sso/test-connection/callback", c.HandleSSOConnectionTestCallback)
 
@@ -317,7 +361,18 @@ func (c *AuthController) Routes() chi.Router {
 		public.Get("/oauth/{provider}/authorize", c.handleOAuthAuthorize)
 		public.Get("/oauth/{provider}/callback", c.handleOAuthCallback)
 		public.Post("/oauth/{provider}/callback", c.handleOAuthCallback)
-		public.Post("/oauth", c.handlePostOAuth)
+
+		// NOTE: There is deliberately no POST /oauth route.
+		//
+		// A token-exchange endpoint that accepted a client-supplied email and
+		// minted a session for whichever account that email resolved to was
+		// removed as an unauthenticated account-takeover vector (see
+		// AUDIT_REMEDIATION.md F-01). The supported flow is the provider
+		// redirect above, which derives identity from the provider's own
+		// verified response and never from client input.
+		//
+		// Do not reintroduce a route here that calls GetUserByEmail with a
+		// value taken from the request body.
 
 		// SAML 2.0 Enterprise Single Sign-On (public)
 		public.Get("/saml/metadata", c.HandleSAMLMetadata)
@@ -345,6 +400,8 @@ func (c *AuthController) Routes() chi.Router {
 		// SSO domain & connection test administration
 		pr.Post("/sso/domains/request-verification", c.HandleRequestDomainVerification)
 		pr.Get("/sso/domains/status", c.HandleGetDomainStatus)
+		pr.Post("/sso/domains/verify-dns", c.HandleVerifyDomainDNS)
+		pr.Post("/sso/domains/confirm-token", c.HandleConfirmDomainToken)
 		pr.Post("/sso/test-connection/start", c.HandleStartSSOConnectionTest)
 	})
 
@@ -358,91 +415,16 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Dual-Axis Axis 2 Check: Account Lockout (Master Rule 4.5, ASVS V2.2.1)
-	if locked, retryAfter := c.IsAccountLocked(r.Context(), req.Email); locked {
-		retrySec := int(retryAfter.Seconds())
-		if retrySec < 1 {
-			retrySec = 1
-		}
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySec))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write(fmt.Appendf(nil, `{"error":"account temporarily locked due to multiple failed login attempts, please retry after %d seconds"}`, retrySec))
+	// Single shared credential path: lockout, per-account rate limit, KDF
+	// verification with anti-enumeration dummy verify, failure accounting, and
+	// transparent hash upgrade. See AuthenticateCredentials (AUDIT F-03).
+	clientIP := scandrixMiddleware.ExtractClientIP(r)
+	res := c.AuthenticateCredentials(r.Context(), req.Email, req.Password, clientIP)
+	if res.Status != CredentialAuthOK {
+		writeCredentialAuthFailure(w, res)
 		return
 	}
-
-	// 2. Dual-Axis Account-Targeted Rapid Attempt Limiter (prevents distributed proxy blasting against single email)
-	if c.accountLimiter != nil {
-		res, err := c.accountLimiter.Allow(r.Context(), "account:"+hashEmailKey(req.Email), 1)
-		if err == nil && !res.Allowed {
-			retrySec := int(res.RetryAfter.Seconds())
-			if retrySec < 1 {
-				retrySec = 1
-			}
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySec))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write(fmt.Appendf(nil, `{"error":"too many login attempts for this account, please retry after %d seconds"}`, retrySec))
-			return
-		}
-	}
-
-	// Fail closed if database repository is uninitialized (Master Rule 5.7)
-	if c.repo == nil {
-		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	// Live database authentication with Argon2id/Bcrypt password verification (Master Rule 2.1 & 5.1)
-	user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
-	validPassword := false
-	if err == nil && user != nil {
-		validPassword = auth.VerifyPassword(req.Password, user.Password)
-	} else {
-		// Anti-enumeration: execute authentic dummy verification with identical CPU/memory cost
-		// to eliminate timing side-channels for account enumeration (CWE-208 / ASVS V2.2)
-		_ = auth.DummyVerify(req.Password)
-	}
-
-	if err != nil || user == nil || !validPassword {
-		clientIP := scandrixMiddleware.ExtractClientIP(r)
-		emailHash := hashEmailKey(req.Email)
-		locked, retryAfter := c.RecordFailedLogin(r.Context(), req.Email)
-		if locked {
-			slog.Warn("auth.login.failed",
-				"event", "auth.login.failed",
-				"client_ip", clientIP,
-				"email_hash", emailHash,
-				"reason", "account_locked",
-			)
-			telemetry.GetMetrics().AuthAttemptsTotal.WithLabelValues("failure", "account_locked").Inc()
-			retrySec := int(retryAfter.Seconds())
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySec))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write(fmt.Appendf(nil, `{"error":"account temporarily locked due to multiple failed login attempts, please retry after %d seconds"}`, retrySec))
-			return
-		}
-		slog.Warn("auth.login.failed",
-			"event", "auth.login.failed",
-			"client_ip", clientIP,
-			"email_hash", emailHash,
-			"reason", "invalid_credentials",
-		)
-		telemetry.GetMetrics().AuthAttemptsTotal.WithLabelValues("failure", "invalid_credentials").Inc()
-		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
-		return
-	}
-
-	// Successful password verification: clear failed login counter immediately
-	c.ClearFailedLogins(r.Context(), req.Email)
-
-	// Transparent on-login work factor upgrade if stored hash was computed with an older cost factor
-	if auth.NeedsRehash(user.Password) {
-		if updatedHash, err := auth.HashPassword(req.Password); err == nil {
-			_ = c.repo.UpdateUserPassword(r.Context(), user.Email, updatedHash)
-		}
-	}
+	user := res.User
 
 	if user.Status != "active" {
 		http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
@@ -469,7 +451,6 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := scandrixMiddleware.ExtractClientIP(r)
 	emailHash := hashEmailKey(req.Email)
 	slog.Info("auth.login.success",
 		"event", "auth.login.success",
@@ -478,7 +459,8 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"user_id", userID,
 		"workspace_id", wsID,
 	)
-	telemetry.GetMetrics().AuthAttemptsTotal.WithLabelValues("success", "credentials").Inc()
+	// Success telemetry for credential verification is emitted centrally by
+	// AuthenticateCredentials so every credential path is counted exactly once.
 
 	// Persist refresh token in database (auth table)
 	if c.repo != nil {
@@ -486,7 +468,7 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set hardened session cookie for browser logins
-	setAuthCookie(w, r, "scandrix_token", accessToken, 30*86400)
+	setAuthCookie(w, r, "scandrix_token", accessToken, int(auth.DefaultAccessTokenTTL.Seconds()))
 
 	expiresIn := int64(900)
 	if c.authService != nil {
@@ -538,8 +520,17 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if len(req.Password) < 8 {
-		http.Error(w, `{"error":"password must be at least 8 characters long"}`, http.StatusBadRequest)
+	// AUDIT_REMEDIATION.md F-21: this was `len(password) < 8`, so `password1`
+	// was accepted. The shared policy also blocks breached and predictable
+	// values and rejects the account's own email. The client is told the
+	// minimum length but not which blocklist rule fired, so the list cannot be
+	// used as an oracle.
+	if err := auth.ValidatePassword(req.Password, req.Email, req.DisplayName, req.WorkspaceName); err != nil {
+		msg := err.Error()
+		if errors.Is(err, auth.ErrPasswordTooShort) {
+			msg = fmt.Sprintf("password must be at least %d characters long", auth.MinPasswordLength)
+		}
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 		return
 	}
 	if len(req.Password) > auth.MaxBcryptPasswordLength {
@@ -555,8 +546,18 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 	}
 	req.Email = canonicalEmail
 
-	// 3. Optional Cloudflare Turnstile bot verification
-	if c.turnstileSecretKey != "" && strings.TrimSpace(req.TurnstileToken) != "" {
+	// 3. Cloudflare Turnstile bot verification.
+	//
+	// AUDIT_REMEDIATION.md F-20: the guard was
+	// `if secret != "" && token != ""`, so once a secret was configured an
+	// attacker simply omitted turnstile_token and skipped verification
+	// entirely. A configured secret must now REQUIRE a token, otherwise
+	// registration is refused -- never silently allowed.
+	if c.turnstileSecretKey != "" {
+		if strings.TrimSpace(req.TurnstileToken) == "" {
+			http.Error(w, `{"error":"bot verification challenge is required"}`, http.StatusBadRequest)
+			return
+		}
 		clientIP := scandrixMiddleware.ExtractClientIP(r)
 		if err := verifyTurnstileToken(r.Context(), c.turnstileSecretKey, req.TurnstileToken, clientIP); err != nil {
 			http.Error(w, `{"error":"bot verification challenge failed"}`, http.StatusBadRequest)
@@ -615,7 +616,15 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 			token, err := auth.CreateEmailConfirmationToken(userID, req.Email, c.jwtSecret, 24*time.Hour)
 			if err == nil && c.mailer != nil {
 				confirmURL := fmt.Sprintf("%s/confirm-email?token=%s", c.appBaseURL, token)
-				_ = c.mailer.SendEmailConfirmation(r.Context(), req.Email, confirmURL)
+				// A failed send must be visible. The HTTP response stays
+				// generic (no user enumeration), but the operator needs to know
+				// mail is not leaving the system (AUDIT F-04).
+				if mailErr := c.mailer.SendEmailConfirmation(r.Context(), req.Email, confirmURL); mailErr != nil {
+					slog.Error("auth.email.confirmation_send_failed",
+						"event", "auth.email.confirmation_send_failed",
+						"error", mailErr,
+					)
+				}
 			}
 		}
 
@@ -792,17 +801,81 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// handleLogout marks the provided refresh token as used/revoked and expires session cookies.
+// handleLogout ends the session: it marks the refresh token spent, revokes the
+// access tokens that were already issued, and expires the session cookies.
+//
+// Revoking the access token is the part that used to be missing. Marking the
+// refresh token used only stopped *renewal*; a bearer token copied before
+// logout kept authenticating requests for its entire 15-minute lifetime, and
+// the revocation hook in the middleware was never wired to anything
+// (AUDIT_REMEDIATION.md F-18).
+//
+// The cutoff is "now", so tokens issued after this call survive: a refresh that
+// races with the logout produces a new session rather than being swept up.
 func (c *AuthController) handleLogout(w http.ResponseWriter, r *http.Request) {
 	var req dtos.LogoutRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	if c.repo != nil && req.RefreshToken != "" {
-		_ = c.repo.MarkRefreshTokenUsed(r.Context(), req.RefreshToken)
-	}
-
+	// Cookies are cleared first, on every path. That step is client-side
+	// hygiene and is safe whether or not the server could revoke anything;
+	// leaving a live session cookie in the browser because the server had a
+	// problem would help nobody.
 	setAuthCookie(w, r, "scandrix_token", "", -1)
 	setAuthCookie(w, r, "scandrix_cli_code", "", -1)
+
+	// With no repository the session cannot actually be ended. Reporting
+	// success would tell the caller they are logged out while their access
+	// token keeps working -- the same shape of lie as the F-42/F-43 fabricated
+	// responses. Fail closed like /register and /refresh do.
+	if c.repo == nil {
+		http.Error(w, `{"error":"logout incomplete: the session could not be ended, please retry"}`,
+			http.StatusServiceUnavailable)
+		return
+	}
+
+	// No refresh token means no identity to revoke against. Cookies are already
+	// cleared; guessing a user here would revoke somebody else's session.
+	if req.RefreshToken == "" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"logged out successfully"}`))
+		return
+	}
+
+	if err := c.repo.MarkRefreshTokenUsed(r.Context(), req.RefreshToken); err != nil {
+		slog.Error("failed to mark refresh token used on logout", "error", err)
+		http.Error(w, `{"error":"logout incomplete: the session could not be ended, please retry"}`,
+			http.StatusServiceUnavailable)
+		return
+	}
+
+	// Identify whose tokens to revoke. The refresh token is hashed at rest, so
+	// it is looked up rather than parsed.
+	rec, err := c.repo.GetRefreshToken(r.Context(), req.RefreshToken)
+	if err != nil || rec == nil || rec.UserUUID == uuid.Nil {
+		// The token was already spent or is unknown, so there is no live
+		// session behind it to revoke. Cookies are cleared and the caller is
+		// logged out from this browser.
+		if err != nil {
+			slog.Warn("refresh token lookup on logout returned nothing", "error", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"logged out successfully"}`))
+		return
+	}
+
+	// The cutoff is "now", so tokens issued after this call survive: a refresh
+	// that races with the logout produces a new session rather than being swept
+	// up with the old one.
+	if err := c.repo.RevokeAccessTokensUpTo(r.Context(), rec.UserUUID, time.Now().UTC().Unix()); err != nil {
+		// The refresh token is already spent, so the caller cannot renew, but a
+		// still-live access token would be an unknown window. Surface it rather
+		// than reporting a clean logout. Logged without token material.
+		slog.Error("failed to revoke access tokens on logout",
+			"user_id", rec.UserUUID, "error", err)
+		http.Error(w, `{"error":"logout incomplete: the session could not be fully ended, please retry"}`,
+			http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"logged out successfully"}`))
@@ -1075,11 +1148,15 @@ func (c *AuthController) handleResendEmail(w http.ResponseWriter, r *http.Reques
 		token, err := auth.CreateEmailConfirmationToken(user.UUID, user.Email, secret, 24*time.Hour)
 		if err == nil && c.mailer != nil {
 			confirmURL := fmt.Sprintf("%s/confirm-email?token=%s", c.appBaseURL, token)
-			_ = c.mailer.SendEmailConfirmation(r.Context(), user.Email, confirmURL)
+			if mailErr := c.mailer.SendEmailConfirmation(r.Context(), user.Email, confirmURL); mailErr != nil {
+				slog.Error("auth.email.confirmation_resend_failed",
+					"event", "auth.email.confirmation_resend_failed",
+					"error", mailErr,
+				)
+			}
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": "Verification email sent"})
 }
-

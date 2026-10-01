@@ -47,10 +47,10 @@ func (c *SkillsController) Routes() chi.Router {
 
 // SkillMetaResponse matches SkillMetaResponseDto in apps/api/src/dtos/skills-response.dto.ts
 type SkillMetaResponse struct {
-	Name         string                   `json:"name"`
-	Description  string                   `json:"description"`
-	Capabilities []string                 `json:"capabilities"`
-	AllowedTools []string                 `json:"allowedTools"`
+	Name         string                    `json:"name"`
+	Description  string                    `json:"description"`
+	Capabilities []string                  `json:"capabilities"`
+	AllowedTools []string                  `json:"allowedTools"`
 	RequiredMcps []agentSkills.RequiredMcp `json:"requiredMcps"`
 }
 

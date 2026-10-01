@@ -73,7 +73,7 @@ func TestPullRequestController_Endpoints(t *testing.T) {
 					Author:            "dev@acme.com",
 					Status:            "success",
 					CreatedAt:         time.Now().UTC(),
-					UpdatedAt:         time.Now().UTC(),
+					CompletedAt:       func() *time.Time { t := time.Now().UTC(); return &t }(),
 					SuggestionsCount:  2,
 					CriticalCount:     1,
 				},

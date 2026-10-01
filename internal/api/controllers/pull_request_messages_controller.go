@@ -92,14 +92,14 @@ func (c *PullRequestMessagesController) handleSaveMessages(w http.ResponseWriter
 	}
 
 	var req struct {
-		UUID               *uuid.UUID                        `json:"uuid,omitempty"`
-		TeamID             *uuid.UUID                        `json:"teamId,omitempty"`
-		RepositoryID       any                               `json:"repositoryId"` // can be string UUID, "global", or nil
-		DirectoryID        string                            `json:"directoryId,omitempty"`
-		ConfigLevel        string                            `json:"configLevel"`
-		StartReviewMessage models.MessageContentWithStatus   `json:"startReviewMessage"`
-		EndReviewMessage   *models.MessageContentWithStatus  `json:"endReviewMessage,omitempty"`
-		ErrorReviewMessage *models.MessageContentWithStatus  `json:"errorReviewMessage,omitempty"`
+		UUID               *uuid.UUID                       `json:"uuid,omitempty"`
+		TeamID             *uuid.UUID                       `json:"teamId,omitempty"`
+		RepositoryID       any                              `json:"repositoryId"` // can be string UUID, "global", or nil
+		DirectoryID        string                           `json:"directoryId,omitempty"`
+		ConfigLevel        string                           `json:"configLevel"`
+		StartReviewMessage models.MessageContentWithStatus  `json:"startReviewMessage"`
+		EndReviewMessage   *models.MessageContentWithStatus `json:"endReviewMessage,omitempty"`
+		ErrorReviewMessage *models.MessageContentWithStatus `json:"errorReviewMessage,omitempty"`
 		GlobalSettings     *struct {
 			HideComments         bool `json:"hideComments"`
 			SuggestionCopyPrompt bool `json:"suggestionCopyPrompt"`

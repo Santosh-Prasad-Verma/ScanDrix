@@ -3,8 +3,9 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
-	"time"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -18,9 +19,21 @@ type CockpitRepository interface {
 	ListTrackedRepositories(ctx context.Context, wsID uuid.UUID) ([]models.TrackedRepository, error)
 }
 
+// AnalyticsRepository computes workspace metrics from real data. A metric that
+// cannot be derived is reported through the response's Unavailable list instead
+// of being filled with a constant.
+type AnalyticsRepository interface {
+	GetCockpitOverview(ctx context.Context, wsID uuid.UUID) (*models.CockpitOverview, error)
+	GetDoraMetrics(ctx context.Context, wsID uuid.UUID) (*models.DoraMetrics, error)
+	GetProductivityMetrics(ctx context.Context, wsID uuid.UUID) (*models.ProductivityMetrics, error)
+	GetCodeHealthMetrics(ctx context.Context, wsID uuid.UUID) (*models.CodeHealthMetrics, error)
+	ListCodeHotspotFiles(ctx context.Context, wsID uuid.UUID, limit int) ([]models.CodeHotspotFile, error)
+}
+
 // CockpitController provides enterprise security cockpit, code health, and productivity endpoints.
 type CockpitController struct {
-	repo CockpitRepository
+	repo      CockpitRepository
+	analytics AnalyticsRepository
 }
 
 // NewCockpitController creates the cockpit controller.
@@ -31,13 +44,44 @@ func NewCockpitController(repo CockpitRepository) *CockpitController {
 	return &CockpitController{repo: repo}
 }
 
+// WithAnalytics attaches the real analytics repository. Without it the metric
+// endpoints answer 503 rather than serving placeholder numbers.
+func (c *CockpitController) WithAnalytics(a AnalyticsRepository) *CockpitController {
+	if isNilInterface(a) {
+		c.analytics = nil
+		return c
+	}
+	c.analytics = a
+	return c
+}
+
+// requireAnalytics resolves the workspace and the analytics repository, writing
+// the error response itself when either is unavailable. It fails closed: a
+// missing analytics source produces a 503, never a fabricated payload.
+func (c *CockpitController) requireAnalytics(w http.ResponseWriter, r *http.Request) (uuid.UUID, AnalyticsRepository, bool) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		writeCockpitError(w, http.StatusUnauthorized, "missing workspace context")
+		return uuid.Nil, nil, false
+	}
+	if c.analytics == nil {
+		writeCockpitError(w, http.StatusServiceUnavailable,
+			"analytics is not available on this deployment")
+		return uuid.Nil, nil, false
+	}
+	return wsID, c.analytics, true
+}
+
+func writeCockpitError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 // Routes mounts the /cockpit routes.
 func (c *CockpitController) Routes() chi.Router {
 	r := chi.NewRouter()
 
-	// Public health probes for monitoring / BetterStack / status pages
-	r.Get("/health", c.handleHealth)
-	r.Get("/health/runs", c.handleRunsHealth)
 	r.Get("/overview", c.handleGetOverview)
 
 	return r
@@ -63,114 +107,94 @@ func (c *CockpitController) ProductivityRoutes() chi.Router {
 	return r
 }
 
-func (c *CockpitController) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    "healthy",
-		"service":   "cockpit-warehouse",
-		"connected": true,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-	})
-}
-
-func (c *CockpitController) handleRunsHealth(w http.ResponseWriter, r *http.Request) {
-	source := r.URL.Query().Get("source")
-	if source == "" {
-		source = "internal"
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"source":              source,
-		"status":              "healthy",
-		"lastIngestionRun":    time.Now().UTC().Add(-3 * time.Minute).Format(time.RFC3339),
-		"lagSeconds":          180,
-		"failures24h":         0,
-		"quarantineCount24h":  0,
-	})
-}
-
 func (c *CockpitController) handleGetOverview(w http.ResponseWriter, r *http.Request) {
-	wsID, err := auth.WorkspaceFromContext(r.Context())
-	if err != nil {
-		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+	wsID, analytics, ok := c.requireAnalytics(w, r)
+	if !ok {
 		return
 	}
 
-	activeReviews := 0
-	activeRepos := 0
-	if c.repo != nil {
-		activeReviews, _ = c.repo.CountActiveReviews(r.Context(), wsID)
-		if repos, err := c.repo.ListTrackedRepositories(r.Context(), wsID); err == nil {
-			activeRepos = len(repos)
-		}
+	overview, err := analytics.GetCockpitOverview(r.Context(), wsID)
+	if err != nil {
+		slog.Error("Cockpit overview query failed", "error", err)
+		writeCockpitError(w, http.StatusInternalServerError, "failed querying cockpit overview")
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"workspaceId":        wsID.String(),
-		"activeReviews":      activeReviews,
-		"activeRepositories": activeRepos,
-		"passRatePercentage": 94.2,
-		"meanTimeToReviewMin": 1.4,
-		"developerHoursSaved": 320.5,
-		"securityScore":      88.0,
-	})
+	_ = json.NewEncoder(w).Encode(overview)
 }
 
 func (c *CockpitController) handleCodeHealthOverview(w http.ResponseWriter, r *http.Request) {
-	wsID, err := auth.WorkspaceFromContext(r.Context())
+	wsID, analytics, ok := c.requireAnalytics(w, r)
+	if !ok {
+		return
+	}
+
+	metrics, err := analytics.GetCodeHealthMetrics(r.Context(), wsID)
 	if err != nil {
-		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		slog.Error("Code health query failed", "error", err)
+		writeCockpitError(w, http.StatusInternalServerError, "failed querying code health metrics")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"workspaceId":        wsID.String(),
-		"healthScore":        86.5,
-		"criticalDebtFiles":  3,
-		"complexityHotspots": 7,
-		"trend":              "improving",
-		"evaluatedAt":        time.Now().UTC().Format(time.RFC3339),
-	})
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 func (c *CockpitController) handleCodeHealthFiles(w http.ResponseWriter, r *http.Request) {
+	wsID, analytics, ok := c.requireAnalytics(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	files, err := analytics.ListCodeHotspotFiles(r.Context(), wsID, limit)
+	if err != nil {
+		slog.Error("Code hotspot query failed", "error", err)
+		writeCockpitError(w, http.StatusInternalServerError, "failed querying code hotspot files")
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode([]map[string]any{
-		{
-			"filePath":        "internal/auth/authenticator.go",
-			"complexityScore": 42.0,
-			"findingsCount":   1,
-			"riskTier":        "MEDIUM",
-		},
-		{
-			"filePath":        "internal/review/orchestrator.go",
-			"complexityScore": 58.0,
-			"findingsCount":   2,
-			"riskTier":        "HIGH",
-		},
-	})
+	_ = json.NewEncoder(w).Encode(files)
 }
 
 func (c *CockpitController) handleProductivityOverview(w http.ResponseWriter, r *http.Request) {
+	wsID, analytics, ok := c.requireAnalytics(w, r)
+	if !ok {
+		return
+	}
+
+	metrics, err := analytics.GetProductivityMetrics(r.Context(), wsID)
+	if err != nil {
+		slog.Error("Productivity query failed", "error", err)
+		writeCockpitError(w, http.StatusInternalServerError, "failed querying productivity metrics")
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"cycleTimeHours":       18.4,
-		"reviewTurnaroundMin":  4.2,
-		"throughputPerWeek":    48,
-		"prsReviewedByScanDrix": 182,
-	})
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 func (c *CockpitController) handleProductivityDORA(w http.ResponseWriter, r *http.Request) {
+	wsID, analytics, ok := c.requireAnalytics(w, r)
+	if !ok {
+		return
+	}
+
+	metrics, err := analytics.GetDoraMetrics(r.Context(), wsID)
+	if err != nil {
+		slog.Error("DORA query failed", "error", err)
+		writeCockpitError(w, http.StatusInternalServerError, "failed querying DORA metrics")
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"deploymentFrequency": "daily",
-		"leadTimeForChanges":  "4 hours",
-		"changeFailureRate":   0.02,
-		"timeToRestore":       "25 minutes",
-		"rating":              "ELITE",
-	})
+	_ = json.NewEncoder(w).Encode(metrics)
 }

@@ -33,6 +33,13 @@ func (ds *DashboardStore) GetCliReviews(q CliReviewsQuery) CliReviewsListRespons
 
 	var matched []CliReviewSummary
 	for _, r := range ds.reviews {
+		// Tenant scope. This was accepted in CliReviewsQuery and then never
+		// applied, so the list would have returned every organization's
+		// reviews to any caller. AUDIT_REMEDIATION.md F-15c.
+		if q.OrganizationID != "" && r.OrganizationID != q.OrganizationID {
+			continue
+		}
+
 		if q.Search != "" {
 			if !strings.Contains(strings.ToLower(r.Summary), strings.ToLower(q.Search)) &&
 				!strings.Contains(strings.ToLower(r.Branch), strings.ToLower(q.Search)) &&
@@ -67,13 +74,19 @@ func (ds *DashboardStore) GetCliReviews(q CliReviewsQuery) CliReviewsListRespons
 	}
 }
 
-// GetCliReviewByID retrieves an individual review record by ID.
-func (ds *DashboardStore) GetCliReviewByID(id string) (*CliReviewSummary, error) {
+// GetCliReviewByID retrieves an individual review record by ID, scoped to the
+// calling organization. A record belonging to another tenant is reported as
+// not found rather than returned, so the ID cannot be used to probe other
+// organizations. AUDIT_REMEDIATION.md F-15c.
+func (ds *DashboardStore) GetCliReviewByID(id, organizationID string) (*CliReviewSummary, error) {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 
 	r, ok := ds.reviews[id]
 	if !ok {
+		return nil, errors.New("cli review not found")
+	}
+	if organizationID != "" && r.OrganizationID != organizationID {
 		return nil, errors.New("cli review not found")
 	}
 	return &r, nil

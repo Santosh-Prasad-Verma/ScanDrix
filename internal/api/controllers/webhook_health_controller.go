@@ -73,11 +73,10 @@ func (c *WebhookHealthController) handleGetWebhookHealth(w http.ResponseWriter, 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dtos.WebhookHealthResponse{
-		TotalDelivered:   delivered,
-		SuccessRate:      successRate,
-		AverageLatencyMs: 12.5,
-		RecentFailures:   int(dlq),
-		LastEventAt:      lastTime,
+		TotalDelivered: delivered,
+		SuccessRate:    successRate,
+		RecentFailures: int(dlq),
+		LastEventAt:    lastTime,
 	})
 }
 

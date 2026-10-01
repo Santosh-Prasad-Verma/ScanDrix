@@ -485,4 +485,3 @@ func TestBillingControllerListPlans(t *testing.T) {
 		t.Fatalf("SCALE plan not found in ListPlans response")
 	}
 }
-

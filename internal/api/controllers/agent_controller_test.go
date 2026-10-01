@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/scandrix/backend/internal/agents/businessrules"
-	"github.com/scandrix/backend/internal/agents/conversation"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/agentharness/contracts"
 	"github.com/scandrix/backend/internal/agentharness/infrastructure/persistence"
+	"github.com/scandrix/backend/internal/agents/businessrules"
+	"github.com/scandrix/backend/internal/agents/conversation"
+	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 type testRunner struct {
@@ -34,6 +38,24 @@ func (t *testRunner) Run(ctx context.Context, spec contracts.AgentSpec, input co
 	}, nil
 }
 
+// withWorkspace returns the request's context populated with a workspace and
+// account profile, as the production auth middleware would.
+//
+// The agent endpoints used to take the tenant from the request body, so these
+// tests could omit authentication entirely. That was cross-tenant
+// write/budget-attribution (AUDIT_REMEDIATION.md F-15b); the tenant now comes
+// from the session, so the tests must supply one.
+func withWorkspace(req *http.Request, wsID uuid.UUID) *http.Request {
+	ctx := auth.WithWorkspaceContext(req.Context(), wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{
+		ID:          uuid.New(),
+		WorkspaceID: wsID,
+		Email:       "agent-test@example.test",
+		Role:        models.RoleMember,
+	})
+	return req.WithContext(ctx)
+}
+
 func TestAgentController_Conversation(t *testing.T) {
 	runner := &testRunner{
 		answer: `{"content": "This is ScanDrix answering your question."}`,
@@ -45,11 +67,11 @@ func TestAgentController_Conversation(t *testing.T) {
 	controller := NewAgentController(convProvider, brvProvider)
 	router := controller.Routes()
 
+	wsID := uuid.New()
 	body := AgentConversationRequestBody{
 		Prompt: "Hello agent",
 		OrganizationAndTeamData: OrganizationAndTeamDataDto{
-			OrganizationID: "org-test",
-			TeamID:         "team-alpha",
+			TeamID: "team-alpha",
 		},
 		ConversationID: "conv-123",
 	}
@@ -57,6 +79,7 @@ func TestAgentController_Conversation(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/conversation", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	req = withWorkspace(req, wsID)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -73,8 +96,8 @@ func TestAgentController_Conversation(t *testing.T) {
 	if res.Response != "This is ScanDrix answering your question." {
 		t.Errorf("unexpected response text: %s", res.Response)
 	}
-	if res.ThreadID != "cmc:org-test:team-alpha:conv-123" {
-		t.Errorf("unexpected threadID: %s", res.ThreadID)
+	if !strings.HasPrefix(res.ThreadID, "cmc:"+wsID.String()) {
+		t.Errorf("threadID must be scoped to the authenticated workspace: %s", res.ThreadID)
 	}
 }
 
@@ -93,18 +116,19 @@ func TestAgentController_BusinessRulesValidation(t *testing.T) {
 	controller := NewAgentController(convProvider, brvProvider)
 	router := controller.Routes()
 
+	wsID := uuid.New()
 	body := BusinessRulesValidationRequestBody{
 		TaskContext: "- [x] Add rate limiting",
 		PRDiff:      "+ func RateLimit() { ... }",
 		OrganizationAndTeamData: OrganizationAndTeamDataDto{
-			OrganizationID: "org-test",
-			TeamID:         "team-alpha",
+			TeamID: "team-alpha",
 		},
 	}
 
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/business-rules-validation", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	req = withWorkspace(req, wsID)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)

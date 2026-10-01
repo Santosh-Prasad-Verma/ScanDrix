@@ -29,7 +29,7 @@ type CodeManagementRepository interface {
 	DeleteIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) error
 	UntrackAllRepositories(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) error
 	InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID, actorEmail, ipAddress, action, targetType, targetID string, metadata []byte) error
-	GetASTNodesByRepository(ctx context.Context, repoID uuid.UUID) ([]graph.ASTNode, error)
+	GetASTNodesByRepository(ctx context.Context, wsID, repoID uuid.UUID) ([]graph.ASTNode, error)
 }
 
 // CodeManagementController manages tracked repositories, branches, and code structures.
@@ -204,35 +204,51 @@ func (c *CodeManagementController) handleListSelectedRepositories(w http.Respons
 		return
 	}
 
-	var minimalRepos []map[string]any
+	var repos []map[string]any
 	if c.repo != nil {
-		if tracked, err := c.repo.ListTrackedRepositories(r.Context(), wsID); err == nil {
-			for _, tr := range tracked {
-				parts := strings.Split(tr.NamespacePath, "/")
-				name := tr.NamespacePath
-				org := ""
-				if len(parts) >= 2 {
-					org = parts[0]
-					name = parts[1]
-				}
-				minimalRepos = append(minimalRepos, map[string]any{
-					"id":               tr.ExternalID,
-					"name":             name,
-					"full_name":        tr.NamespacePath,
-					"organizationName": org,
-					"default_branch":   tr.DefaultBranch,
-				})
+		tracked, err := c.repo.ListTrackedRepositories(r.Context(), wsID)
+		if err != nil {
+			// Swallowing this returned an empty list, which the dashboard read as
+			// "this workspace tracks no repositories" -- a wrong answer presented
+			// as a real one.
+			http.Error(w, `{"error":"failed to list tracked repositories"}`, http.StatusInternalServerError)
+			return
+		}
+		for _, tr := range tracked {
+			parts := strings.Split(tr.NamespacePath, "/")
+			name := tr.NamespacePath
+			org := ""
+			if len(parts) >= 2 {
+				org = parts[0]
+				name = parts[1]
 			}
+			// Every field here is a real column on tracked_repositories. The
+			// endpoint previously returned only four of them, and the client
+			// invented the rest -- including created_at, which made every
+			// repository look freshly created.
+			repos = append(repos, map[string]any{
+				"id":               tr.ExternalID,
+				"internal_id":      tr.ID.String(),
+				"workspace_id":     tr.WorkspaceID.String(),
+				"provider":         string(tr.Provider),
+				"name":             name,
+				"full_name":        tr.NamespacePath,
+				"organizationName": org,
+				"default_branch":   tr.DefaultBranch,
+				"is_active":        tr.IsActive,
+				"created_at":       tr.CreatedAt.UTC().Format(time.RFC3339),
+				"updated_at":       tr.UpdatedAt.UTC().Format(time.RFC3339),
+			})
 		}
 	}
 
-	if minimalRepos == nil {
-		minimalRepos = []map[string]any{}
+	if repos == nil {
+		repos = []map[string]any{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"data": minimalRepos,
+		"data": repos,
 	})
 }
 
@@ -1115,7 +1131,7 @@ func (c *CodeManagementController) handleGetFileTree(w http.ResponseWriter, r *h
 
 	entries := []dtos.FileTreeEntry{}
 	if c.repo != nil {
-		if nodes, err := c.repo.GetASTNodesByRepository(r.Context(), repoID); err == nil && len(nodes) > 0 {
+		if nodes, err := c.repo.GetASTNodesByRepository(r.Context(), wsID, repoID); err == nil && len(nodes) > 0 {
 			seenPaths := make(map[string]bool)
 			for _, node := range nodes {
 				if node.FilePath != "" && !seenPaths[node.FilePath] {

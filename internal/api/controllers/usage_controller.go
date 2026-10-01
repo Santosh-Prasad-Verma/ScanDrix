@@ -28,12 +28,12 @@ type UsageRepository interface {
 
 // UsageController manages AI token metering, live quota headroom, spend caps, and token analytics.
 type UsageController struct {
-	repo                   UsageRepository
-	tokenUsageService      usage.ITokenUsageService
-	summaryUseCase         *usage.BuildUsageSummaryUseCase
-	estimateUseCase        *usage.CostEstimateUseCase
-	developerUseCase       *usage.TokensByDeveloperUseCase
-	pricingCatalog         *pricing.TokenPricingCatalog
+	repo                    UsageRepository
+	tokenUsageService       usage.ITokenUsageService
+	summaryUseCase          *usage.BuildUsageSummaryUseCase
+	estimateUseCase         *usage.CostEstimateUseCase
+	developerUseCase        *usage.TokensByDeveloperUseCase
+	pricingCatalog          *pricing.TokenPricingCatalog
 	spendLimitConfigService *spendlimit.SpendLimitConfigService
 }
 

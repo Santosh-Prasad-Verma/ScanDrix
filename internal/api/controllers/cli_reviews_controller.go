@@ -92,6 +92,16 @@ func (c *CliReviewsController) handleListExecutions(w http.ResponseWriter, r *ht
 func (c *CliReviewsController) handleGetExecutionByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// Tenant scope comes from the authenticated context, never from the
+	// request. This handler previously resolved no workspace at all, so the
+	// lookup was unscoped. AUDIT_REMEDIATION.md F-15c.
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing workspace or organization context"})
+		return
+	}
+
 	executionUUID := chi.URLParam(r, "executionUuid")
 	if executionUUID == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -99,7 +109,7 @@ func (c *CliReviewsController) handleGetExecutionByID(w http.ResponseWriter, r *
 		return
 	}
 
-	review, err := c.dashboardStore.GetCliReviewByID(executionUUID)
+	review, err := c.dashboardStore.GetCliReviewByID(executionUUID, wsID.String())
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "CLI review execution not found"})

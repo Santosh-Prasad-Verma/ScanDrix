@@ -3,11 +3,24 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/scandrix/backend/internal/agentharness/contracts"
+	"github.com/scandrix/backend/internal/agentharness/infrastructure/persistence"
+	"github.com/scandrix/backend/internal/agentharness/infrastructure/runner"
+	"github.com/scandrix/backend/internal/agents/businessrules"
+	"github.com/scandrix/backend/internal/agents/conversation"
+	"github.com/scandrix/backend/internal/analytics/pricing"
+	analyticsRepo "github.com/scandrix/backend/internal/analytics/repository"
+	"github.com/scandrix/backend/internal/analytics/spendlimit"
+	"github.com/scandrix/backend/internal/analytics/usage"
 	"github.com/scandrix/backend/internal/api/controllers"
 	scandrixMiddleware "github.com/scandrix/backend/internal/api/middleware"
 	"github.com/scandrix/backend/internal/auth"
@@ -18,31 +31,23 @@ import (
 	"github.com/scandrix/backend/internal/billing/razorpay"
 	"github.com/scandrix/backend/internal/cache"
 	"github.com/scandrix/backend/internal/cache/limiter"
+	centinfra "github.com/scandrix/backend/internal/centralizedconfig/infrastructure"
+	"github.com/scandrix/backend/internal/clireview"
+	corehealth "github.com/scandrix/backend/internal/core/health"
 	"github.com/scandrix/backend/internal/database"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/scandrix/backend/internal/organization"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/enterprise/rbac"
 	"github.com/scandrix/backend/internal/enterprise/scim"
-	"github.com/scandrix/backend/internal/agents/businessrules"
-	"github.com/scandrix/backend/internal/agents/conversation"
-	"github.com/scandrix/backend/internal/agentharness/contracts"
-	"github.com/scandrix/backend/internal/agentharness/infrastructure/persistence"
-	"github.com/scandrix/backend/internal/agentharness/infrastructure/runner"
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/llm/byok"
 	"github.com/scandrix/backend/internal/mcp"
+	"github.com/scandrix/backend/internal/organization"
+	"github.com/scandrix/backend/internal/platformdata/application/usecases"
+	platformRepo "github.com/scandrix/backend/internal/platformdata/infrastructure/repositories"
 	"github.com/scandrix/backend/internal/queue/relay"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
 	drixyModules "github.com/scandrix/backend/internal/rules/drixy/modules"
-	"github.com/scandrix/backend/internal/platformdata/application/usecases"
-	platformRepo "github.com/scandrix/backend/internal/platformdata/infrastructure/repositories"
-	"github.com/scandrix/backend/internal/clireview"
-	centinfra "github.com/scandrix/backend/internal/centralizedconfig/infrastructure"
-	"github.com/scandrix/backend/internal/analytics/pricing"
-	analyticsRepo "github.com/scandrix/backend/internal/analytics/repository"
-	"github.com/scandrix/backend/internal/analytics/spendlimit"
-	"github.com/scandrix/backend/internal/analytics/usage"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
 )
@@ -53,20 +58,20 @@ import (
 
 // RouterConfig holds dependency references required to wire up the API server.
 type RouterConfig struct {
-	Repo           *database.Repository
-	AuthService    *auth.Authenticator
-	Orchestrator   *review.Orchestrator
-	StreamHub      *review.StreamHub
-	Evaluator      *rules.Evaluator
-	SCIMService    *scim.SCIMService
-	DeviceFlow     *cliauth.DeviceFlowManager
-	OAuthService   *oauth.OAuthService
-	Mailer         mailer.EmailSender
-	BillingService *razorpay.BillingService
-	BudgetLimiter  *llm.TokenBudgetLimiter
-	CacheClient    *cache.Client
-	RateLimiter     limiter.RateLimiter
-	TierRateLimiter *scandrixMiddleware.TierAwareRateLimiter
+	Repo               *database.Repository
+	AuthService        *auth.Authenticator
+	Orchestrator       *review.Orchestrator
+	StreamHub          *review.StreamHub
+	Evaluator          *rules.Evaluator
+	SCIMService        *scim.SCIMService
+	DeviceFlow         *cliauth.DeviceFlowManager
+	OAuthService       *oauth.OAuthService
+	Mailer             mailer.EmailSender
+	BillingService     *razorpay.BillingService
+	BudgetLimiter      *llm.TokenBudgetLimiter
+	CacheClient        *cache.Client
+	RateLimiter        limiter.RateLimiter
+	TierRateLimiter    *scandrixMiddleware.TierAwareRateLimiter
 	AppBaseURL         string
 	JWTSecret          string
 	CLITokenService    *clitokens.TokenService
@@ -75,6 +80,9 @@ type RouterConfig struct {
 	DeviceQuotaManager *auth.DeviceManager
 	CliEngine          *clireview.Engine
 	CliDashboard       *clireview.DashboardStore
+	LicenseManager     *license.LicenseManager
+
+	licenseResolver *license.Resolver
 
 	// Registration anti-abuse & verification controls
 	RequireEmailVerification bool
@@ -88,6 +96,50 @@ type RouterConfig struct {
 	AzureDevOpsWebhookSecret string
 	ForgejoWebhookSecret     string
 	BillingWebhookSecret     string
+}
+
+// entitlementResolver memoizes the single resolver shared by the license
+// controller, the feature gates and the capabilities endpoint, so no two
+// consumers can disagree about what a workspace is entitled to.
+func (c *RouterConfig) EntitlementResolver() *license.Resolver {
+	if c.licenseResolver == nil {
+		c.licenseResolver = license.NewResolver(c.LicenseManager, c.licenseStore(), c.seatCounter())
+	}
+	return c.licenseResolver
+}
+
+// seatCounter adapts the repository to the license package seat counter.
+func (c *RouterConfig) seatCounter() license.SeatCounter {
+	if c.Repo == nil {
+		return nil
+	}
+	return c.Repo
+}
+
+// licenseStore adapts the billing repository to the license package store.
+func (c *RouterConfig) licenseStore() license.Store {
+	if c.Repo == nil {
+		return nil
+	}
+	return billingLicenseStore{repo: c.Repo}
+}
+
+type billingLicenseStore struct {
+	repo *database.Repository
+}
+
+func (s billingLicenseStore) GetActiveLicense(ctx context.Context, wsID uuid.UUID) (*license.StoredLicense, error) {
+	lic, err := s.repo.GetActiveLicense(ctx, wsID)
+	if err != nil || lic == nil {
+		return nil, err
+	}
+	return &license.StoredLicense{
+		Tier:       lic.PlanTier,
+		Features:   lic.FeaturesEnabled,
+		MaxSeats:   lic.TotalSeats,
+		CustomerNm: lic.OrganizationName,
+		ExpiresAt:  lic.ExpiresAt,
+	}, nil
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -109,14 +161,39 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	corsCfg := scandrixMiddleware.DefaultCORSConfig()
 	r.Use(scandrixMiddleware.CORS(corsCfg))
 
-	// Rate Limiting: distributed Redis token bucket with Lua scripts if Redis is available; in-memory fallback otherwise.
+	// Rate limiting.
+	//
+	// Where a shared store is available, limiting is distributed (Redis token
+	// bucket with a Lua script). Where it is not, the behaviour depends on the
+	// environment, because the alternative is not "no limiting" but *weaker*
+	// limiting (AUDIT_REMEDIATION.md F-29/F-32):
+	//
+	//   - development/test: a per-process bucket is genuinely correct, since
+	//     there is one process. It is still used.
+	//   - production/staging: a per-process bucket would multiply the effective
+	//     limit by the replica count, so a single client could send N times the
+	//     intended request volume, and a brute-force or lockout budget would be
+	//     N times larger than intended. Requests are therefore denied outright
+	//     rather than silently limited less.
+	//
+	// The Redis limiter is also put into fail-closed mode outside development, so
+	// an outage does not silently swap the shared bucket for a local one.
 	rateLimiter := cfg.RateLimiter
 	if rateLimiter == nil {
 		if cfg.CacheClient != nil {
-			rateLimiter = limiter.NewRedisTokenBucketLimiter(cfg.CacheClient.Raw(), limiter.RateLimitConfig{
+			redisLimiter := limiter.NewRedisTokenBucketLimiter(cfg.CacheClient.Raw(), limiter.RateLimitConfig{
 				Capacity:         200,
 				RefillRatePerSec: 100,
 			})
+			if limiter.DistributedRequired() {
+				redisLimiter.SetFailClosed(true)
+			}
+			rateLimiter = redisLimiter
+		} else if limiter.DistributedRequired() {
+			slog.Error("no shared cache client configured; refusing requests because " +
+				"per-process rate limiting would multiply the effective limit by the replica count")
+			rateLimiter = limiter.NewUnavailableLimiter(
+				"no distributed rate-limit store configured")
 		} else {
 			rateLimiter = limiter.NewTokenBucketLimiter(limiter.RateLimitConfig{
 				Capacity:         200,
@@ -144,41 +221,45 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.Handle("/metrics", telemetry.Handler())
 
 	// Probes
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	//
+	// These use internal/core/health, which is the real implementation (it pings
+	// the pool and reports process uptime). The previous inline handler here
+	// duplicated it and only checked the database, so liveness and readiness were
+	// two different code paths reporting two different things.
+	healthSvc := corehealth.NewService(cfg.Repo.Pool(), nil, nil, os.Getenv("RELEASE_VERSION"))
+
+	// Readiness: 503 when a dependency is down, so a load balancer stops routing.
+	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		code, resp := healthSvc.ReadyCheck(r.Context())
 		w.Header().Set("Content-Type", "application/json")
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-
-		dbStatus := "ok"
-		if cfg.Repo != nil {
-			if err := cfg.Repo.Ping(ctx); err != nil {
-				dbStatus = "error: " + err.Error()
-			}
-		}
-
-		if dbStatus != "ok" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":   "unhealthy",
-				"service":  "scandrix-api",
-				"database": dbStatus,
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":   "healthy",
-			"service":  "scandrix-api",
-			"database": dbStatus,
-		})
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
+
+	// Health with details.
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		code, resp := healthSvc.Check(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// Liveness: process only, no dependency checks, so a database blip does not
+	// get the container killed and restarted.
 	r.Get("/livez", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"alive"}`))
+		code, resp := healthSvc.SimpleCheck()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	// Enterprise SCIM 2.0
+	// Enterprise SCIM 2.0 — SCIM provisioning is a licensed capability.
+	//
+	// The entitlement check is enforced inside the SCIM service, not here: SCIM
+	// authenticates with a bearer token and has no session, so the
+	// workspace-scoped RequireFeature middleware could never resolve a workspace
+	// and rejected every request with 401 before the service was reached. The
+	// service holds its own tenant binding, so it answers the question itself.
 	if cfg.SCIMService != nil {
 		r.Mount("/scim/v2", cfg.SCIMService.Routes())
 	}
@@ -234,6 +315,29 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		ghRepo = cfg.Repo
 		orgRepo = cfg.Repo
 		rulesRepos = []controllers.RulesRepository{cfg.Repo}
+	}
+
+	// Enforce access-token revocation on every authenticated request
+	// (AUDIT_REMEDIATION.md F-18). Without this the middleware's revocation
+	// hook is never populated and logout only stops renewal, leaving a copied
+	// bearer token valid for its full lifetime.
+	//
+	// The checker is installed only when a repository is available. When the
+	// store cannot answer, the request is rejected rather than admitted:
+	// treating an unreachable revocation store as "not revoked" would turn a
+	// database outage into an authentication bypass.
+	if cfg.AuthService != nil && authRepo != nil {
+		cfg.AuthService.SetRevocationChecker(func(rctx context.Context, userID uuid.UUID, issuedAt int64) bool {
+			revoked, err := authRepo.IsAccessTokenRevoked(rctx, userID, issuedAt)
+			if err != nil {
+				slog.Error("access-token revocation lookup failed; rejecting request",
+					"user_id", userID, "error", err)
+				return true
+			}
+			return revoked
+		})
+	} else if cfg.AuthService != nil {
+		slog.Warn("no repository available: access-token revocation cannot be enforced, tokens will be accepted without a revocation check")
 	}
 
 	authCtrl := controllers.NewAuthController(cfg.AuthService, authRepo)
@@ -329,15 +433,17 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		pricingCatalog,
 		spendLimitCfgSvc,
 	)
-	teamCtrl := controllers.NewTeamController(teamRepo).WithUseCases(
-		orgModule.CreateTeamUC,
-		orgModule.ListTeamsUC,
-		orgModule.ListTeamsWithIntegrationsUC,
-		orgModule.CreateTeamMemberUC,
-		orgModule.DeleteTeamMemberUC,
-		orgModule.GetTeamMembersUC,
-		orgModule.TeamCliKeyService,
-	)
+	teamCtrl := controllers.NewTeamController(teamRepo).
+		WithEntitlements(cfg.EntitlementResolver()).
+		WithUseCases(
+			orgModule.CreateTeamUC,
+			orgModule.ListTeamsUC,
+			orgModule.ListTeamsWithIntegrationsUC,
+			orgModule.CreateTeamMemberUC,
+			orgModule.DeleteTeamMemberUC,
+			orgModule.GetTeamMembersUC,
+			orgModule.TeamCliKeyService,
+		)
 	codeCtrl := controllers.NewCodeManagementController(codeRepo)
 	codeCtrl.SetOAuthService(cfg.OAuthService)
 
@@ -370,7 +476,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	)
 	integCtrl := controllers.NewIntegrationController(integRepo)
 	permCtrl := controllers.NewPermissionsController(cfg.Repo)
-	licCtrl := controllers.NewLicenseController(licRepo)
+	capsCtrl := controllers.NewCapabilitiesController(cfg.EntitlementResolver())
+	licCtrl := controllers.NewLicenseController(licRepo).
+		WithVerifier(cfg.LicenseManager).
+		WithResolver(cfg.EntitlementResolver())
 	healthCtrl := controllers.NewWebhookHealthController(healthRepo)
 	notifCtrl := controllers.NewNotificationController(notifRepo)
 	feedCtrl := controllers.NewFeedbackController(feedRepo)
@@ -395,18 +504,21 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		prCtrl = prCtrl.WithBackfillUseCase(backfillUC)
 	}
 	prMessagesCtrl := controllers.NewPullRequestMessagesController(cfg.Repo)
-	cockpitCtrl := controllers.NewCockpitController(cfg.Repo)
+	cockpitCtrl := controllers.NewCockpitController(cfg.Repo).
+		// Analytics reads the same client as the rest of the data access layer, so
+		// every metric it returns is the workspace's own rows.
+		WithAnalytics(database.NewPostgresAnalyticsRepository(cfg.Repo.Client()))
 	spendLimitCtrl := controllers.NewSpendLimitController(cfg.Repo).WithSpendLimitServices(
 		spendLimitCfgSvc,
 		configureSpendLimitUC,
 		getSpendLimitConfigUC,
 	)
-	systemCtrl := controllers.NewSystemController()
+	systemCtrl := controllers.NewSystemController(cfg.Repo)
 	skillsCtrl := controllers.NewSkillsController()
 	userLogCtrl := controllers.NewUserLogController(auditRepo)
 	userCtrl := controllers.NewUserController(authCtrl, authRepo).WithJoinOrganizationUseCase(orgModule.JoinOrganizationUC)
 	workflowQueueCtrl := controllers.NewWorkflowQueueController(nil)
-	ssoConfigCtrl := controllers.NewSSOConfigController(authCtrl)
+	ssoConfigCtrl := controllers.NewSSOConfigController(authCtrl, cfg.Repo)
 
 	// CLI Review Execution & History Dashboard Controllers
 	cliEngine := cfg.CliEngine
@@ -490,7 +602,6 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		target.Mount("/cli/public", cliReviewCtrl.PublicRoutes())
 		target.Mount("/cli/sessions", cliReviewCtrl.SessionsRoutes())
 		target.Mount("/cli/memory", cliReviewCtrl.MemoryRoutes())
-		target.Post("/cli/business-validation", cliReviewCtrl.HandleBusinessValidation)
 
 		// Rate-limited public authentication & verification endpoints (Master Rule 4.5, ASVS V2.2.1)
 		target.Group(func(authLim chi.Router) {
@@ -499,16 +610,12 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authLim.Post("/cli/auth/login-init", authCtrl.HandleCLILoginInit)
 			authLim.Post("/cli/auth/device-init", authCtrl.HandleCLIDeviceInit)
 			authLim.Get("/cli/auth/login-poll", authCtrl.HandleCLILoginPoll)
-			authLim.Get("/user/email", authCtrl.HandleCheckEmail)
 			authLim.Get("/sso/check", authCtrl.HandleSSOCheck)
 			authLim.Get("/auth/sso/check", authCtrl.HandleSSOCheck)
 		})
 
 		target.Get("/sso/login/{organizationId}", authCtrl.HandleSAMLLogin)
 		target.Post("/sso/saml/callback/{organizationId}", authCtrl.HandleSAMLACS)
-
-		// Public GitHub App handshake endpoints (callback from GitHub app installations)
-		target.Mount("/github", githubCtrl.Routes())
 
 		// Public auth endpoints
 		target.Mount("/auth", authCtrl.Routes())
@@ -536,16 +643,18 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		target.Post("/forgejo/webhook", gitWebhookHandler.ServeHTTP)
 
 		// ScanDrix Model Context Protocol (MCP) Streamable HTTP Server
+		//
+		// MCP is disabled by default (SCANDRIX_MCP_SERVER_ENABLED must be set
+		// to true) and requires a valid session, so it cannot be reached
+		// anonymously with a self-asserted organizationId.
+		// See AUDIT_REMEDIATION.md F-15f.
 		mcpServer := mcp.NewServer()
-		target.Mount("/mcp", mcp.NewHTTPServer(mcpServer))
+		target.Mount("/mcp", mcp.NewHTTPServer(mcpServer, cfg.AuthService))
 
 		// System Introspection & Public Probes
 		target.Mount("/system", systemCtrl.Routes())
-		target.Mount("/pull-requests", prCtrl.Routes())
 		target.Mount("/skills", skillsCtrl.Routes())
-		target.Mount("/user-log", userLogCtrl.Routes())
 		target.Mount("/user", userCtrl.Routes())
-		target.Mount("/sso-config", ssoConfigCtrl.Routes())
 
 		// ═══════════════════════════════════════════════════════════════
 		// 7. RBAC-PROTECTED DOMAIN ROUTES (Reviews, rules, teams & billing)
@@ -562,6 +671,50 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authGroup.Post("/cli/auth/login-complete", authCtrl.HandleCLILoginComplete)
 
 			// CLI Review execution history dashboard (matching /cli-reviews/executions)
+			// Entitlement payload for every gate in the client. Readable by any
+			// authenticated member: the protected routes enforce entitlement, this
+			// only reports it.
+			authGroup.Mount("/capabilities", capsCtrl.Routes())
+
+			// Workspace-scoped CLI key listing. The key material is never returned
+			// here; only the prefix and metadata, since the plaintext key is shown
+			// once at creation time.
+			//
+			// Listing and revoking CI credentials is a member-management action.
+			// These routes previously sat directly on authGroup with no policy
+			// guard, so any viewer or member could enumerate and revoke a
+			// workspace's CI keys (AUDIT_REMEDIATION.md F-15e).
+			authGroup.Group(func(cliKeyGroup chi.Router) {
+				cliKeyGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceMembers))
+				cliKeyGroup.Get("/cli/tokens", teamCtrl.HandleListWorkspaceCLIKeys)
+				cliKeyGroup.Delete("/cli/tokens/{keyId}", teamCtrl.HandleRevokeWorkspaceCLIKey)
+			})
+
+			// Previously mounted in the unauthenticated block: the workspace context
+			// was never populated, so every execution listing, digest, facet and
+			// author endpoint returned 401 to all callers. The middleware accepts both
+			// a session JWT and a scandrix_-prefixed team key, so the CLI-key path
+			// that handleGetSuggestions falls back to keeps working.
+			authGroup.Mount("/pull-requests", prCtrl.Routes())
+
+			// Previously mounted in the unauthenticated block, where no auth
+			// middleware ran: the workspace context was never populated, so these
+			// routes rejected every caller. Mounted here so authentication and
+			// revocation are enforced by the shared middleware.
+			authGroup.Mount("/user-log", userLogCtrl.Routes())
+			authGroup.Group(func(ssoGroup chi.Router) {
+				ssoGroup.Use(scandrixMiddleware.RequireFeature(cfg.EntitlementResolver(), license.FeatureSSOSAML))
+				ssoGroup.Mount("/sso-config", ssoConfigCtrl.Routes())
+			})
+
+			// SCIM token administration. Behind the same entitlement gate as the
+			// provisioning endpoint itself, so a workspace that cannot provision
+			// cannot mint a credential for it either.
+			authGroup.Group(func(scimGroup chi.Router) {
+				scimGroup.Use(scandrixMiddleware.RequireFeature(cfg.EntitlementResolver(), license.FeatureSCIM))
+				scimGroup.Mount("/scim-config", controllers.NewSCIMTokenController(cfg.SCIMService).Routes())
+			})
+
 			authGroup.Mount("/cli-reviews", cliReviewsCtrl.Routes())
 			authGroup.Mount("/cli/reviews", cliReviewsCtrl.Routes())
 			authGroup.Mount("/rule-like", ruleLikeCtrl.Routes())
@@ -578,7 +731,15 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authGroup.Mount("/pull-request-messages", prMessagesCtrl.Routes())
 			authGroup.Mount("/repos", codeCtrl.Routes())
 			authGroup.Mount("/code-management", codeCtrl.Routes())
-			authGroup.Mount("/permissions", permCtrl.Routes())
+			// Assigning and revoking per-user repository access is a
+			// member-management action. This mount previously carried no policy
+			// guard, so any authenticated viewer or member could grant themselves
+			// access to a repository an admin had deliberately restricted
+			// (AUDIT_REMEDIATION.md F-15a).
+			authGroup.Group(func(permGroup chi.Router) {
+				permGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceMembers))
+				permGroup.Mount("/permissions", permCtrl.Routes())
+			})
 			authGroup.Mount("/health", healthCtrl.Routes())
 			authGroup.Mount("/findings", feedCtrl.Routes())
 			authGroup.Mount("/issues", issuesCtrl.Routes())
@@ -594,6 +755,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				teamGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceMembers))
 				teamGroup.Mount("/teams", teamCtrl.Routes())
 			})
+
+			// GitHub App handshake read-back. These disclose which GitHub account
+			// the caller's workspace is connected as, so they require a session:
+			// mounted publicly they were an account-identity oracle, and their
+			// previous env/token fallbacks disclosed the platform's own GitHub
+			// account to every tenant (AUDIT_REMEDIATION.md F-44). The actual App
+			// callback lives at /auth/oauth/github/callback and is unaffected.
+			authGroup.Mount("/github", githubCtrl.Routes())
 
 			authGroup.Mount("/parameters", paramCtrl.Routes())
 			authGroup.Mount("/organization-parameters", orgParamCtrl.Routes())
@@ -611,7 +780,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authGroup.Group(func(wsGroup chi.Router) {
 				wsGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionUpdate, rbac.ResourceWorkspace))
 				wsGroup.Mount("/workspaces", workspaceCtrl.Routes())
-				wsGroup.Mount("/workspaces/{workspaceId}/audit-logs", auditCtrl.Routes())
+				wsGroup.Group(func(auditGroup chi.Router) {
+					auditGroup.Use(scandrixMiddleware.RequireFeature(cfg.EntitlementResolver(), license.FeatureAuditWarehouse))
+					auditGroup.Mount("/workspaces/{workspaceId}/audit-logs", auditCtrl.Routes())
+				})
 			})
 
 			// RBAC-protected routes: integrations require manage permission
@@ -628,7 +800,6 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			})
 		})
 	}
-
 
 	// ═══════════════════════════════════════════════════════════════
 	// 8. REST V1 & ROOT COMPATIBILITY MOUNT (Dual-route path binding)
