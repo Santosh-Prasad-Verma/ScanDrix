@@ -39,12 +39,12 @@ func TestCodeReviewPrompts(t *testing.T) {
 
 func TestDrixyRulesPrompts(t *testing.T) {
 	classSys := PromptDrixyRulesClassifierSystem()
-	if !strings.Contains(classSys, "Alice, Bob, and Charles") || !strings.Contains(classSys, "drixyRules") {
+	if !strings.Contains(classSys, "ScanDrix Organizational Rule Enforcement Classifier") || !strings.Contains(classSys, "drixyRules") {
 		t.Fatalf("unexpected classifier system prompt: %s", classSys)
 	}
 
 	guardianSys := PromptDrixyRulesGuardianSystem()
-	if !strings.Contains(guardianSys, "DrixyGuardian") {
+	if !strings.Contains(guardianSys, "ScanDrix Standards Guardian") {
 		t.Fatalf("unexpected guardian system prompt")
 	}
 
@@ -61,8 +61,8 @@ func TestSafeguardPrompts(t *testing.T) {
 			{Title: "Strict Auth", Content: "Always enforce bearer token check"},
 		},
 	})
-	if !strings.Contains(safeSys, "Edward (Special Cases Guardian)") {
-		t.Fatalf("expected Edward in safeguard prompt")
+	if !strings.Contains(safeSys, "SCANDRIX FORENSIC VERIFICATION ENGINE") {
+		t.Fatalf("expected SCANDRIX FORENSIC VERIFICATION ENGINE in safeguard prompt")
 	}
 	if !strings.Contains(safeSys, "Strict Auth") {
 		t.Fatalf("expected memories in safeguard prompt")

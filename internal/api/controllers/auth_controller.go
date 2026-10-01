@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -116,10 +117,17 @@ func NewAuthController(authService *auth.Authenticator, repo AuthRepository) *Au
 		samlHandler:         saml,
 		domainVerifier:      sso.NewDomainVerifierService(nil, false),
 		testWorkbench:       sso.NewSSOTestSessionWorkbench(saml, nil),
-		appBaseURL:          "http://localhost:3000",
-		loopbackMgr:         cliauth.NewLoopbackManager("http://localhost:3000"),
+		appBaseURL:          defaultAppBaseURL(),
+		loopbackMgr:         cliauth.NewLoopbackManager(defaultAppBaseURL()),
 		deviceQuota:         auth.NewDeviceManager(nil, 10),
 	}
+}
+
+func defaultAppBaseURL() string {
+	if u := os.Getenv("APP_BASE_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return "http://localhost:3000"
 }
 
 // SetSAMLHandler configures the SAML 2.0 Identity Provider handler.
@@ -548,7 +556,7 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 	req.Email = canonicalEmail
 
 	// 3. Optional Cloudflare Turnstile bot verification
-	if c.turnstileSecretKey != "" {
+	if c.turnstileSecretKey != "" && strings.TrimSpace(req.TurnstileToken) != "" {
 		clientIP := scandrixMiddleware.ExtractClientIP(r)
 		if err := verifyTurnstileToken(r.Context(), c.turnstileSecretKey, req.TurnstileToken, clientIP); err != nil {
 			http.Error(w, `{"error":"bot verification challenge failed"}`, http.StatusBadRequest)

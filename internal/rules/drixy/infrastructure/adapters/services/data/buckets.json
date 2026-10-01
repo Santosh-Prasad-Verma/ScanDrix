@@ -1,232 +1,232 @@
 [
     {
         "slug": "style-conventions",
-        "title": "Style & Conventions",
-        "description": "Consistent formatting, naming, imports, and typing across the codebase."
+        "title": "Code Style & Formatting Standards",
+        "description": "Enforce uniform naming conventions, module structure, explicit typing, and idiom standards across languages."
     },
     {
         "slug": "duplication-complexity",
-        "title": "Duplication & Complexity",
-        "description": "Eliminate duplicate logic/config and reduce unnecessary complexity."
+        "title": "Code Deduplication & Complexity Control",
+        "description": "Identify repeated logic, overly complex branching, deeply nested control flow, and redundant abstractions."
     },
     {
         "slug": "readability-refactor",
-        "title": "Readability & Refactor",
-        "description": "Refactor for clarity; extract functions; simplify control flow."
+        "title": "Readability & Structural Refactoring",
+        "description": "Enhance code legibility, decomposition of monolithic routines, and maintainable function signatures."
     },
     {
         "slug": "error-handling",
-        "title": "Error Handling",
-        "description": "Handle errors explicitly; avoid silent failures; propagate safely."
+        "title": "Defensive Error Handling & Propagation",
+        "description": "Mandate explicit error checks, prevent swallowed exceptions, and maintain meaningful error context propagation."
     },
     {
         "slug": "observability-logging",
-        "title": "Observability & Logging",
-        "description": "Use structured logs with context; enable traceability."
+        "title": "Telemetry, Tracing & Structured Logging",
+        "description": "Standardize structured contextual logging, correlation IDs, OpenTelemetry instrumentation, and audit readiness."
     },
     {
         "slug": "ui-robustness",
-        "title": "UI Robustness",
-        "description": "Prevent leaks and jank; responsive layouts; safe teardown."
+        "title": "UI Resilience & Lifecycle Management",
+        "description": "Eliminate layout thrashing, unhandled UI state exceptions, component memory leaks, and broken lifecycle unmounts."
     },
     {
         "slug": "api-conventions",
-        "title": "API Conventions",
-        "description": "Correct status codes, response shapes, and API semantics."
+        "title": "REST & RPC API Contract Compliance",
+        "description": "Validate HTTP status semantics, payload consistency, idempotent endpoints, and backward-compatible route behaviors."
     },
     {
         "slug": "module-architecture",
-        "title": "Module Boundaries & Architecture",
-        "description": "Clear module boundaries, decoupling, and managed deprecations."
+        "title": "Architectural Boundaries & Separation of Concerns",
+        "description": "Enforce clean architecture layering, dependency inversion, loose coupling, and package isolation."
     },
     {
         "slug": "security-hardening",
-        "title": "Security Hardening",
-        "description": "Sanitize and validate I/O; minimize attack surface."
+        "title": "Defensive Security & Attack Surface Reduction",
+        "description": "Prevent injection vectors, sanitize untrusted inputs, enforce strict access policies, and avoid unsafe operations."
     },
     {
         "slug": "performance-efficiency",
-        "title": "Performance & Efficiency",
-        "description": "Optimize hot paths, memory, and I/O for speed and cost."
+        "title": "Runtime Performance & Resource Optimization",
+        "description": "Identify computational bottlenecks, algorithmic hotspots, redundant memory allocations, and expensive I/O operations."
     },
     {
         "slug": "maintainability",
-        "title": "Maintainability",
-        "description": "Centralize config, remove dead code, and ease future changes."
+        "title": "Long-Term Maintainability & Clean Code",
+        "description": "Prevent technical debt accumulation, enforce modular cohesion, and preserve clean self-documenting codebases."
     },
     {
         "slug": "dependency-supply-chain",
-        "title": "Dependency & Supply Chain",
-        "description": "Pin versions, use digests/SBOMs, and enforce license policies."
+        "title": "Supply Chain Security & Package Hygiene",
+        "description": "Audit third-party dependencies for known vulnerabilities, verify pinned versions, and avoid malicious packages."
     },
     {
         "slug": "secrets-credentials",
-        "title": "Secrets & Credentials",
-        "description": "Block secrets in code and enforce secure secret handling."
+        "title": "Secrets Management & Zero-Leakage Enforcement",
+        "description": "Detect hardcoded API keys, database credentials, authentication tokens, and private cryptographic keys."
     },
     {
         "slug": "config-environment",
-        "title": "Config & Environment",
-        "description": "Validate required env/config at startup; fail fast on misconfig."
+        "title": "Twelve-Factor Configuration & Environment Safety",
+        "description": "Validate runtime configuration isolation, fail-fast missing environment variables, and strict schema validation."
     },
     {
         "slug": "ci-cd-build-hygiene",
-        "title": "CI/CD & Build Hygiene",
-        "description": "Deterministic pipelines, caches, and reproducible builds."
+        "title": "CI/CD Pipelines & Build Determinism",
+        "description": "Maintain reproducible build configurations, hermetic toolchains, deterministic caching, and workflow integrity."
     },
     {
         "slug": "container-docker-hygiene",
-        "title": "Container & Docker Hygiene",
-        "description": "Multi-stage builds, minimal bases, .dockerignore, and layer order."
+        "title": "Container Security & Dockerfile Best Practices",
+        "description": "Enforce rootless container execution, minimal base images, multi-stage builds, and non-sensitive layer caching."
     },
     {
         "slug": "infra-as-code",
-        "title": "Infrastructure as Code",
-        "description": "Secure, tagged, and consistent Terraform/K8s resources."
+        "title": "Infrastructure as Code (IaC) Governance",
+        "description": "Audit Terraform, CloudFormation, and Kubernetes manifests for security baselines and least-privilege configurations."
     },
     {
         "slug": "monorepo-hygiene",
-        "title": "Monorepo Hygiene",
-        "description": "Workspace boundaries, dependency rules, and build graph health."
+        "title": "Monorepo Workspace & Package Isolation",
+        "description": "Ensure strict workspace boundary isolation, shared tooling alignment, and deterministic dependency resolution."
     },
     {
         "slug": "pr-hygiene",
-        "title": "PR Hygiene",
-        "description": "Right-sized PRs with clear titles, descriptions, and checklists."
+        "title": "Pull Request Governance & Review Hygiene",
+        "description": "Enforce atomic scoped PRs, informative change descriptions, linked issue references, and clean commit hygiene."
     },
     {
         "slug": "testing-quality",
-        "title": "Testing & Quality",
-        "description": "Meaningful tests, coverage signals, and fewer flakiness patterns."
+        "title": "Testing Rigor & Coverage Integrity",
+        "description": "Promote meaningful unit and integration test assertions, deterministic test execution, and edge case coverage."
     },
     {
         "slug": "migrations-backward-compat",
-        "title": "Migrations & Backward Compatibility",
-        "description": "Safe data/code migrations while preserving compatibility."
+        "title": "Database Schema Migrations & Zero-Downtime Safety",
+        "description": "Enforce non-locking DDL operations, reversible migrations, zero-downtime rolling updates, and schema backward-compatibility."
     },
     {
         "slug": "docs-adrs",
-        "title": "Docs & ADRs",
-        "description": "Require docs/ADRs for impactful changes and decisions."
+        "title": "Documentation & Architectural Decision Records",
+        "description": "Keep architecture decision records (ADRs), internal design documents, and README specifications up to date."
     },
     {
         "slug": "repo-context-files",
-        "title": "Repository Context (Files)",
-        "description": "Rules that rely on reading specific repository files the user references (e.g., OpenAPI specs, DoD, design system docs)."
+        "title": "Repository Context & Tooling Configuration",
+        "description": "Standardize linters, editor configurations, formatters, and workspace settings files across repositories."
     },
     {
         "slug": "external-context-mcps",
-        "title": "External Context (MCPs)",
-        "description": "Rules that validate changes using external systems via installed MCPs (tickets, monitoring, incidents, vulnerabilities)."
+        "title": "Model Context Protocol (MCP) & Agent Boundaries",
+        "description": "Ensure safe, auditable tool definitions, bounded permissions, and verified sandboxing for AI agent MCP integrations."
     },
     {
         "slug": "privacy-pii",
-        "title": "Privacy & PII",
-        "description": "Minimize, mask, and retain personal data responsibly."
+        "title": "Data Privacy, Redaction & PII Governance",
+        "description": "Prevent unauthorized capture, storage, or transmission of Personally Identifiable Information (PII) and personal records."
     },
     {
         "slug": "accessibility-a11y",
-        "title": "Accessibility (A11y)",
-        "description": "Accessible UI: labels, contrast, keyboard navigation."
+        "title": "Accessibility & Universal UX Standards",
+        "description": "Ensure WCAG 2.1 AA compliance, accessible DOM semantics, screen-reader landmarks, and keyboard navigation."
     },
     {
         "slug": "internationalization-i18n",
-        "title": "Internationalization (i18n)",
-        "description": "No hardcoded strings; correct pluralization and fallbacks."
+        "title": "Localization, Internationalization & Unicode Safety",
+        "description": "Enforce localized string abstractions, timezone-aware date handling, and locale-agnostic numerical formatting."
     },
     {
         "slug": "database-query-performance",
-        "title": "Database & Query Performance",
-        "description": "Avoid N+1s; use indexes; deterministic ordering."
+        "title": "Database Query Optimization & Indexing",
+        "description": "Eliminate N+1 queries, unindexed table scans, inefficient table joins, and unbounded result set queries."
     },
     {
         "slug": "resilience-retries-idempotency",
-        "title": "Resilience (Retries & Idempotency)",
-        "description": "Retries, timeouts, and idempotency for calls and jobs."
+        "title": "Fault Tolerance, Retries & Distributed Idempotency",
+        "description": "Incorporate exponential backoff, circuit breaking, distributed transaction deduplication, and dead-letter queues."
     },
     {
         "slug": "concurrency-safety",
-        "title": "Concurrency Safety",
-        "description": "Guard critical sections and prevent race conditions."
+        "title": "Concurrency, Goroutines & Thread Safety",
+        "description": "Eliminate data races, deadlock hazards, unbuffered channel leaks, and unprotected shared memory access."
     },
     {
         "slug": "caching-strategy",
-        "title": "Caching Strategy",
-        "description": "Correct keys, TTLs, and invalidation for effective caches."
+        "title": "Distributed Caching & Invalidation Patterns",
+        "description": "Ensure proper TTL policies, cache invalidation protocols, prevent stampedes, and avoid stale data hazards."
     },
     {
         "slug": "api-contracts-versioning",
-        "title": "API Contracts & Versioning",
-        "description": "Schema diffs and versioning to avoid breaking clients."
+        "title": "API Contract Versioning & Schema Evolution",
+        "description": "Maintain strict API versioning, avoid breaking payload modifications, and provide smooth migration paths."
     },
     {
         "slug": "compliance-lgpd",
-        "title": "LGPD Compliance",
-        "description": "Code practices aligned with Brazil’s LGPD privacy requirements."
+        "title": "LGPD Data Protection Framework",
+        "description": "Ensure consent management, user data deletion mechanisms, and compliance with the Brazilian General Data Protection Law."
     },
     {
         "slug": "compliance-gdpr",
-        "title": "GDPR Compliance",
-        "description": "Code practices aligned with EU GDPR and privacy by design."
+        "title": "GDPR Regulatory Requirements & Data Subject Rights",
+        "description": "Enforce right-to-erasure workflows, data processing record-keeping, and cross-border transfer compliance under GDPR."
     },
     {
         "slug": "compliance-soc2-essentials",
-        "title": "SOC 2 Essentials",
-        "description": "Logging, encryption, access, and auditability aligned to SOC 2."
+        "title": "SOC 2 Trust Services Criteria & Audit Controls",
+        "description": "Enforce immutable audit trails, strict access controls, tenant isolation, and cryptographic protections for SOC 2."
     },
     {
         "slug": "compliance-pci-dss",
-        "title": "PCI DSS Compliance",
-        "description": "Protect cardholder data with encryption and segregation."
+        "title": "PCI DSS Cardholder Data Security Standards",
+        "description": "Prohibit plaintext storage of PANs and CVVs, enforce TLS 1.3 in-transit, and maintain strict payment boundary isolation."
     },
     {
         "slug": "compliance-hipaa",
-        "title": "HIPAA Compliance",
-        "description": "Protect PHI with controls and auditable access."
+        "title": "HIPAA Health Data & Security Safeguards",
+        "description": "Protect Electronic Protected Health Information (ePHI) with end-to-end encryption, strict RBAC, and audit logging."
     },
     {
         "slug": "stack-react",
-        "title": "React (Stack)",
-        "description": "React-specific best practices and common pitfalls."
+        "title": "React Architecture & Hook Correctness",
+        "description": "Ensure correct hook dependencies, prevent unnecessary re-renders, and maintain idiomatic component composition."
     },
     {
         "slug": "stack-nextjs",
-        "title": "Next.js (Stack)",
-        "description": "SSR/SSG patterns, routing, and API best practices."
+        "title": "Next.js App Router & Server Component Security",
+        "description": "Enforce Server Component boundary safety, secure server actions, optimized caching, and route handler validation."
     },
     {
         "slug": "stack-vue",
-        "title": "Vue (Stack)",
-        "description": "Reactivity, props, and component hygiene in Vue."
+        "title": "Vue.js Composition API & Reactivity Best Practices",
+        "description": "Enforce proper ref/reactive reactivity, cleanup of lifecycle hooks, and safe template interpolation."
     },
     {
         "slug": "stack-nodejs",
-        "title": "Node.js (Stack)",
-        "description": "Async, streams, and dependency hygiene in Node."
+        "title": "Node.js Event Loop & Memory Safety",
+        "description": "Prevent event loop starvation, unhandled promise rejections, buffer over-allocations, and process crashes."
     },
     {
         "slug": "stack-php",
-        "title": "PHP (Stack)",
-        "description": "PHP/Laravel/Symfony patterns for safety and clarity."
+        "title": "PHP Modern Idioms & Type Safety",
+        "description": "Mandate strict types, modern constructor property promotion, parameterized PDO queries, and safe superglobal handling."
     },
     {
         "slug": "stack-python",
-        "title": "Python (Stack)",
-        "description": "Typing, async, and env hygiene in Python/Django/FastAPI."
+        "title": "Python Idioms, Typing & Async Safety",
+        "description": "Enforce PEP 8 style, type annotations, context manager resource cleanup, and safe asyncio coroutine handling."
     },
     {
         "slug": "stack-flutter",
-        "title": "Flutter (Stack)",
-        "description": "Widget lifecycle, dispose, and state management."
+        "title": "Flutter & Dart State Management",
+        "description": "Ensure efficient widget rebuild trees, clean BLoC/Provider state architecture, and proper controller disposal."
     },
     {
         "slug": "web-static-assets",
-        "title": "Web Assets & Performance",
-        "description": "Optimize images/fonts; caching and delivery for fast apps."
+        "title": "Web Asset Optimization & Content Delivery",
+        "description": "Optimize modern image formats (AVIF/WebP), compress SVG vectors, and configure immutable cache headers."
     },
     {
         "slug": "docstring",
-        "title": "Docstrings & Documentation Comments",
-        "description": "Require structured docstrings or documentation comments for public APIs across supported languages (Python, JS/TS, Java, C#, Go, Rust). Must include purpose, parameters, return values, errors, and examples where applicable."
+        "title": "API Documentation & Docstring Precision",
+        "description": "Mandate comprehensive docstrings for exported APIs, describing invariants, parameters, return values, and failure modes."
     }
 ]

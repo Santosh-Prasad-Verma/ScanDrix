@@ -41,3 +41,11 @@ Comprehensive zero-trust enterprise authentication reference with Mermaid sequen
 - Fine-Grained Per-User Repository Boundaries (RBAC)
 - SCIM 2.0 Automated User Provisioning & Deprovisioning
 - Background Orphan Session Sweepers & OWASP ASVS v4.0.3 Compliance Matrix
+
+### 4. ScanDrix Enterprise Architecture & Engineering Suite
+Complete engineering specification and visual architecture for the next-generation compiled Go enterprise platform:
+- [Enterprise Product Requirements Document (PRD)](enterprise/PRD.md): Vision, personas, strategic differentiators, and functional epics.
+- [Enterprise Technical Requirements Document (TRD)](enterprise/TRD.md): Go microservice topology, Tree-sitter AST, Ed25519 licensing, and partitioned warehouse.
+- [Enterprise Visual Workflows & Sequence Architecture](enterprise/WORKFLOWS.md): Comprehensive Mermaid diagrams for multi-agent councils, sandbox runners, and air-gapped BYOK.
+- [Enterprise Engineering Implementation Plan](enterprise/IMPLEMENTATION.md): Phased execution roadmap, interfaces, test matrix, and verification criteria.
+

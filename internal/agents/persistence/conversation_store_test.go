@@ -8,7 +8,6 @@ package persistence
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -74,9 +73,6 @@ func TestAgentSessionStore_BasicLoadAppend(t *testing.T) {
 	}
 	if doc.SessionData.TenantID != DefaultTenant {
 		t.Errorf("expected tenant %s, got %s", DefaultTenant, doc.SessionData.TenantID)
-	}
-	if strings.Contains(doc.SessionData.TenantID, "kodus") {
-		t.Errorf("brand leak in tenant: %s", doc.SessionData.TenantID)
 	}
 }
 

@@ -1,0 +1,68 @@
+name: "Terraform Infrastructure Plan"
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ap-south-1
+  TF_ROOT: infra/terraform
+
+jobs:
+  terraform-plan:
+    name: "Validate & Plan Infrastructure"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      - name: Terraform Format Check
+        run: terraform -chdir=${{ env.TF_ROOT }} fmt -check
+
+      - name: Terraform Init
+        run: terraform -chdir=${{ env.TF_ROOT }} init
+
+      - name: Terraform Validate
+        run: terraform -chdir=${{ env.TF_ROOT }} validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} plan -no-color -out=tfplan
+
+      - name: Post Plan to Pull Request
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const output = `#### Terraform Format and Style 🖌
+            #### Terraform Initialization ⚙️
+            #### Terraform Validation 🤖
+            #### Terraform Plan 📖
+
+            *Pushed by: @${{ github.actor }}*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })

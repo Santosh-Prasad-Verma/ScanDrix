@@ -87,6 +87,20 @@ INSERT INTO plan_configurations (
     '["saml_sso", "scim_provisioning", "custom_rules", "priority_ai_router", "audit_log_cef", "unlimited_repos", "dora_metrics", "byok_encryption"]'::jsonb
 ),
 (
+    'SCALE',
+    'Scale Plan',
+    2499000,
+    29900,
+    40000000,
+    1200000,
+    100,
+    0,
+    30,
+    true,
+    '["claude-opus-5", "claude-sonnet-5", "gpt-5.6-terra", "gpt-5.6-luna", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro", "qwen3.8-max", "kimi-k3", "deepseek-chat", "grok-3", "mistral-large-3", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]'::jsonb,
+    '["saml_sso", "scim_provisioning", "custom_rules", "priority_ai_router", "audit_log_cef", "unlimited_repos", "dora_metrics", "byok_encryption", "dedicated_workers", "priority_sla"]'::jsonb
+),
+(
     'ENTERPRISE',
     'Enterprise Custom Plan',
     999900,

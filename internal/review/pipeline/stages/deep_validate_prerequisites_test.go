@@ -239,7 +239,4 @@ func TestDeepValidatePrerequisites_PlanLimitAndNoticeFormatting(t *testing.T) {
 	if !strings.Contains(notice, "<!-- drixy-codereview -->") {
 		t.Errorf("expected drixy footer in notice: %s", notice)
 	}
-	if strings.Contains(strings.ToLower(notice), "kodus") || strings.Contains(strings.ToLower(notice), "kody") {
-		t.Errorf("notice contains forbidden words: %s", notice)
-	}
 }

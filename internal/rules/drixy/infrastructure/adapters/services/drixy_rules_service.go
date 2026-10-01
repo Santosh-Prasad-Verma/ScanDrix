@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Rule System
-// File: drixy_rules_service.go
-// ═══════════════════════════════════════════════════════════════
-
 package services
 
 import (

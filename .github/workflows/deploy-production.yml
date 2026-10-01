@@ -1,0 +1,108 @@
+name: "Deploy Production (ECS Fargate)"
+
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "DEPLOY" to confirm production release'
+        required: true
+        default: 'DEPLOY'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ENVIRONMENT: production
+  ECS_CLUSTER: scandrix-production-cluster
+
+jobs:
+  verify:
+    name: "Validate Release Guardrails"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY" ]; then
+            echo "Deployment cancelled: Confirmation did not match DEPLOY"
+            exit 1
+          fi
+
+  deploy-production:
+    name: "Deploy Production Services"
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: "api"
+            dockerfile: "docker/api.Dockerfile"
+            ecs_service: "scandrix-production-api"
+          - name: "worker"
+            dockerfile: "docker/worker.Dockerfile"
+            ecs_service: "scandrix-production-worker"
+          - name: "webhooks"
+            dockerfile: "docker/webhooks.Dockerfile"
+            ecs_service: "scandrix-production-webhooks"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Determine Image Tags
+        id: tags
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "tag_sha=${SHA_SHORT}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag_version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag_version=manual-${SHA_SHORT}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.service.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:${{ steps.tags.outputs.tag_version }}
+            ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:${{ steps.tags.outputs.tag_sha }}
+            ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trigger Rolling ECS Deployment
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ matrix.service.ecs_service }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for ECS Service Stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ matrix.service.ecs_service }} \
+            --region ${{ env.AWS_REGION }}

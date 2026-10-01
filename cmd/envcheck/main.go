@@ -33,8 +33,8 @@ var expectedVars = []EnvVar{
 	// Security & Envelope Encryption
 	{Name: "KMS_MASTER_KEY", Required: false, Description: "Master 256-bit hex key for AES-GCM envelope encryption", IsSecret: true},
 
-	// Billing Webhook Verification
-	{Name: "STRIPE_WEBHOOK_SECRET", Required: false, Description: "Stripe webhook signature secret (whsec_...)", IsSecret: true},
+	// Billing & Subscriptions (Razorpay Exclusive)
+	{Name: "RAZORPAY_KEY_ID", Required: false, Description: "Razorpay API Key ID (rzp_...)", IsSecret: true},
 	{Name: "RAZORPAY_WEBHOOK_SECRET", Required: false, Description: "Razorpay webhook signature secret", IsSecret: true},
 
 	// AI Engine Provider (At least one provider recommended)

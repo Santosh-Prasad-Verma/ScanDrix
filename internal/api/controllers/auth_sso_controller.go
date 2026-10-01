@@ -85,7 +85,7 @@ func (c *AuthController) HandleSAMLACS(w http.ResponseWriter, r *http.Request) {
 	fedIdentity, err := c.samlHandler.ParseAndVerifyAssertion(xmlBytes, expectedAudience, time.Now().UTC())
 	if err != nil {
 		// Fail closed in production; only permit audience bypass in test suite
-		if os.Getenv("APP_ENV") == "test" || c.appBaseURL == "" {
+		if os.Getenv("APP_ENV") == "test" {
 			fedIdentity, err = c.samlHandler.ParseAndVerifyAssertion(xmlBytes, "", time.Now().UTC())
 		}
 		if err != nil {

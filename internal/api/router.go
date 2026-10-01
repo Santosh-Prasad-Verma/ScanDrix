@@ -516,6 +516,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		// Public billing webhook receiver (authenticates via HMAC signature)
 		target.Mount("/webhooks/billing", billingCtrl.WebhookRoutes())
 		target.Mount("/billing/webhook", billingCtrl.WebhookRoutes())
+		target.Get("/billing/plans", billingCtrl.HandleListPlans)
 
 		// Public SCM webhook receivers (GitHub, GitLab, Bitbucket, Azure DevOps, Forgejo)
 		target.Post("/webhooks/github", gitWebhookHandler.ServeHTTP)

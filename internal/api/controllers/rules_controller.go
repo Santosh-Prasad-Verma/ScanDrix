@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -187,7 +188,8 @@ func (c *RulesController) handleCreateRule(w http.ResponseWriter, r *http.Reques
 
 	if c.repo != nil {
 		if err := c.repo.CreateReviewRule(r.Context(), &rule); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed creating rule: %v"}`, err), http.StatusInternalServerError)
+			slog.Error("failed creating rule in database", "error", err, "workspace_id", wsID)
+			http.Error(w, `{"error":"failed to create review rule"}`, http.StatusInternalServerError)
 			return
 		}
 	}

@@ -1,0 +1,224 @@
+/* ==========================================================================
+   ScanDrix — Enterprise Booking Theme (Zoho Bookings Custom CSS)
+   Aesthetic: Clean Modern Dark (#000000, Luminous Orange Accent, Inter/Geist)
+   Target: Zoho Bookings Production Embedding
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* --- 1. Global Background & Typography --- */
+body, 
+html, 
+#zb-app,
+.theme-container,
+.booking-page-container,
+.zb-booking-wrapper {
+  background-color: #000000 !important;
+  background-image: radial-gradient(circle at 50% 0%, rgba(255, 87, 26, 0.08) 0%, transparent 60%) !important;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  color: #EDEDED !important;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- 2. Header & Brand Bar --- */
+header,
+.header-container,
+.zb-header,
+.brand-header {
+  background-color: rgba(10, 10, 10, 0.85) !important;
+  backdrop-filter: blur(12px) !important;
+  border-bottom: 1px solid #262626 !important;
+  color: #EDEDED !important;
+}
+
+.brand-header h1,
+.header-container .title,
+.zb-header-title {
+  color: #FFFFFF !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* --- 3. Main Booking Card & Containers --- */
+.booking-card,
+.service-container,
+.staff-container,
+.calendar-view,
+.zb-card,
+.form-container,
+div[class*="bookingCard"],
+div[class*="timeSlotContainer"] {
+  background-color: #0A0A0A !important;
+  border: 1px solid #262626 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6) !important;
+  color: #EDEDED !important;
+}
+
+/* --- 4. Service & Staff Item Cards --- */
+.service-item,
+.staff-item,
+.zb-service-card,
+.zb-staff-card,
+div[class*="serviceCard"] {
+  background-color: #141414 !important;
+  border: 1px solid #262626 !important;
+  border-radius: 12px !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  color: #EDEDED !important;
+}
+
+.service-item:hover,
+.staff-item:hover,
+.zb-service-card:hover,
+div[class*="serviceCard"]:hover {
+  background-color: #1A1A1A !important;
+  border-color: #FF571A !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 20px rgba(255, 87, 26, 0.15) !important;
+}
+
+/* --- 5. Interactive Calendar Styling --- */
+.calendar-container,
+.ui-datepicker,
+.zb-calendar {
+  background-color: #0A0A0A !important;
+  border: 1px solid #262626 !important;
+  border-radius: 14px !important;
+}
+
+.calendar-header,
+.ui-datepicker-header {
+  background-color: #141414 !important;
+  border-bottom: 1px solid #262626 !important;
+  color: #EDEDED !important;
+}
+
+/* Weekday header labels */
+.calendar-days th,
+.ui-datepicker th {
+  color: #71717A !important;
+  font-weight: 600 !important;
+  font-size: 0.8rem !important;
+  text-transform: uppercase !important;
+}
+
+/* Available Dates */
+.calendar-day,
+.ui-datepicker td a,
+.ui-datepicker td span {
+  color: #EDEDED !important;
+  border-radius: 8px !important;
+  transition: background-color 0.15s ease !important;
+}
+
+.calendar-day:hover,
+.ui-datepicker td a:hover {
+  background-color: #262626 !important;
+  color: #FF7533 !important;
+}
+
+/* Active / Selected Date */
+.calendar-day.selected,
+.calendar-day.active,
+.ui-datepicker-current-day a,
+.ui-state-active,
+div[class*="selectedDate"] {
+  background: linear-gradient(135deg, #FF6B2B 0%, #FF571A 100%) !important;
+  color: #FFFFFF !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 16px rgba(255, 87, 26, 0.4) !important;
+}
+
+/* --- 6. Time Slot Buttons --- */
+.time-slot,
+.slot-btn,
+button[class*="timeSlot"],
+div[class*="timeSlot"] {
+  background-color: #141414 !important;
+  border: 1px solid #262626 !important;
+  color: #EDEDED !important;
+  border-radius: 10px !important;
+  font-weight: 500 !important;
+  padding: 10px 16px !important;
+  transition: all 0.18s ease-in-out !important;
+}
+
+.time-slot:hover,
+.slot-btn:hover,
+button[class*="timeSlot"]:hover {
+  background-color: #1A1A1A !important;
+  border-color: #FF571A !important;
+  color: #FF7533 !important;
+  transform: scale(1.02) !important;
+}
+
+/* Selected Time Slot */
+.time-slot.selected,
+.time-slot.active,
+.slot-btn.selected,
+button[class*="timeSlot"][class*="selected"] {
+  background: linear-gradient(135deg, #FF6B2B 0%, #FF571A 100%) !important;
+  border-color: #FF571A !important;
+  color: #FFFFFF !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 16px rgba(255, 87, 26, 0.4) !important;
+}
+
+/* --- 7. Primary Action Button (Book Appointment) --- */
+.btn-primary,
+.book-btn,
+button[type="submit"],
+.zb-submit-button,
+div[class*="bookButton"] {
+  background: linear-gradient(135deg, #FF6B2B 0%, #FF571A 35%, #D43800 100%) !important;
+  color: #FFFFFF !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  font-size: 1rem !important;
+  padding: 12px 28px !important;
+  cursor: pointer !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  box-shadow: 0 4px 20px rgba(255, 87, 26, 0.35) !important;
+}
+
+.btn-primary:hover,
+.book-btn:hover,
+button[type="submit"]:hover {
+  background: linear-gradient(135deg, #FF7533 0%, #FF6B2B 50%, #D43800 100%) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 26px rgba(255, 87, 26, 0.5) !important;
+}
+
+/* --- 8. Input Fields & Form Controls --- */
+input[type="text"],
+input[type="email"],
+input[type="tel"],
+textarea,
+select,
+.form-control,
+.zb-input {
+  background-color: #141414 !important;
+  border: 1px solid #262626 !important;
+  color: #EDEDED !important;
+  border-radius: 8px !important;
+  padding: 10px 14px !important;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #FF571A !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(255, 87, 26, 0.25) !important;
+}
+
+/* --- 9. Clean Footer --- */
+footer,
+.zb-footer,
+div[class*="poweredBy"] {
+  color: #71717A !important;
+  font-size: 0.75rem !important;
+  border-top: 1px solid #1A1A1A !important;
+}

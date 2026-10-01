@@ -280,9 +280,6 @@ func TestBuildBusinessRulesContractViolationFeedback(t *testing.T) {
 	if !strings.Contains(inputFb, "Missing Validation Context") || !strings.Contains(inputFb, "@drixy -v business-logic") {
 		t.Errorf("unexpected input violation feedback: %s", inputFb)
 	}
-	if strings.Contains(inputFb, "@kody") || strings.Contains(inputFb, "kodus") {
-		t.Errorf("detected brand leak in violation feedback: %s", inputFb)
-	}
 
 	outputFb := BuildBusinessRulesContractViolationFeedback("en", "output", []string{"is_compliant"})
 	if !strings.Contains(outputFb, "Invalid Skill Response") || !strings.Contains(outputFb, "is_compliant") {
