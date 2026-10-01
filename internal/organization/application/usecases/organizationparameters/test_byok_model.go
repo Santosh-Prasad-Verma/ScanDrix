@@ -7,6 +7,7 @@ package orgparamusecases
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	orgparams "github.com/scandrix/backend/internal/organization/domain/organizationparameters"
@@ -33,6 +34,12 @@ func NewTestBYOKModelUseCase(repo ...orgparams.IOrganizationParametersRepository
 // WithRepo injects parameters repository for credential resolution.
 func (uc *TestBYOKModelUseCase) WithRepo(repo orgparams.IOrganizationParametersRepository) *TestBYOKModelUseCase {
 	uc.repo = repo
+	return uc
+}
+
+// WithHTTPClient injects the client used for the underlying live probe.
+func (uc *TestBYOKModelUseCase) WithHTTPClient(c *http.Client) *TestBYOKModelUseCase {
+	uc.connTester = uc.connTester.WithHTTPClient(c)
 	return uc
 }
 

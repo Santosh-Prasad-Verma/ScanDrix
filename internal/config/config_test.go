@@ -46,3 +46,58 @@ func TestConfigLoadProductionValidation(t *testing.T) {
 		t.Fatalf("expected validation error in production when secrets are missing")
 	}
 }
+
+// F-63: Appwrite backs review-artifact archival only, and every call site
+// already degrades (nil-safe client, warning on upload failure). It must not be
+// a startup requirement, because an optional archive feature crash-looping the
+// whole production API is an availability bug.
+//
+// The other requirements in this block (JWT_SECRET, DATABASE_URL, SMTP_HOST) are
+// genuinely load-bearing and are asserted separately.
+func TestProductionBootsWithoutAppwrite(t *testing.T) {
+	for k, v := range map[string]string{
+		"APP_ENV":             "production",
+		"DATABASE_URL":        "postgres://localhost:5432/db",
+		"JWT_SECRET":          "a-sufficiently-long-test-secret-value",
+		"SMTP_HOST":           "smtp.example.test",
+		"ANTHROPIC_API_KEY":   "sk-test",
+		"APPWRITE_PROJECT_ID": "",
+		"APPWRITE_API_KEY":    "",
+	} {
+		t.Setenv(k, v)
+	}
+	t.Setenv("APPWRITE_ENDPOINT", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("production must boot without Appwrite credentials, got: %v", err)
+	}
+	if cfg.AppwriteProjectID != "" || cfg.AppwriteAPIKey != "" {
+		t.Fatalf("expected empty Appwrite credentials, got project=%q key set=%v",
+			cfg.AppwriteProjectID, cfg.AppwriteAPIKey != "")
+	}
+}
+
+// Guard the other half: dropping a genuinely required secret must still fail,
+// so demoting Appwrite did not weaken the block it lives in.
+func TestProductionStillRequiresJWTAndDatabaseAndSMTP(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV":           "production",
+		"DATABASE_URL":      "postgres://localhost:5432/db",
+		"JWT_SECRET":        "a-sufficiently-long-test-secret-value",
+		"SMTP_HOST":         "smtp.example.test",
+		"ANTHROPIC_API_KEY": "sk-test",
+	}
+	for _, missing := range []string{"DATABASE_URL", "JWT_SECRET", "SMTP_HOST"} {
+		t.Run("missing "+missing, func(t *testing.T) {
+			for k, v := range base {
+				t.Setenv(k, v)
+			}
+			t.Setenv(missing, "")
+
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("production must still fail without %s", missing)
+			}
+		})
+	}
+}

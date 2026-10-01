@@ -6,12 +6,10 @@
 package infrastructure
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -126,41 +124,21 @@ func NewAuthGuard(jwtSecret string, logger *slog.Logger) *AuthGuard {
 	}
 }
 
-// Middleware enforces valid Bearer tokens on protected endpoints.
-func (g *AuthGuard) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(StandardAPIResponse{
-				Success:   false,
-				Error:     "Missing authorization header",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			})
-			return
-		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if token == "" || token == authHeader {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(StandardAPIResponse{
-				Success:   false,
-				Error:     "Invalid authorization format",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			})
-			return
-		}
-
-		// Inject mock/stub claims into request context for downstream handlers
-		claims := &AuthenticatedClaims{
-			UserID: "authenticated-user",
-		}
-		ctx := context.WithValue(r.Context(), AuthContextKey{}, claims)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
+// Middleware is intentionally not provided.
+//
+// SECURITY: this guard was removed because it was a booby trap. It checked only
+// that an Authorization header was present and non-empty, never validated the
+// token, then injected a hardcoded claims object with UserID
+// "authenticated-user". Wiring it anywhere would have granted a valid session
+// to anyone sending `Authorization: Bearer x`
+// (AUDIT_REMEDIATION.md F-14).
+//
+// Use one of the real guards instead:
+//   - internal/auth.Authenticator.Middleware   — the production session guard
+//   - internal/mcp/manager/api/middleware     — the MCP transport guard
+//
+// NewAuthGuard and AuthGuard are retained only so existing call sites fail to
+// compile loudly rather than silently degrading.
 
 // ─── 3. Pool Error Handler ───────────────────────────────────────────────────
 

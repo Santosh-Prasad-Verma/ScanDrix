@@ -58,12 +58,19 @@ type MetricTimeToRestore struct {
 }
 
 // ReviewVelocityMetrics aggregates automated code review impact.
+//
+// AverageCycleTime and AverageReviewLatency are pointers because no source
+// data is collected for them. They were previously hardcoded to 24h and 45s,
+// which presented invented numbers as measurements. A nil value means "not
+// measured"; the reason is carried in DORAReport.Unavailable. Zero is not an
+// acceptable substitute, because "no cycles" and "never measured" are
+// different claims. AUDIT_REMEDIATION.md F-40.
 type ReviewVelocityMetrics struct {
-	TotalPRsReviewed         int           `json:"total_prs_reviewed"`
-	AverageCycleTime         time.Duration `json:"average_cycle_time"`
-	AverageReviewLatency     time.Duration `json:"average_review_latency"`
-	DefectsCaughtBeforeMerge int           `json:"defects_caught_before_merge"`
-	EngineeringHoursSaved    float64       `json:"engineering_hours_saved"` // e.g. 0.5hr per finding
+	TotalPRsReviewed         int            `json:"total_prs_reviewed"`
+	AverageCycleTime         *time.Duration `json:"average_cycle_time"`
+	AverageReviewLatency     *time.Duration `json:"average_review_latency"`
+	DefectsCaughtBeforeMerge int            `json:"defects_caught_before_merge"`
+	EngineeringHoursSaved    float64        `json:"engineering_hours_saved"` // e.g. 0.5hr per finding
 }
 
 // DORAReport provides an executive summary of team delivery performance.
@@ -77,4 +84,10 @@ type DORAReport struct {
 	TimeToRestore       MetricTimeToRestore       `json:"time_to_restore"`
 	ReviewVelocity      ReviewVelocityMetrics     `json:"review_velocity"`
 	OverallTier         PerformanceTier           `json:"overall_tier"`
+
+	// Unavailable names each metric that is absent rather than measured,
+	// as "<metric>:<reason>". Reasons: "no_data_source" (the events are not
+	// collected yet), "no_defined_formula", "insufficient_data".
+	// AUDIT_REMEDIATION.md F-40.
+	Unavailable []string `json:"unavailable,omitempty"`
 }

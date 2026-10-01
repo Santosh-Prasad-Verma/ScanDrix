@@ -578,11 +578,17 @@ func (r *MemoryPullRequestsRepository) BulkApplyFileChanges(ctx context.Context,
 				norm := strings.TrimPrefix(sug.RelevantFile, "./")
 				target, exists := fileMap[norm]
 				if !exists {
+					// The suggestion references a file the PR does not
+					// contain, so there is no diff to classify. Reporting it
+					// as "modified" asserted a change that never happened.
+					// "added" is the honest value: this entry is new to the
+					// report (SARIF baselineState "new"). AUDIT_REMEDIATION.md
+					// F-47.
 					newFile := models.File{
 						ID:          uuid.NewString(),
 						Path:        sug.RelevantFile,
 						Filename:    sug.RelevantFile,
-						Status:      "modified",
+						Status:      "added",
 						Suggestions: []models.Suggestion{},
 					}
 					pr.Files = append(pr.Files, newFile)

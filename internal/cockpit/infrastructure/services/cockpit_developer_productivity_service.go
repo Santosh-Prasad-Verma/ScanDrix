@@ -30,7 +30,7 @@ type ProductivityPRRecord struct {
 
 // InMemoryCockpitDeveloperProductivityService computes cycle velocity, sizing, and productivity metrics.
 type InMemoryCockpitDeveloperProductivityService struct {
-	mu sync.RWMutex
+	mu  sync.RWMutex
 	prs []ProductivityPRRecord
 }
 
@@ -515,11 +515,11 @@ func (s *InMemoryCockpitDeveloperProductivityService) GetLeadTimeBreakdown(
 	end = end.Add(24*time.Hour - time.Nanosecond)
 
 	type breakdownAcc struct {
-		prCount     int
-		codingMins  float64
-		pickupMins  float64
-		reviewMins  float64
-		totalMins   float64
+		prCount    int
+		codingMins float64
+		pickupMins float64
+		reviewMins float64
+		totalMins  float64
 	}
 	weeks := make(map[string]*breakdownAcc)
 
@@ -767,12 +767,15 @@ func (s *InMemoryCockpitDeveloperProductivityService) GetCompanyDashboard(
 		Name:     topDevName,
 		TotalPRs: topDevPRs,
 	}
-	dash.Metrics.CompanyRanking = domain.CompanyRanking{
-		Rank:                 1,
-		TotalCompanies:       1,
-		PercentageOfTotalPRs: 100.0,
-		TotalPRsAllCompanies: totalPRs,
-	}
+	// Cross-company ranking has no collected cohort data, so it stays absent.
+	// It used to be Rank 1 / TotalCompanies 1 / 100.0%, where the percentage
+	// divided this company's PRs by themselves. AUDIT_REMEDIATION.md F-41.
+	dash.Metrics.Unavailable = append(dash.Metrics.Unavailable,
+		"company_ranking.rank:no_data_source",
+		"company_ranking.total_companies:no_data_source",
+		"company_ranking.percentage_of_total_prs:no_data_source",
+		"company_ranking.total_prs_all_companies:no_data_source",
+	)
 
 	return dash, nil
 }

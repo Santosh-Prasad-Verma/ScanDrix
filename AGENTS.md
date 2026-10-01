@@ -55,6 +55,29 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 2.5 Before calling a feature complete, actually exercise it — hit the endpoint, confirm the row was written/read in the real (or sandbox) database, confirm the third-party call returns a real response. Report what you actually tested, not what "should" work.
 2.6 Remove debug output, temporary routes, and commented-out mock code before shipping. If something is intentionally still a stub, label it clearly (`// TODO: needs STRIPE_WEBHOOK_SECRET from user`) rather than leaving it mixed in silently with finished code.
 
+### 2.7 — Analytics and derived metrics: report absence, never substitute
+
+This is the rule that a partially-real endpoint keeps violating, so it is stated separately.
+
+2.7.1 A metric is either **computed from real data** or **absent**. It is never a plausible constant. `securityScore: 88.0` hardcoded in a handler is fabricated data, even when the same response also contains two genuinely queried counts.
+
+2.7.2 **A zero is not an acceptable substitute for an absent metric.** Zero means "measured, and the result was none". Use `null` plus a reason. A client cannot tell a fabricated zero from a real one, and neither can a reviewer skimming a screenshot.
+
+2.7.3 The API response must make absence machine-readable. The current contract is a sibling `unavailable` array naming each absent metric with one of:
+- `no_data_source` — the underlying events are not collected yet
+- `no_defined_formula` — a product definition is required before it can be computed
+- `insufficient_data` — the query ran but the sample or timestamps are not there yet
+
+Prefer a pointer type (`*float64`) in Go and `number | null` in TypeScript over a sentinel value, so the compiler forces every consumer to handle the absent case.
+
+2.7.4 **Partial honesty is still dishonest.** An endpoint that queries two fields and hardcodes the other three is worse than one that returns nothing, because the two real fields make the whole payload look trustworthy.
+
+2.7.5 When a dependency exists but is unwired, wire it. A complete live-probe implementation sitting next to a handler that returns a fixed latency is a bug, not a stub. Before writing new code for a capability, check whether a real implementation is already injected and simply unused.
+
+2.7.6 **Tests must not certify invented values.** A test that asserts a fallback exists is a test that passes precisely when the code is lying. Tests for a data-fetching client mock the transport and assert the real shape, and assert that a failed request *rejects* rather than resolving with a plausible value.
+
+2.7.7 For metrics, a test asserting a specific number is only meaningful if the database was seeded and the expected value derived by hand. Asserting against an empty database proves only that the code returns zeros.
+
 ## 3. Definition of Done — Every New Feature
 - [ ] Frontend calls a real backend endpoint — no mocked fetch, no hardcoded response
 - [ ] Backend performs a real DB query or real third-party call, not a stub
@@ -64,6 +87,8 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 - [ ] Errors are handled and surfaced without leaking internals (stack traces, DB errors, file paths)
 - [ ] No leftover logs of sensitive data, no dead mock code paths
 - [ ] Any still-missing credential or config is explicitly flagged to the user, not silently faked
+- [ ] Any derived metric is computed from real data, or returned as `null` with a reason in `unavailable` — never a constant, never a substituted zero
+- [ ] No client-side test asserts the existence of a fallback, invented ID, or placeholder value
 - [ ] Critical paths (auth, payments, writes) have at least a basic automated test where feasible
 - [ ] The feature was actually run once, end to end, and the result reported honestly
 

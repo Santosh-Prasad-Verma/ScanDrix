@@ -71,12 +71,15 @@ func InitLocalGateway() *llm.Gateway {
 	geminiKey := getEnvAny("GEMINI_API_KEY", "API_GOOGLE_AI_API_KEY")
 	openrouterKey := getEnvAny("OPENROUTER_API_KEY", "API_OPEN_ROUTER_API_KEY")
 	deepseekKey := getEnvAny("DEEPSEEK_API_KEY", "API_DEEPSEEK_API_KEY")
+	mistralKey := getEnvAny("MISTRAL_API_KEY", "API_MISTRAL_API_KEY")
+	groqKey := getEnvAny("GROQ_API_KEY", "API_GROQ_API_KEY")
+	cohereKey := getEnvAny("COHERE_API_KEY", "API_COHERE_API_KEY")
 	openAIBaseURL := getEnvAny("OPENAI_BASE_URL", "API_OPENAI_FORCE_BASE_URL")
 	vllmEndpoint := os.Getenv("VLLM_ENDPOINT")
 	localEndpoint := os.Getenv("LOCAL_LLM_ENDPOINT")
 
 	// If no AI keys or endpoints are configured, return nil
-	if anthropicKey == "" && openAIKey == "" && geminiKey == "" && openrouterKey == "" && deepseekKey == "" && localEndpoint == "" {
+	if anthropicKey == "" && openAIKey == "" && geminiKey == "" && openrouterKey == "" && deepseekKey == "" && mistralKey == "" && groqKey == "" && cohereKey == "" && localEndpoint == "" {
 		return nil
 	}
 
@@ -86,6 +89,15 @@ func InitLocalGateway() *llm.Gateway {
 	}
 	if deepseekKey != "" {
 		opts = append(opts, llm.WithDeepSeek(deepseekKey))
+	}
+	if mistralKey != "" {
+		opts = append(opts, llm.WithMistral(mistralKey))
+	}
+	if groqKey != "" {
+		opts = append(opts, llm.WithGroq(groqKey))
+	}
+	if cohereKey != "" {
+		opts = append(opts, llm.WithCohere(cohereKey))
 	}
 	if openAIBaseURL != "" {
 		opts = append(opts, llm.WithOpenAIBaseURL(openAIBaseURL))

@@ -18,8 +18,11 @@ import (
 
 // ASTStore defines the persistence interface for batch AST upserts.
 type ASTStore interface {
-	BatchInsertASTNodes(ctx context.Context, repoID uuid.UUID, nodes []graph.ASTNode) error
-	BatchInsertASTEdges(ctx context.Context, repoID uuid.UUID, edges []graph.ASTEdge) error
+	// WorkspaceIDForRepository resolves the owning workspace so the RLS-scoped
+	// AST writes below have a tenant to run under.
+	WorkspaceIDForRepository(ctx context.Context, repoID uuid.UUID) (uuid.UUID, error)
+	BatchInsertASTNodes(ctx context.Context, wsID, repoID uuid.UUID, nodes []graph.ASTNode) error
+	BatchInsertASTEdges(ctx context.Context, wsID, repoID uuid.UUID, edges []graph.ASTEdge) error
 }
 
 // BackfillProgress tracks worker progress for observability.
@@ -104,7 +107,7 @@ var supportedExtensions = map[string]bool{
 // SweepRepository performs a full architecture backfill on a cloned repository directory.
 // It walks the file tree, parses supported source files, extracts AST nodes/edges,
 // and persists them in batches via the ASTStore.
-func (w *Worker) SweepRepository(ctx context.Context, repoID uuid.UUID, repoDir string) error {
+func (w *Worker) SweepRepository(ctx context.Context, wsID, repoID uuid.UUID, repoDir string) error {
 	progress := &BackfillProgress{
 		RepositoryID: repoID,
 		StartedAt:    time.Now().UTC(),
@@ -238,7 +241,7 @@ func (w *Worker) SweepRepository(ctx context.Context, repoID uuid.UUID, repoDir 
 			end = len(allNodes)
 		}
 
-		if err := w.store.BatchInsertASTNodes(ctx, repoID, allNodes[i:end]); err != nil {
+		if err := w.store.BatchInsertASTNodes(ctx, wsID, repoID, allNodes[i:end]); err != nil {
 			slog.Error("backfill: batch insert nodes failed", "repo_id", repoID, "batch", i/w.batchSize, "error", err)
 			atomic.AddInt64(&progress.ErrorCount, 1)
 		}
@@ -251,7 +254,7 @@ func (w *Worker) SweepRepository(ctx context.Context, repoID uuid.UUID, repoDir 
 			end = len(allEdges)
 		}
 
-		if err := w.store.BatchInsertASTEdges(ctx, repoID, allEdges[i:end]); err != nil {
+		if err := w.store.BatchInsertASTEdges(ctx, wsID, repoID, allEdges[i:end]); err != nil {
 			slog.Error("backfill: batch insert edges failed", "repo_id", repoID, "batch", i/w.batchSize, "error", err)
 			atomic.AddInt64(&progress.ErrorCount, 1)
 		}

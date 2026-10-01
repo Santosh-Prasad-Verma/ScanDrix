@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -34,10 +35,10 @@ func TestSharedConfig_CascadingAndValidation(t *testing.T) {
 	cfg, err := LoadCascadingConfig(envLocalPath, envPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "8080", cfg.Get("PORT"))                                        // Overridden by .env.local
-	assert.Equal(t, "on", cfg.Get("FEATURE_A"))                                     // Overridden by .env.local
-	assert.Equal(t, "postgres://baseline:5432/db", cfg.Get("DATABASE_URL"))         // Retained from .env
-	assert.Equal(t, "default-val", cfg.Get("NON_EXISTENT", "default-val"))          // Fallback
+	assert.Equal(t, "8080", cfg.Get("PORT"))                                // Overridden by .env.local
+	assert.Equal(t, "on", cfg.Get("FEATURE_A"))                             // Overridden by .env.local
+	assert.Equal(t, "postgres://baseline:5432/db", cfg.Get("DATABASE_URL")) // Retained from .env
+	assert.Equal(t, "default-val", cfg.Get("NON_EXISTENT", "default-val"))  // Fallback
 
 	assert.True(t, cfg.Has("PORT"))
 	assert.False(t, cfg.Has("NON_EXISTENT"))
@@ -46,35 +47,28 @@ func TestSharedConfig_CascadingAndValidation(t *testing.T) {
 	require.Error(t, cfg.ValidateRequired("PORT", "MISSING_VAR"))
 }
 
-func TestAuthGuard_Middleware(t *testing.T) {
+// TestAuthGuardHasNoMiddleware pins AUDIT_REMEDIATION.md F-14.
+//
+// The guard previously accepted ANY non-empty Authorization header, never
+// validated the token, and injected a hardcoded claims object with
+// UserID "authenticated-user". The test at this location asserted that
+// `Bearer valid-token-123` was accepted, i.e. it certified the bypass.
+//
+// AuthGuard now deliberately exposes no Middleware method, so wiring it fails
+// at compile time rather than granting a session to anyone who sends a header.
+// The real guards are auth.Authenticator.Middleware and the MCP transport
+// middleware.
+func TestAuthGuardHasNoMiddleware(t *testing.T) {
 	guard := NewAuthGuard("secret-key", nil)
+	require.NotNil(t, guard, "the constructor is retained so call sites fail to compile loudly")
 
-	handler := guard.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(AuthContextKey{}).(*AuthenticatedClaims)
-		require.True(t, ok)
-		assert.Equal(t, "authenticated-user", claims.UserID)
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// 1. Missing header
-	reqNoAuth := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	rrNoAuth := httptest.NewRecorder()
-	handler.ServeHTTP(rrNoAuth, reqNoAuth)
-	assert.Equal(t, http.StatusUnauthorized, rrNoAuth.Code)
-
-	// 2. Malformed header
-	reqBadAuth := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	reqBadAuth.Header.Set("Authorization", "Basic 1234")
-	rrBadAuth := httptest.NewRecorder()
-	handler.ServeHTTP(rrBadAuth, reqBadAuth)
-	assert.Equal(t, http.StatusUnauthorized, rrBadAuth.Code)
-
-	// 3. Valid Bearer token
-	reqValid := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	reqValid.Header.Set("Authorization", "Bearer valid-token-123")
-	rrValid := httptest.NewRecorder()
-	handler.ServeHTTP(rrValid, reqValid)
-	assert.Equal(t, http.StatusOK, rrValid.Code)
+	// Compile-time proof, expressed as a reflection check so the assertion
+	// survives a future refactor that tries to re-add the method.
+	mt := reflect.TypeOf(guard)
+	_, hasMiddleware := mt.MethodByName("Middleware")
+	assert.False(t, hasMiddleware,
+		"AuthGuard must not expose Middleware: it cannot validate tokens and "+
+			"would authenticate anyone. Use auth.Authenticator.Middleware instead.")
 }
 
 func TestExceptionsFilter_PanicRecovery(t *testing.T) {

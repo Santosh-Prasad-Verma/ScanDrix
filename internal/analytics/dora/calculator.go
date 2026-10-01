@@ -112,13 +112,19 @@ func CalculateDORA(
 
 	// 5. Review Velocity & Developer Impact
 	hoursSaved := float64(defectsCaught) * 0.50 // 30 minutes saved per prevented vulnerability
+	// Cycle time and review latency have no collected source data. They used
+	// to be hardcoded to 24h and 45s, which reported invented values as
+	// measurements. They are left absent and named in Unavailable instead.
+	// AUDIT_REMEDIATION.md F-40.
 	report.ReviewVelocity = ReviewVelocityMetrics{
 		TotalPRsReviewed:         totalPRs,
-		AverageCycleTime:         24 * time.Hour,
-		AverageReviewLatency:     45 * time.Second,
 		DefectsCaughtBeforeMerge: defectsCaught,
 		EngineeringHoursSaved:    hoursSaved,
 	}
+	report.Unavailable = append(report.Unavailable,
+		"review_velocity.average_cycle_time:no_data_source",
+		"review_velocity.average_review_latency:no_data_source",
+	)
 
 	// 6. Overall Performance Tier
 	report.OverallTier = computeOverallTier([]PerformanceTier{dfTier, ltTier, cfrTier, mttrTier})
