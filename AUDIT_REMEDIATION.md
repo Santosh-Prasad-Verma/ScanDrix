@@ -1396,3 +1396,24 @@ So `codecov/patch` still fails, now honestly: measured **26.97%** against an
 database repositories. Reaching 80% is a large body of real test work, not a
 flag change, and lowering the gate to make this PR green was not done without a
 decision.
+
+## gosec status after the native-tool fix
+
+Measured from the SARIF artifact of the run on `ad6d7ef`: **34 findings**, down
+from 35.
+
+- **G702 (command injection) is cleared.** `internal/agents/tools/native_tools.go`
+  no longer passes a command line to `sh -c`; it validates an allowlisted binary
+  and executes a literal argv vector. The `#nosec G702` marker on the executor
+  records why the annotation is needed (gosec cannot follow the allowlist), and
+  the allowlist rejects the flags that would make a read-only binary write or
+  execute (`find -delete/-exec/-fprintf`, `diff`/`git --output`, `git
+  --ext-diff`), plus every mutating git subcommand including `branch` and
+  `remote`.
+- **34 remain, and are not suppressed:** 28 × G703 (path traversal) and 6 × G704
+  (SSRF), concentrated in CLI hook installers and quick-fix appliers
+  (`internal/cli/hooks/`, `internal/cli/git/`, `internal/cli/features/review/quickfix/`),
+  plus `internal/cli/updater`, `internal/enterprise/license/loader.go`,
+  `internal/scandrix/proofoffix/verifier.go`, `cmd/migrate`, and two controllers.
+  Each needs a real path-confinement or host-allowlist fix, or an explicit
+  risk acceptance. They were left failing on purpose rather than silenced.
