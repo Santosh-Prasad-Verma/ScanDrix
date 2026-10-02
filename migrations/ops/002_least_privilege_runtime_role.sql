@@ -43,7 +43,15 @@ BEGIN
 END
 $$;
 
-GRANT CONNECT ON DATABASE scandrix TO scandrix_runtime;
+-- CONNECT is granted against whichever database this script was run in, not a
+-- hardcoded name. Hardcoding "scandrix" made this fail on CI, staging and any
+-- local install whose database is named differently, which left those
+-- environments with no CONNECT grant for the runtime role at all.
+DO $$
+BEGIN
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO scandrix_runtime', current_database());
+END
+$$;
 
 -- USAGE to read types (incl. the pgvector `vector` type); CREATE because two
 -- packages lazily ensure their own tables at boot

@@ -324,6 +324,11 @@ type assignLicenseRequest struct {
 }
 
 func (c *LicenseController) handleAssignLicense(w http.ResponseWriter, r *http.Request) {
+	if _, err := auth.WorkspaceFromContext(r.Context()); err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req assignLicenseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON request body"}`, http.StatusBadRequest)
@@ -397,6 +402,11 @@ func (c *LicenseController) handleGetRemovableSeats(w http.ResponseWriter, r *ht
 }
 
 func (c *LicenseController) handlePruneSeats(w http.ResponseWriter, r *http.Request) {
+	if _, err := auth.WorkspaceFromContext(r.Context()); err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
 		TeamID string   `json:"teamId,omitempty"`
 		GitIDs []string `json:"gitIds,omitempty"`
@@ -417,6 +427,11 @@ type trialExtensionRequestPayload struct {
 }
 
 func (c *LicenseController) handleTrialExtensionRequest(w http.ResponseWriter, r *http.Request) {
+	if _, err := auth.WorkspaceFromContext(r.Context()); err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req trialExtensionRequestPayload
 	_ = json.NewDecoder(r.Body).Decode(&req)
 

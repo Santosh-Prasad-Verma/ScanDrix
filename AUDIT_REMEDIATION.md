@@ -43,12 +43,16 @@ script can recompute from the rows: **69 tabulated, 0 open**.
 
 ### Not closed, and why
 
-- **F-37 (PARTIAL)** -- `cli_auth_sessions` still has no RLS. The schema conflict
-  that blocked it is resolved (see F-37b: one live writer remains). What is left
-  is a design question: the OAuth device flow authenticates by `device_code`
-  before any tenant exists, so there is nothing to scope a row to until
-  redemption binds an opaque device secret to a tenant. That needs a product
-  decision, not a patch.
+- **F-37 (RLS now closed)** -- `cli_auth_sessions` RLS was the last open piece and
+  is now in place: `migrations/042_cli_auth_sessions_rls.sql` enables and forces
+  it, with a policy that admits a system worker, the owning tenant, and a
+  `PENDING` row that legitimately has no tenant yet. Verified against a real
+  Postgres as the least-privilege role: a second tenant reads `0` rows from
+  another tenant's COMPLETED session (the row that carries the token), the owner
+  reads `1`, a runtime INSERT of a tenant-less COMPLETED row is rejected, and a
+  tenant-less PENDING row is still accepted. The row is also registered in
+  `RLS_TABLES` (`internal/database/rls_bypass_test.go`) so the inventory test
+  enforces it going forward.
 - **F-16 (prose-only)** -- OAuth `state` is not bound to a browser session. The
   precondition is confirmed against the running app (anonymous `state` mint, no
   cookie, no PKCE), but completing a real GitHub OAuth exchange needs
@@ -633,7 +637,7 @@ Also **no PKCE** (`code_challenge` absent from the URL).
 
 | F-36 `[DISPROVEN]` | `repository_scm.go:605,630` | Queries `finding_feedbacks`; the table is `finding_feedback`, and the columns differ too (`reaction`/`is_actioned`/`updated_at` do not exist; the real one has `sentiment`). | **Not a live bug.** `PgFindingFeedbackRepository` is never constructed. The live path is `internal/database/review_repository.go`, which uses the correct names (and carried the separate live bug above). Dead code; delete or reconcile separately. |
 | F-36 | `repository_scm.go:605,630` vs `migrations/005:99` | Queries `finding_feedbacks`; migration creates `finding_feedback`. | Rename. | **DISPROVEN** — table name mismatch lives in dead code |
-| F-37 `[DONE]` | `cli_auth_sessions` tenant isolation | Tenant RLS could not be added: the table was written by four incompatible schemas, and the device flow authenticated by `device_code` before any tenant existed. | Tenant-bound device flow, then RLS. | **DONE (binding).** The four-writer conflict is resolved (F-37b -- one live writer remains). `workspace_id` added to `cli_auth_sessions` (idempotent `ALTER TABLE` for existing installs) and to `CLIDeviceSession`. The tenant is written on the **browser-approval leg** from the authenticated session, never from the CLI -- the RFC 8628 pattern. Two fail-closed gates: approval without a tenant is refused (`ErrNoWorkspace`), and redemption of a COMPLETED row with no tenant is refused, which also protects rows written by pre-fix deployments. Tests in `internal/auth/cliauth/f37_tenant_binding_test.go` cover all four cases. **RLS itself is still not enabled** -- that is a follow-up now that rows are tenant-owned |
+| F-37 `[DONE]` | `cli_auth_sessions` tenant isolation | Tenant RLS could not be added: the table was written by four incompatible schemas, and the device flow authenticated by `device_code` before any tenant existed. | Tenant-bound device flow, then RLS. | **DONE (binding).** The four-writer conflict is resolved (F-37b -- one live writer remains). `workspace_id` added to `cli_auth_sessions` (idempotent `ALTER TABLE` for existing installs) and to `CLIDeviceSession`. The tenant is written on the **browser-approval leg** from the authenticated session, never from the CLI -- the RFC 8628 pattern. Two fail-closed gates: approval without a tenant is refused (`ErrNoWorkspace`), and redemption of a COMPLETED row with no tenant is refused, which also protects rows written by pre-fix deployments. Tests in `internal/auth/cliauth/f37_tenant_binding_test.go` cover all four cases. **RLS itself is now enabled** by `migrations/042_cli_auth_sessions_rls.sql` (ENABLE + FORCE, policy `cli_auth_sessions_lifecycle`), so the second half of this row is closed too; it was verified against a live Postgres as the least-privilege role, and `cli_auth_sessions` is registered in `RLS_TABLES` so `TestRLSTableInventoryIsCurrent` fails if the policy is ever dropped |
 | F-38 | `internal/sandbox/e2b/provider.go:327-343` | `ExitCode: 0` for **every** command when `APP_ENV` isn't exactly `"production"`. A staging deploy that fails to reach E2B reports a clean pass. | Fail closed on any remote-execution error unless `ALLOW_UNSANDBOXED_COMMAND_EXECUTION=true`. | **DONE** — staging requires isolation; dev mock reports exit 127 |
 | F-39 | `internal/sandbox/null/null_provider.go` | `Grep` returns `"No matches found."` without searching. A vulnerability scan reports clean. | Return `nil` + `unavailable:["no_data_source"]`. Per AGENTS.md §2.7.2. | **DONE** |
 | F-40 | `analytics/dora/calculator.go:114-122` `[DEAD-CODE]` | `AverageCycleTime: 24 * time.Hour` and `AverageReviewLatency: 45 * time.Second` are **literals presented as measurements**. | Delete. `internal/database/dora_repository.go:154-224` is the correct reference. | **DONE** — `AverageCycleTime`/`AverageReviewLatency` are `*time.Duration`, left nil, and named in `DORAReport.Unavailable` as `no_data_source`; JSON emits explicit `null`. Red/green test pins it |
@@ -1207,11 +1211,12 @@ the condition rather than leaving it invisible.
 
 ## Remaining limitation, stated plainly
 
-The device-flow **session** store is still in-process (`InMemorySessionStore`),
-and `cli_auth_sessions` still has no RLS. That is F-27/F-37 and is *not* addressed
-here: RFC 8628 polling is unauthenticated before redemption, so it cannot carry
-tenant context and needs a different design (an opaque device secret, with the
-tenant bound at redemption) rather than a rate-limit policy. What is now fixed is
+The device-flow **session** store is still in-process (`InMemorySessionStore`).
+`cli_auth_sessions` no longer has no RLS -- that part is closed by migration 042,
+with the tenant bound on the approval leg. What remains is F-27: RFC 8628 polling
+is unauthenticated before redemption, so the poll itself cannot carry tenant
+context and needs a different design (an opaque device secret, with the tenant
+bound at redemption) rather than a rate-limit policy. What is now fixed is
 the request-level limiting and the brute-force lockout, which are the parts that
 were silently weakened.
 
@@ -1331,3 +1336,63 @@ The usecase (`trigger_business_validation.go`) and the stage
 uniformly-unwired `Deep*` stages, so deleting one would be arbitrary, and both
 are git-tracked. See the `Deep*` bullet under "Needs an operator or product
 decision".
+
+## The database security tests never ran in CI
+
+Found while fixing the `codecov/patch` failure, and worth more than the coverage
+number that led to it.
+
+The audit remediation added database-backed tests on purpose: RLS enforcement
+under a least-privilege role, tenant isolation, token-revocation atomicity,
+schema drift, SCIM tenant resolution, sandbox lease concurrency. Each one skips
+when its DSN is unset. **Neither `ci.yml` nor `pr-quality-gate.yml` provided a
+database**, so all 32 of those test sites skipped on every run. The pipeline
+reported `296 ok / 0 fail` while the checks that actually prove the tenancy
+boundary were never executed -- they only ever ran on a developer machine that
+happened to have Postgres up.
+
+Both workflows now start `pgvector/pgvector:pg16` (same image and major as the
+compose files, F-57), apply migrations, and provision the least-privilege
+`scandrix_runtime` role before testing. Four of those tests **fail on purpose**
+when they detect a superuser connection, because a superuser bypasses RLS and
+would make them vacuous; pointing them at the container's owner would have been
+a false green, so CI creates a real `NOSUPERUSER NOBYPASSRLS` role instead.
+The password is set in the workflow, not in the ops script, so no credential is
+committed.
+
+Turning this on immediately found three real defects, all now fixed:
+
+1. `TestRLSTableInventoryIsCurrent` failed -- `cli_auth_sessions` had RLS but was
+   absent from `RLS_TABLES`, so nothing would have noticed the policy being
+   dropped. Now registered.
+2. Migration 042's `WITH CHECK` was too strict: it rejected the legitimate
+   tenant-less `PENDING` insert. Corrected to admit that phase explicitly.
+3. `migrations/ops/002_least_privilege_runtime_role.sql` hardcoded
+   `GRANT CONNECT ON DATABASE scandrix`, so it errored on any installation
+   whose database has another name -- including CI. It now grants against
+   `current_database()`.
+
+Full suite with `-race` against a real database and the least-privilege role:
+**296 ok / 0 fail**. The database-backed tests are no longer dead weight.
+
+### Known, still open: coverage is under-attributed
+
+Go instruments only a package's *own* tests unless `-coverpkg` is given, so
+statements run by a sibling `_test` package are discarded. Every licensing
+controller therefore reports **0.0%** even though
+`internal/api/controllers/tests` exercises them: measured per package they are
+at 80.1% (`license_controller.go`), 83.3% (`scim_token_controller.go`), 90.5%
+(`capabilities_controller.go`) and 68.7% (`billing_controller.go`).
+
+`-coverpkg=./...` is **not** the fix and was deliberately not shipped: across
+~180 test binaries each instrumenting the whole module it produced a corrupt,
+non-reproducible profile (two identical runs yielded 92,816 and 68,157 unique
+blocks, one of them unparseable, at 1.8 GB). The sound approach is one
+`-coverpkg` profile per external test package, merged with `gocovmerge`; that is
+a separate change.
+
+So `codecov/patch` still fails, now honestly: measured **26.97%** against an
+80% target, on an 11,573-line diff across 146 files, dominated by untested
+database repositories. Reaching 80% is a large body of real test work, not a
+flag change, and lowering the gate to make this PR green was not done without a
+decision.

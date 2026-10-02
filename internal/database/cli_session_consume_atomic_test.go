@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/scandrix/backend/internal/auth/cliauth"
 )
@@ -37,6 +38,9 @@ func TestConsumeCLISessionByDeviceCodeIsAtomic(t *testing.T) {
 	repo := NewRepository(client)
 	ctx := context.Background()
 	deviceCode := "atomic-probe-" + uuid.New().String()
+	// A completed session always carries a tenant after F-37, and migration
+	// 042's policy refuses a tenant-less completed row from the runtime role.
+	wsID := uuid.New()
 
 	session := &cliauth.CLIDeviceSession{
 		UUID:         uuid.New(),
@@ -48,6 +52,7 @@ func TestConsumeCLISessionByDeviceCodeIsAtomic(t *testing.T) {
 		RefreshToken: "refresh-atomic",
 		UserEmail:    "atomic@example.test",
 		ExpiresAt:    time.Now().UTC().Add(10 * time.Minute),
+		WorkspaceID:  wsID,
 	}
 	// Seeded with direct SQL rather than repo.CreateCLISession on purpose.
 	//
@@ -55,20 +60,32 @@ func TestConsumeCLISessionByDeviceCodeIsAtomic(t *testing.T) {
 	// schema it fails -- and its caller discards that error, leaving the device
 	// flow memory-backed. That is a separate pre-existing defect; seeding here
 	// keeps this test pointed at the guarded UPDATE it is meant to verify.
-	if _, err := client.Pool.Exec(ctx, `
-		INSERT INTO cli_auth_sessions (
-			session_id, uuid, state, device_code, user_code, mode, status,
-			access_token, refresh_token, user_email, expires_at, redirect_uri
-		) VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7, $8, $9, $10, '')`,
-		deviceCode, session.UUID, session.State, session.DeviceCode, session.UserCode,
-		session.Mode, session.AccessToken, session.RefreshToken, session.UserEmail,
-		session.ExpiresAt,
-	); err != nil {
+	//
+	// Seeded through ExecAsSystem, because that is how production creates the
+	// session (CreateCLISession runs on the system connection). A direct
+	// runtime-role INSERT is now correctly rejected: migration 042 requires a
+	// completed row to carry a tenant, and F-37 binds one on the approval leg.
+	err = client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO cli_auth_sessions (
+				session_id, uuid, state, device_code, user_code, mode, status,
+				access_token, refresh_token, user_email, expires_at, redirect_uri,
+				workspace_id
+			) VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7, $8, $9, $10, '', $11)`,
+			deviceCode, session.UUID, session.State, session.DeviceCode, session.UserCode,
+			session.Mode, session.AccessToken, session.RefreshToken, session.UserEmail,
+			session.ExpiresAt, wsID,
+		)
+		return err
+	})
+	if err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = client.Pool.Exec(context.Background(),
-			`DELETE FROM cli_auth_sessions WHERE device_code = $1`, deviceCode)
+		_ = client.ExecAsSystem(context.Background(), func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `DELETE FROM cli_auth_sessions WHERE device_code = $1`, deviceCode)
+			return err
+		})
 	})
 
 	// Confirm the row really landed in Postgres before racing on it.

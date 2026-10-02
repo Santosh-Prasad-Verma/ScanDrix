@@ -107,7 +107,7 @@ func ImportantFunction(a int) int {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !badRes.IsError || !strings.Contains(badRes.Output, "disallowed") {
-		t.Errorf("expected disallowed error for rm command, got: %v", badRes)
+	if !badRes.IsError || !strings.Contains(badRes.Output, "not permitted in a read-only sandbox") {
+		t.Errorf("expected not-permitted error for rm command, got: %v", badRes)
 	}
 }

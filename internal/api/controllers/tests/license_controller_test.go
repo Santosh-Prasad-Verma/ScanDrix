@@ -309,6 +309,216 @@ func TestLicenseSeatsReportsUnlimited(t *testing.T) {
 	}
 }
 
+// GET / must surface the stored license row's own fields. It previously seeded
+// OrganizationName from the tier, which made an unlicensed workspace report its
+// plan as its company name.
+func TestGetLicenseSurfacesStoredRowAndNeverSeedsOrgNameFromTier(t *testing.T) {
+	wsID := uuid.New()
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	t.Run("licensed workspace reports the stored organization name", func(t *testing.T) {
+		repo := &mockLicenseRepo{
+			license: &models.OrganizationLicense{
+				LicenseKey:       "lic_live_key",
+				OrganizationName: "Acme Corp",
+				PlanTier:         string(license.TierTeam),
+				TotalSeats:       25,
+				AllocatedSeats:   11,
+				IsAirGapped:      true,
+				ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
+			},
+		}
+		ctrl := controllers.NewLicenseController(repo).WithVerifier(license.NewLicenseManager(pub))
+
+		rec := doLicenseRequest(t, ctrl, http.MethodGet, "/", "", wsID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("failed decoding response: %v", err)
+		}
+
+		if body["organization_name"] != "Acme Corp" {
+			t.Errorf("expected the stored organization name, got %v", body["organization_name"])
+		}
+		if body["plan_tier"] != string(license.TierTeam) {
+			t.Errorf("expected TEAM, got %v", body["plan_tier"])
+		}
+		if body["allocated_seats"] != float64(11) {
+			t.Errorf("expected allocated_seats=11, got %v", body["allocated_seats"])
+		}
+		if body["total_seats"] != float64(25) {
+			t.Errorf("expected total_seats=25, got %v", body["total_seats"])
+		}
+		if body["is_air_gapped"] != true {
+			t.Errorf("expected is_air_gapped=true, got %v", body["is_air_gapped"])
+		}
+		if body["license_key"] != "lic_live_key" {
+			t.Errorf("expected the stored license key, got %v", body["license_key"])
+		}
+	})
+
+	t.Run("unlicensed workspace reports an empty organization name", func(t *testing.T) {
+		ctrl := controllers.NewLicenseController(&mockLicenseRepo{}).WithVerifier(license.NewLicenseManager(pub))
+
+		rec := doLicenseRequest(t, ctrl, http.MethodGet, "/", "", wsID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("failed decoding response: %v", err)
+		}
+
+		if body["organization_name"] != "" {
+			t.Fatalf("an unlicensed workspace must not report an organization name, got %v", body["organization_name"])
+		}
+		if body["license_key"] != "" {
+			t.Fatalf("an unlicensed workspace must not report a license key, got %v", body["license_key"])
+		}
+		if body["allocated_seats"] != float64(0) {
+			t.Fatalf("expected allocated_seats=0, got %v", body["allocated_seats"])
+		}
+		if body["plan_tier"] != string(license.TierCommunity) {
+			t.Fatalf("expected COMMUNITY for an unlicensed workspace, got %v", body["plan_tier"])
+		}
+	})
+}
+
+// A signed license must win over the stored row for the entitlement fields, and
+// the stored row must still supply the purely descriptive ones.
+func TestGetLicensePrefersSignedLicenseForEntitlementFields(t *testing.T) {
+	wsID := uuid.New()
+	repo := &mockLicenseRepo{
+		license: &models.OrganizationLicense{
+			OrganizationName: "Acme Corp",
+			PlanTier:         string(license.TierTeam),
+			TotalSeats:       25,
+			ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
+		},
+	}
+	token, pub := issueTestLicense(t, license.LicensePayload{
+		Tier:      license.TierEnterprise,
+		MaxSeats:  500,
+		Features:  []string{string(license.FeatureSCIM)},
+		IssuedAt:  time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
+	})
+	mgr := license.NewLicenseManager(pub)
+	if _, err := mgr.LoadLicense(token); err != nil {
+		t.Fatalf("failed loading license: %v", err)
+	}
+	ctrl := controllers.NewLicenseController(repo).WithVerifier(mgr)
+
+	rec := doLicenseRequest(t, ctrl, http.MethodGet, "/", "", wsID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed decoding response: %v", err)
+	}
+
+	if body["plan_tier"] != string(license.TierEnterprise) {
+		t.Errorf("expected the signed ENTERPRISE tier, got %v", body["plan_tier"])
+	}
+	if body["total_seats"] != float64(500) {
+		t.Errorf("expected 500 seats from the signed license, got %v", body["total_seats"])
+	}
+	if body["organization_name"] != "Acme Corp" {
+		t.Errorf("expected the stored organization name, got %v", body["organization_name"])
+	}
+}
+
+// Every workspace-scoped licensing route must fail closed without a workspace
+// rather than reporting a tier derived from nothing.
+func TestLicenseRoutesRejectMissingWorkspaceContext(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	ctrl := controllers.NewLicenseController(&mockLicenseRepo{}).WithVerifier(license.NewLicenseManager(pub))
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/", ""},
+		{http.MethodPost, "/activate", `{"license_key":"x"}`},
+		{http.MethodGet, "/seats", ""},
+		{http.MethodGet, "/status", ""},
+		{http.MethodGet, "/org-status", ""},
+		{http.MethodPost, "/assign", `{"users":[]}`},
+		{http.MethodGet, "/removable-seats", ""},
+		{http.MethodPost, "/prune-seats", `{"keepUserIds":[]}`},
+		{http.MethodPost, "/trial-extension-request", `{"reason":"growth"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			ctrl.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 without a workspace context, got %d (%s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// GET /users exists so the UI can render the licensed-user table. It returns an
+// empty list rather than inventing rows, and must do so as a JSON array.
+func TestGetUsersWithLicenseReturnsEmptyArrayNotNil(t *testing.T) {
+	wsID := uuid.New()
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	ctrl := controllers.NewLicenseController(&mockLicenseRepo{}).WithVerifier(license.NewLicenseManager(pub))
+
+	rec := doLicenseRequest(t, ctrl, http.MethodGet, "/users", "", wsID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Fatalf("expected a JSON array, got %q", got)
+	}
+}
+
+// WithResolver must be honoured, so a prebuilt resolver injected by the router
+// is the one that answers -- the controller must not silently rebuild its own.
+func TestWithResolverIsHonouredOverTheStoreAdapter(t *testing.T) {
+	wsID := uuid.New()
+	token, pub := issueTestLicense(t, license.LicensePayload{
+		Tier:      license.TierScale,
+		MaxSeats:  100,
+		IssuedAt:  time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
+	})
+	mgr := license.NewLicenseManager(pub)
+	if _, err := mgr.LoadLicense(token); err != nil {
+		t.Fatalf("failed loading license: %v", err)
+	}
+
+	// A store that would report COMMUNITY, paired with a resolver that reports
+	// SCALE. The response proves which one was consulted.
+	injected := controllers.NewLicenseController(&mockLicenseRepo{}).WithResolver(
+		license.NewResolver(mgr, nil),
+	)
+
+	rec := doLicenseRequest(t, injected, http.MethodGet, "/", "", wsID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed decoding response: %v", err)
+	}
+	if body["plan_tier"] != string(license.TierScale) {
+		t.Fatalf("expected the injected resolver's SCALE tier, got %v", body["plan_tier"])
+	}
+}
+
 func TestPublicKeyFromBase64AcceptsPEMArmouredKey(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
