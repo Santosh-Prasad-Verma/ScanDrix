@@ -2,7 +2,7 @@
 # Pinned to the Go release go.mod requires (1.25.3). An unpinned
 # `golang:alpine` drifts with the tag, so builds either break or silently
 # download a toolchain at image-build time (AUDIT_REMEDIATION.md F-58).
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git ca-certificates tzdata
