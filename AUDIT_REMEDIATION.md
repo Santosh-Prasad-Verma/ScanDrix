@@ -1373,7 +1373,8 @@ Turning this on immediately found three real defects, all now fixed:
    `current_database()`.
 
 Full suite with `-race` against a real database and the least-privilege role:
-**296 ok / 0 fail**. The database-backed tests are no longer dead weight.
+**296 ok / 0 fail** at the time of writing; 298 after the gosec and coverage work.
+The database-backed tests are no longer dead weight.
 
 ### Known, still open: the patch gate, and why it is not a test gap
 
@@ -1384,16 +1385,11 @@ them), so the effect was systemic: **every** licensing controller reported 0.0%
 despite hundreds of passing tests exercising it, and the Codecov patch gate
 failed for a diff that was in fact well covered.
 
-Measured, before and after the fix:
-
-| | before | after |
-|---|---|---|
-| `license_controller.go` | 0.0% | 76.9% |
-| `scim_token_controller.go` | 0.0% | 83.3% |
-| `capabilities_controller.go` | 0.0% | 90.5% |
-| `billing_controller.go` | 0.0% | 68.7% |
-| overall | 47.40% | 48.85% |
-| **patch** | **26.34%** | **30.21%** |
+Codecov's own figure for this PR, measured before and after: **27.7% -> 60.25%**
+of the diff hit. Per-file, the licensing controllers went from a reported 0.0%
+to their real numbers (`license_controller.go` 76.9%, `scim_token_controller.go`
+83.3%, `capabilities_controller.go` 90.5%, `billing_controller.go` 68.7%), and
+project coverage rose to 45.03%.
 
 The fix is the standard two-pass run, added to `ci.yml`: the suite runs normally,
 then each external test package is re-run with `-coverpkg` pointing at the
@@ -1405,33 +1401,13 @@ whole module, and the profile comes out truncated and non-reproducible -- two
 identical runs yielded 92,816 and 68,157 unique blocks, one of them unparseable,
 at 1.8 GB.
 
-**The patch gate still fails**, now for the honest reason: 30.21% against an
-80% target on a 12,050-line diff whose largest uncovered blocks are untested
-database repositories (`scim_repository.go` 612, `auth_repository.go` 435,
-`analytics_repository.go` 319, `sso_config_repository.go` 292). Closing that gap
-is a substantial body of real test work. Lowering the gate to make this PR green
-was not done.
-
-## gosec status after the native-tool fix
-
-Measured from the SARIF artifact of the run on `ad6d7ef`: **34 findings**, down
-from 35.
-
-- **G702 (command injection) is cleared.** `internal/agents/tools/native_tools.go`
-  no longer passes a command line to `sh -c`; it validates an allowlisted binary
-  and executes a literal argv vector. The `#nosec G702` marker on the executor
-  records why the annotation is needed (gosec cannot follow the allowlist), and
-  the allowlist rejects the flags that would make a read-only binary write or
-  execute (`find -delete/-exec/-fprintf`, `diff`/`git --output`, `git
-  --ext-diff`), plus every mutating git subcommand including `branch` and
-  `remote`.
-- **34 remain, and are not suppressed:** 28 × G703 (path traversal) and 6 × G704
-  (SSRF), concentrated in CLI hook installers and quick-fix appliers
-  (`internal/cli/hooks/`, `internal/cli/git/`, `internal/cli/features/review/quickfix/`),
-  plus `internal/cli/updater`, `internal/enterprise/license/loader.go`,
-  `internal/scandrix/proofoffix/verifier.go`, `cmd/migrate`, and two controllers.
-  Each needs a real path-confinement or host-allowlist fix, or an explicit
-  risk acceptance. They were left failing on purpose rather than silenced.
+**The patch gate still fails**, now for the honest reason: 60.25% against an 80%
+target. The largest remaining uncovered blocks are database repositories and
+controllers with little or no test coverage (`scim_repository.go`,
+`auth_repository.go`, `analytics_repository.go`, `sso_config_repository.go`,
+`code_management_controller.go`, `drixy_rules_controller.go`,
+`github_controller.go`). Closing roughly 20 points is real, substantial test work
+across those files; the gate was not lowered to make this PR green.
 
 ## The gosec gate could not pass even with zero findings
 
