@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 // TraceEvent models a recorded developer prompt, model output, or code remediation.
@@ -47,6 +48,27 @@ func NewTraceStore() *TraceStore {
 }
 
 // Record appends a trace event to the session's JSONL file.
+// sessionFilePath builds the on-disk path for a session id and guarantees it
+// stays inside the store's base directory.
+//
+// SessionID arrives in a TraceEvent, so it is untrusted input. Forming the path
+// with filepath.Join alone would let "../../.ssh/authorized_keys" escape, and
+// Record appends to whatever it is handed.
+func (s *TraceStore) sessionFilePath(sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("session id is empty")
+	}
+	// "." and ".." are not separators, so filepath.Base would accept them, but
+	// they are not session ids and would produce a file named "...jsonl".
+	if sessionID == "." || sessionID == ".." {
+		return "", fmt.Errorf("invalid session id %q", sessionID)
+	}
+	if sessionID != filepath.Base(sessionID) || strings.ContainsAny(sessionID, `/\\`) {
+		return "", fmt.Errorf("invalid session id %q: must not contain path separators", sessionID)
+	}
+	return pathguard.Resolve(s.baseDir, sessionID+".jsonl")
+}
+
 func (s *TraceStore) Record(evt TraceEvent) error {
 	if evt.SessionID == "" {
 		evt.SessionID = uuid.New().String()
@@ -58,7 +80,10 @@ func (s *TraceStore) Record(evt TraceEvent) error {
 		evt.Timestamp = time.Now().UTC()
 	}
 
-	sessionFile := filepath.Join(s.baseDir, fmt.Sprintf("%s.jsonl", evt.SessionID))
+	sessionFile, err := s.sessionFilePath(evt.SessionID)
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -102,7 +127,10 @@ func (s *TraceStore) Recall(targetPaths []string, limit int) ([]TraceEvent, erro
 
 	matches := make([]TraceEvent, 0)
 	for _, sessID := range sessions {
-		sessFile := filepath.Join(s.baseDir, fmt.Sprintf("%s.jsonl", sessID))
+		sessFile, pathErr := s.sessionFilePath(sessID)
+		if pathErr != nil {
+			continue
+		}
 		f, err := os.Open(sessFile)
 		if err != nil {
 			continue
@@ -149,7 +177,10 @@ func (s *TraceStore) Pin(decisionID string, remove bool) error {
 	}
 
 	for _, sessID := range sessions {
-		sessFile := filepath.Join(s.baseDir, fmt.Sprintf("%s.jsonl", sessID))
+		sessFile, pathErr := s.sessionFilePath(sessID)
+		if pathErr != nil {
+			continue
+		}
 		data, err := os.ReadFile(sessFile)
 		if err != nil {
 			continue
@@ -177,7 +208,7 @@ func (s *TraceStore) Pin(decisionID string, remove bool) error {
 		}
 
 		if updated {
-			return os.WriteFile(sessFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600)
+			return os.WriteFile(sessFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600) // #nosec G703 -- sessFile comes from sessionFilePath, which rejects separators and confines via pathguard
 		}
 	}
 
@@ -192,7 +223,10 @@ func (s *TraceStore) Forget(decisionID string) error {
 	}
 
 	for _, sessID := range sessions {
-		sessFile := filepath.Join(s.baseDir, fmt.Sprintf("%s.jsonl", sessID))
+		sessFile, pathErr := s.sessionFilePath(sessID)
+		if pathErr != nil {
+			continue
+		}
 		data, err := os.ReadFile(sessFile)
 		if err != nil {
 			continue
@@ -220,7 +254,7 @@ func (s *TraceStore) Forget(decisionID string) error {
 		}
 
 		if updated {
-			return os.WriteFile(sessFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600)
+			return os.WriteFile(sessFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600) // #nosec G703 -- sessFile comes from sessionFilePath, which rejects separators and confines via pathguard
 		}
 	}
 

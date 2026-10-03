@@ -179,7 +179,7 @@ func licenseTokenFromEnv() (string, error) {
 		return "", nil
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G703 -- this path is the operator-supplied air-gapped license file location; naming an arbitrary path is the documented feature, and setting the variable already requires host access
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", EnvLicenseFile, err)
 	}

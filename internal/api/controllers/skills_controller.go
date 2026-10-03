@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	agentSkills "github.com/scandrix/backend/internal/agents/skills"
 	cliSkills "github.com/scandrix/backend/internal/cli/skills"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 // SkillsController provides REST access to agent skill metadata and instructions.
@@ -65,15 +66,17 @@ func (c *SkillsController) resolveSkillManifest(skillName string) (*agentSkills.
 		return nil, fmt.Errorf("invalid skill name")
 	}
 
-	searchPaths := []string{
-		filepath.Join(c.baseDir, cleanName),
-		filepath.Join(".agents", "skills", cleanName),
-		filepath.Join("internal", "agents", "skills", cleanName),
-	}
-
-	for _, p := range searchPaths {
-		skillFile := filepath.Join(p, "SKILL.md")
-		if _, err := os.Stat(skillFile); err == nil {
+	// skillName arrives in a request, and each candidate below is turned into a
+	// path that is then opened. A name is only usable if it resolves inside the
+	// directory it is looked up in, which is checked rather than inferred from a
+	// substring test.
+	for _, base := range []string{c.baseDir, ".agents/skills", "internal/agents/skills"} {
+		dir, err := pathguard.Resolve(base, cleanName)
+		if err != nil {
+			continue
+		}
+		skillFile := filepath.Join(dir, "SKILL.md")
+		if _, err := os.Stat(skillFile); err == nil { // #nosec G703 -- skillFile is built from a directory returned by pathguard.Resolve, so it cannot leave the search base
 			return agentSkills.LoadSkillFromFile(skillFile)
 		}
 	}

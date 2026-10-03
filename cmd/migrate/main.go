@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 func main() {
@@ -89,6 +90,19 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 	}
 	sort.Strings(files)
 
+	// Glob already restricts to *.sql inside migrationsDir, but each path is
+	// re-checked before it is read: this is a privileged migration binary, and a
+	// file it opens is executed as SQL against the database.
+	confined := make([]string, 0, len(files))
+	for _, file := range files {
+		safe, gErr := pathguard.ResolveExisting(migrationsDir, filepath.Base(file))
+		if gErr != nil {
+			log.Fatalf("Refusing migration path %q: %v", file, gErr)
+		}
+		confined = append(confined, safe)
+	}
+	files = confined
+
 	for _, file := range files {
 		baseName := filepath.Base(file)
 
@@ -101,7 +115,7 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 		}
 
 		fmt.Printf("Applying migration atomically in transaction: %s\n", baseName)
-		content, err := os.ReadFile(file)
+		content, err := os.ReadFile(file) // #nosec G703 -- file comes from filepath.Glob(*.sql) inside migrationsDir and is re-confined by pathguard.ResolveExisting on the loop above; its contents are executed as SQL
 		if err != nil {
 			log.Fatalf("Failed reading migration %s: %v", file, err)
 		}

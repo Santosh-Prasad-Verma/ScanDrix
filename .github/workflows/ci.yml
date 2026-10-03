@@ -95,6 +95,60 @@ jobs:
         run: |
           gotestsum --junitfile junit.xml --format pkgname -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      # Second coverage pass. `go test -coverprofile` only instruments the
+      # package a test binary is built from, so a test in an external `_test`
+      # package drives the sibling package and those counters land nowhere.
+      # Almost every package here uses external tests, which is why the licensing
+      # controllers all reported 0.0% and the Codecov patch gate failed for a
+      # diff that was genuinely covered.
+      #
+      # Re-run each external test package with -coverpkg pointing at the package
+      # it drives, then merge. `-coverpkg=./...` in one pass is not a substitute:
+      # with several hundred packages every test binary instruments the whole
+      # module and the profile comes out truncated and non-reproducible.
+      - name: Merge Cross-Package Coverage
+        run: |
+          set -euo pipefail
+          mkdir -p covparts
+
+          # For each directory holding an external _test package, work out which
+          # package it exercises: the directory itself when it also contains
+          # non-test sources, otherwise its parent. The test binary is then built
+          # from the *test* directory and instrumented for the *target* -- these
+          # differ for suites kept in their own directory, such as
+          # internal/api/controllers/tests driving internal/api/controllers.
+          : > covpairs.txt
+          for f in $(git ls-files '*_test.go'); do
+            pkg=$(grep -m1 '^package ' "$f" | awk '{print $2}')
+            case "$pkg" in
+              *_test) ;;
+              *) continue ;;
+            esac
+            dir=$(dirname "$f")
+            target="$dir"
+            if [ -z "$(ls "$dir"/*.go 2>/dev/null | grep -v '_test\.go$')" ]; then
+              target="$(dirname "$dir")"
+            fi
+            [ -n "$(ls "$target"/*.go 2>/dev/null | grep -v '_test\.go$')" ] || continue
+            printf '%s\t%s\n' "$dir" "$target"
+          done | sort -u > covpairs.txt
+          echo "external test packages needing a cross-package pass: $(wc -l < covpairs.txt)"
+
+          mkdir -p covparts
+          run_one() {
+            testdir="${1%%$'\t'*}"
+            target="${1##*$'\t'}"
+            out="covparts/$(echo "$testdir" | tr '/' '_').out"
+            go test -covermode=atomic -coverpkg="./$target" -coverprofile="$out" "./$testdir" \
+              || rm -f "$out"
+          }
+          export -f run_one
+          xargs -a covpairs.txt -d '\n' -I{} -P 4 bash -c 'run_one "$1"' _ {}
+
+          go run ./cmd/covmerge coverage.out covparts/*.out > coverage.merged.out
+          mv coverage.merged.out coverage.out
+          rm -rf covparts covpairs.txt
+
       - name: Upload Coverage Reports to Codecov
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5.5.5
         with:

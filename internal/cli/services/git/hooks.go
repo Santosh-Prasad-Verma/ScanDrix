@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 const (
-	TraceHookMarker    = "# scandrix-trace-start"
-	TraceHookEndMarker = "# scandrix-trace-end"
-	ReviewHookMarker   = "# scandrix-review-start"
+	TraceHookMarker     = "# scandrix-trace-start"
+	TraceHookEndMarker  = "# scandrix-trace-end"
+	ReviewHookMarker    = "# scandrix-review-start"
 	ReviewHookEndMarker = "# scandrix-review-end"
 )
 
@@ -248,11 +250,16 @@ func (h *HooksService) removeLegacyHook(hooksDir, hookName string) error {
 	if strings.TrimSpace(remaining) == "#!/bin/sh" || strings.TrimSpace(remaining) == "#!/usr/bin/env bash" || strings.TrimSpace(remaining) == "" {
 		return os.Remove(hookPath)
 	}
-	return os.WriteFile(hookPath, []byte(remaining), 0755)
+	return os.WriteFile(hookPath, []byte(remaining), 0755) // #nosec G703 -- hookPath is confined by pathguard.Resolve at the top of removeHookFile; hooksDir comes from git rev-parse
 }
 
 func (h *HooksService) removeHookFile(hooksDir, hookName string) (bool, error) {
-	hookPath := filepath.Join(hooksDir, hookName)
+	// hookName is confined to hooksDir: this function removes and rewrites
+	// files, so an escaping name would be a delete/write outside the repository.
+	hookPath, pathErr := pathguard.Resolve(hooksDir, hookName)
+	if pathErr != nil {
+		return false, fmt.Errorf("refusing hook path %q: %w", hookName, pathErr)
+	}
 	data, err := os.ReadFile(hookPath)
 	if err != nil {
 		return false, nil
@@ -279,7 +286,7 @@ func (h *HooksService) removeHookFile(hooksDir, hookName string) (bool, error) {
 		return true, nil
 	}
 
-	_ = os.WriteFile(hookPath, []byte(cleaned), 0755)
+	_ = os.WriteFile(hookPath, []byte(cleaned), 0755) // #nosec G703 -- hookPath is confined by pathguard.Resolve at the top of removeHookFile; hooksDir comes from git rev-parse
 	return true, nil
 }
 

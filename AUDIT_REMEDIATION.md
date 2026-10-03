@@ -1375,27 +1375,42 @@ Turning this on immediately found three real defects, all now fixed:
 Full suite with `-race` against a real database and the least-privilege role:
 **296 ok / 0 fail**. The database-backed tests are no longer dead weight.
 
-### Known, still open: coverage is under-attributed
+### Known, still open: the patch gate, and why it is not a test gap
 
-Go instruments only a package's *own* tests unless `-coverpkg` is given, so
-statements run by a sibling `_test` package are discarded. Every licensing
-controller therefore reports **0.0%** even though
-`internal/api/controllers/tests` exercises them: measured per package they are
-at 80.1% (`license_controller.go`), 83.3% (`scim_token_controller.go`), 90.5%
-(`capabilities_controller.go`) and 68.7% (`billing_controller.go`).
+Go instruments only the package a test binary is built from, so a test in an
+external `_test` package drives the sibling package and those counters land
+nowhere. This repository uses external test packages almost everywhere (185 of
+them), so the effect was systemic: **every** licensing controller reported 0.0%
+despite hundreds of passing tests exercising it, and the Codecov patch gate
+failed for a diff that was in fact well covered.
 
-`-coverpkg=./...` is **not** the fix and was deliberately not shipped: across
-~180 test binaries each instrumenting the whole module it produced a corrupt,
-non-reproducible profile (two identical runs yielded 92,816 and 68,157 unique
-blocks, one of them unparseable, at 1.8 GB). The sound approach is one
-`-coverpkg` profile per external test package, merged with `gocovmerge`; that is
-a separate change.
+Measured, before and after the fix:
 
-So `codecov/patch` still fails, now honestly: measured **26.97%** against an
-80% target, on an 11,573-line diff across 146 files, dominated by untested
-database repositories. Reaching 80% is a large body of real test work, not a
-flag change, and lowering the gate to make this PR green was not done without a
-decision.
+| | before | after |
+|---|---|---|
+| `license_controller.go` | 0.0% | 76.9% |
+| `scim_token_controller.go` | 0.0% | 83.3% |
+| `capabilities_controller.go` | 0.0% | 90.5% |
+| `billing_controller.go` | 0.0% | 68.7% |
+| overall | 47.40% | 48.85% |
+| **patch** | **26.34%** | **30.21%** |
+
+The fix is the standard two-pass run, added to `ci.yml`: the suite runs normally,
+then each external test package is re-run with `-coverpkg` pointing at the
+package it drives, and `cmd/covmerge` sums the counters.
+
+`-coverpkg=./...` in a single pass is **not** a substitute and was deliberately
+not shipped: with several hundred packages every test binary instruments the
+whole module, and the profile comes out truncated and non-reproducible -- two
+identical runs yielded 92,816 and 68,157 unique blocks, one of them unparseable,
+at 1.8 GB.
+
+**The patch gate still fails**, now for the honest reason: 30.21% against an
+80% target on a 12,050-line diff whose largest uncovered blocks are untested
+database repositories (`scim_repository.go` 612, `auth_repository.go` 435,
+`analytics_repository.go` 319, `sso_config_repository.go` 292). Closing that gap
+is a substantial body of real test work. Lowering the gate to make this PR green
+was not done.
 
 ## gosec status after the native-tool fix
 
@@ -1417,3 +1432,69 @@ from 35.
   `internal/scandrix/proofoffix/verifier.go`, `cmd/migrate`, and two controllers.
   Each needs a real path-confinement or host-allowlist fix, or an explicit
   risk acceptance. They were left failing on purpose rather than silenced.
+
+## The gosec gate could not pass even with zero findings
+
+Found while fixing the findings, and the reason the gate had never gone green
+independently of them.
+
+`gosec` walks the filesystem rather than the module graph. `.agents/skills/`
+holds third-party example programs that are not part of this module and do not
+compile together, so gosec descended into them, reported `package main has type
+errors`, and exited non-zero -- on a codebase with zero findings. Confirmed by
+running gosec per top-level directory: each one exits 0, only `./...` fails.
+
+Fixed with `-exclude-dir=.agents`. Verified with CI's exact invocation:
+**exit 0, 0 results.**
+
+## The 34 gosec findings, and what they actually were
+
+`G703` path traversal (28) and `G704` SSRF (6). Most were real, and are fixed
+rather than annotated:
+
+- **`internal/cli/hooks/hooks.go` -- the serious one.** `getHooksDir` reads the
+  repository's `.git` *file* when it is not a directory, which is how a linked
+  worktree is represented. That content is repository data, i.e. untrusted. A
+  `gitdir:` of `../../../somewhere` made the function return an arbitrary
+  directory, and `Install` then wrote an executable `pre-commit` hook there.
+  Cloning a crafted repository and running the hook installer was enough. Now
+  confined to the repository's parent directory, which is the only place git ever
+  places a linked worktree's gitdir. Regression tests cover relative escapes,
+  absolute targets, and `Uninstall`, and confirm a legitimate sibling worktree
+  still installs.
+
+- **Model-directed writes.** `quickfix`, `proofoffix`, `engine/fix`,
+  `chat/tools`, `pr_comment_handler` and `tui` all take a file path that
+  originates in model output and then read, back up, or overwrite that file.
+  Each is now bounded to the repository or workspace root. The TUI case is worth
+  naming: it passed `"."` to the engine yet accepted an absolute `FilePath`, so
+  any finding could rewrite any file the process could write.
+
+- **`internal/cli/trace`** took `SessionID` from a trace event and appended to
+  the derived path. Confined, and the id is validated as a slug.
+
+- **SSRF.** The Discord trial webhook URL and the update-check release URL were
+  both fetched without validation, which is a request primitive aimed from inside
+  the trust boundary -- at the cloud metadata endpoint, among others. All three
+  call sites now validate scheme, host and redirects via `internal/netguard`.
+
+Two new packages carry that logic, each with tests covering the metadata
+endpoint, userinfo smuggling (`https://trusted.test@evil.test/`), subdomain
+suffix tricks, and a redirect from an allowed host to a forbidden one:
+
+- `internal/pathguard` -- resolves a path against a base and guarantees it stays
+  inside, following symlinks that already exist. The symlink case is the one a
+  plain `filepath.Rel` test misses: `EvalSymlinks` fails on a path that does not
+  exist yet, which is exactly the write-then-create case.
+- `internal/netguard` -- validates outbound URLs and re-applies the rules to every
+  redirect hop, since a permitted URL can redirect to a forbidden one.
+
+36 `#nosec` annotations remain, each carrying the specific guard that makes the
+line safe. They are recorded because gosec's taint analysis cannot follow a call
+into another package; removing the guards would leave the annotations protecting
+nothing.
+
+One finding is annotated rather than fixed, on purpose:
+`internal/enterprise/license/loader.go` reads the path named by
+`SCANDRIX_LICENSE_FILE`. Naming an arbitrary path is the documented air-gapped
+feature, and setting that variable already requires host access.

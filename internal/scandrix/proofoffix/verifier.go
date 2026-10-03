@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 // dangerousCallPatterns matches dangerous function calls with word boundaries
@@ -174,7 +175,13 @@ func (v *Verifier) verifySyntax(patch CandidatePatch) error {
 // applyPatch writes the proposed snippet into the target file (replacing the original snippet)
 // and returns a restore function that reverts the file to its original content.
 func (v *Verifier) applyPatch(patch CandidatePatch, workdir string) (restore func(), err error) {
-	fullPath := filepath.Join(workdir, patch.FilePath)
+	// patch.FilePath originates in model output, and this function rewrites the
+	// file it names and later restores it. Confine it to the working directory
+	// so a suggestion naming `../../.ssh/authorized_keys` cannot be applied.
+	fullPath, pathErr := pathguard.ResolvePath(workdir, patch.FilePath)
+	if pathErr != nil {
+		return func() {}, fmt.Errorf("refusing to patch %q: %w", patch.FilePath, pathErr)
+	}
 	originalBytes, err := os.ReadFile(fullPath)
 	if err != nil {
 		// File doesn't exist locally; nothing to patch
@@ -188,12 +195,12 @@ func (v *Verifier) applyPatch(patch CandidatePatch, workdir string) (restore fun
 	}
 
 	patched := strings.Replace(original, patch.OriginalSnippet, patch.ProposedSnippet, 1)
-	if err := os.WriteFile(fullPath, []byte(patched), 0644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(patched), 0644); err != nil { // #nosec G703 -- fullPath is confined by pathguard.ResolvePath against workdir
 		return func() {}, fmt.Errorf("failed to write patched file: %w", err)
 	}
 
 	restore = func() {
-		_ = os.WriteFile(fullPath, originalBytes, 0644)
+		_ = os.WriteFile(fullPath, originalBytes, 0644) // #nosec G703 -- fullPath is confined by pathguard.ResolvePath against workdir
 	}
 	return restore, nil
 }

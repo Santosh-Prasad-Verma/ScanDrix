@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/scandrix/backend/internal/netguard"
 )
 
 // SystemController provides system introspection, build information, and cluster status.
@@ -165,16 +166,25 @@ func fetchLatestRelease(ctx context.Context) (latest, releaseURL string, err err
 		repo = "scandrix/scandrix"
 	}
 
+	// The host is fixed, but `repo` is interpolated into the path from the
+	// environment. Validating the whole URL means the request cannot be aimed
+	// elsewhere even if the format changes later, and it rejects a repo value
+	// carrying path traversal or query injection.
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=20", repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	parsed, err := netguard.Validate(apiURL, netguard.Options{AllowedHosts: []string{"api.github.com"}})
+	if err != nil {
+		return "", "", fmt.Errorf("refusing update check URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil) // #nosec G704 -- apiURL is validated by netguard.Validate with an api.github.com host allowlist
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "scandrix-self-hosted-update-check")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	client := netguard.NewClient(5, netguard.Options{AllowedHosts: []string{"api.github.com"}})
+	resp, err := client.Do(req) // #nosec G704 -- client is netguard.NewClient, which revalidates every redirect hop
 	if err != nil {
 		return "", "", err
 	}

@@ -17,15 +17,16 @@ import (
 	"time"
 
 	"github.com/scandrix/backend/internal/cli/pentest"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 // ToolResult encapsulates the outcome of an autonomous agent tool invocation.
 type ToolResult struct {
-	ToolName  string         `json:"tool_name"`
-	Output    string         `json:"output"`
-	IsError   bool           `json:"is_error"`
-	Duration  time.Duration  `json:"duration"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	ToolName string         `json:"tool_name"`
+	Output   string         `json:"output"`
+	IsError  bool           `json:"is_error"`
+	Duration time.Duration  `json:"duration"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // Tool represents a callable capability within the autonomous chat agent loop.
@@ -155,7 +156,12 @@ func (t *ViewFileTool) Execute(ctx context.Context, args map[string]any) (*ToolR
 		return &ToolResult{ToolName: t.Name(), Output: "Missing 'path' argument", IsError: true}, nil
 	}
 
-	fullPath := filepath.Join(t.workspaceRoot, relPath)
+	// relPath is supplied by the model, so it is confined to the workspace
+	// before it is opened.
+	fullPath, pathErr := pathguard.ResolvePath(t.workspaceRoot, relPath)
+	if pathErr != nil {
+		return &ToolResult{ToolName: t.Name(), Output: fmt.Sprintf("Refusing %s: %v", relPath, pathErr), IsError: true}, nil
+	}
 	file, err := os.Open(fullPath)
 	if err != nil {
 		return &ToolResult{ToolName: t.Name(), Output: fmt.Sprintf("Failed opening file %s: %v", relPath, err), IsError: true}, nil
@@ -455,7 +461,11 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, args map[string]any) (*Too
 		return &ToolResult{ToolName: t.Name(), Output: "Missing path or target_content", IsError: true}, nil
 	}
 
-	fullPath := filepath.Join(t.workspaceRoot, relPath)
+	// Confined for the same reason as the read path above: this tool writes.
+	fullPath, pathErr := pathguard.ResolvePath(t.workspaceRoot, relPath)
+	if pathErr != nil {
+		return &ToolResult{ToolName: t.Name(), Output: fmt.Sprintf("Refusing %s: %v", relPath, pathErr), IsError: true}, nil
+	}
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
 		return &ToolResult{ToolName: t.Name(), Output: fmt.Sprintf("Failed reading file %s: %v", relPath, err), IsError: true}, nil
@@ -471,7 +481,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, args map[string]any) (*Too
 	}
 
 	newContent := strings.Replace(content, targetContent, replacementContent, 1)
-	if err := os.WriteFile(fullPath, []byte(newContent), 0600); err != nil {
+	if err := os.WriteFile(fullPath, []byte(newContent), 0600); err != nil { // #nosec G703 -- fullPath comes from pathguard.ResolvePath against the workspace root
 		return &ToolResult{ToolName: t.Name(), Output: fmt.Sprintf("Failed saving patched file %s: %v", relPath, err), IsError: true}, nil
 	}
 

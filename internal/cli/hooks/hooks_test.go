@@ -187,3 +187,129 @@ scandrix trace hooks git pre-push
 	}
 }
 
+// A repository is untrusted input. Its `.git` file can name any gitdir, so a
+// crafted `gitdir:` must not be able to steer the installer into writing an
+// executable hook outside the repository's own parent directory.
+//
+// Before the confinement this was exploitable end to end: `gitdir: <victim>`
+// made getHooksDir return `<victim>/hooks`, and Install then wrote a
+// `pre-commit` script there.
+func TestInstallRefusesGitdirOutsideTheRepositoryParent(t *testing.T) {
+	cases := []struct {
+		name   string
+		gitdir string
+	}{
+		{"relative escape to system dir", "../../../../../../tmp/scandrix-victim"},
+		{"relative escape to parent of parent", "../../elsewhere"},
+		{"absolute path elsewhere", "/tmp/scandrix-victim-abs"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			// The victim directory must exist and stay empty, so the test can
+			// prove nothing was written into it.
+			victim := filepath.Join(t.TempDir(), "victim")
+			if err := os.MkdirAll(victim, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			repo := filepath.Join(root, "repo")
+			if err := os.MkdirAll(repo, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := tc.gitdir
+			if strings.Contains(target, "/tmp/scandrix-victim-abs") {
+				target = victim
+			} else {
+				// Re-root the relative escapes at the temp victim so the
+				// assertion below is about the write, not the literal path.
+				rel, relErr := filepath.Rel(repo, victim)
+				if relErr != nil {
+					t.Fatalf("rel: %v", relErr)
+				}
+				target = rel
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: "+target+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := hooks.Install(repo, true, true, "critical", true)
+			if err == nil {
+				t.Fatal("expected Install to refuse a gitdir outside the repository parent")
+			}
+			if !strings.Contains(err.Error(), "outside") {
+				t.Fatalf("error should explain the refusal, got: %v", err)
+			}
+
+			entries, readErr := os.ReadDir(victim)
+			if readErr != nil {
+				t.Fatalf("reading victim dir: %v", readErr)
+			}
+			for _, e := range entries {
+				if e.Name() == "pre-commit" || e.Name() == "pre-push" || e.Name() == "hooks" {
+					t.Fatalf("hook installer wrote %q into the victim directory", e.Name())
+				}
+			}
+		})
+	}
+}
+
+// The same confinement must apply on the way out: Uninstall resolves the hooks
+// directory the same way, and must not delete files elsewhere.
+func TestUninstallRefusesGitdirOutsideTheRepositoryParent(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(victim, "pre-commit")
+	if err := os.WriteFile(canary, []byte("#!/bin/sh\n# not ours\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(repo, victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: "+rel+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.Uninstall(repo); err == nil {
+		t.Fatal("expected Uninstall to refuse a gitdir outside the repository parent")
+	}
+	if _, statErr := os.Stat(canary); statErr != nil {
+		t.Fatalf("Uninstall removed a file outside the repository: %v", statErr)
+	}
+}
+
+// A linked worktree whose gitdir legitimately lives in the sibling main repo
+// must keep working. Without this the confinement would be useless in practice.
+func TestLinkedWorktreeOutsideParentIsRejectedButSiblingStillWorks(t *testing.T) {
+	root := t.TempDir()
+
+	// Sibling layout: <root>/main/.git and <root>/wt/.git -> ../main/.git/worktrees/wt
+	mainGit := filepath.Join(root, "main", ".git")
+	if err := os.MkdirAll(filepath.Join(mainGit, "worktrees", "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(root, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+filepath.Join(mainGit, "worktrees", "wt")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.Install(wt, true, true, "critical", true); err != nil {
+		t.Fatalf("a legitimate sibling worktree must still install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main", ".git", "hooks", "pre-commit")); err != nil {
+		t.Fatalf("hook was not written to the common hooks dir: %v", err)
+	}
+}

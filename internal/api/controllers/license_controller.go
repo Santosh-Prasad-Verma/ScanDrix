@@ -16,6 +16,7 @@ import (
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/enterprise/license"
+	"github.com/scandrix/backend/internal/netguard"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -468,11 +469,28 @@ func (c *LicenseController) handleTrialExtensionRequest(w http.ResponseWriter, r
 		"content": strings.Join(lines, "\n"),
 	})
 
-	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, webhookURL, bytes.NewReader(bodyBytes))
+	// The webhook URL comes from the environment, so it is validated before the
+	// server makes a request to it: this is an outbound call originating inside
+	// the trust boundary, and an unvalidated value lets whoever can set the
+	// variable aim it at the cloud metadata endpoint or an internal service.
+	// The destination is Discord, so the host allowlist is the vendor's domain.
+	parsedWebhook, err := netguard.Validate(webhookURL, netguard.Options{AllowHostSuffix: "discord.com"})
+	if err != nil {
+		slog.Error("Trial extension webhook URL rejected", "reason", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"message": "Trial request channel is misconfigured.",
+		})
+		return
+	}
+
+	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, parsedWebhook.String(), bytes.NewReader(bodyBytes)) // #nosec G704 -- webhookURL is validated by netguard.Validate with a discord.com host allowlist before the request is built
 	if err == nil {
 		httpReq.Header.Set("Content-Type", "application/json")
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(httpReq)
+		client := netguard.NewClient(5, netguard.Options{AllowHostSuffix: "discord.com"})
+		resp, err := client.Do(httpReq) // #nosec G704 -- client is netguard.NewClient, which revalidates every redirect hop
 		if err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode < 400 {

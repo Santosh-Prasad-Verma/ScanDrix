@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"os"
 	"runtime"
-	"time"
+
+	"github.com/scandrix/backend/internal/netguard"
 )
 
 type UpdateInfo struct {
@@ -33,14 +34,25 @@ func CheckUpdate(currentVersion, serverURL string) (*UpdateInfo, error) {
 		LatestVersion:  currentVersion,
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, serverURL, nil)
+	// The release URL is either built from SCANDRIX_UPDATE_REPO or passed in by
+	// a caller, so it is validated before the CLI reaches out to it. Without
+	// this, a value aimed at an internal address turns the update check into an
+	// SSRF probe and its response into attacker-chosen "latest version" text.
+	// Loopback http stays permitted so an httptest server works in tests.
+	releaseOpts := netguard.Options{AllowHTTPLoopback: true}
+	parsed, err := netguard.Validate(serverURL, releaseOpts)
+	if err != nil {
+		return info, fmt.Errorf("refusing update server URL: %w", err)
+	}
+
+	client := netguard.NewClient(5, releaseOpts)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, parsed.String(), nil) // #nosec G704 -- serverURL is validated by netguard.Validate before the request is built
 	if err != nil {
 		return info, fmt.Errorf("failed creating request: %w", err)
 	}
 	req.Header.Set("User-Agent", "scandrix-cli/"+currentVersion)
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- client is netguard.NewClient, which revalidates every redirect hop
 	if err != nil {
 		return info, fmt.Errorf("failed reaching update server: %w", err)
 	}
