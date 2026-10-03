@@ -189,7 +189,11 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 	if o.repo != nil {
 		existing, _ := o.repo.GetReview(ctx, task.WorkspaceID, task.ReviewID)
 		if existing == nil {
-			_ = o.repo.CreateReview(ctx, &models.PullRequestReview{
+			// This used to discard the error with `_ =`. A review that could not
+			// be persisted still ran to completion and logged success, so the
+			// failure was invisible: no review row, no signal. Fail loudly
+			// instead, and name the likely cause.
+			createErr := o.repo.CreateReview(ctx, &models.PullRequestReview{
 				ID:             task.ReviewID,
 				WorkspaceID:    task.WorkspaceID,
 				RepositoryID:   task.RepositoryID,
@@ -201,6 +205,15 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 				State:          models.ReviewStateProcessing,
 				FindingsCount:  0,
 			})
+			if createErr != nil {
+				slog.Error("Failed to persist review record; aborting so this is never silent",
+					"review_id", task.ReviewID,
+					"workspace_id", task.WorkspaceID,
+					"repository_id", task.RepositoryID,
+					"repo", task.RepoNamespace,
+					"error", createErr)
+				return fmt.Errorf("failed to persist review record: %w", createErr)
+			}
 		} else {
 			_ = o.repo.UpdateReviewState(ctx, task.WorkspaceID, task.ReviewID, models.ReviewStateProcessing, 0)
 		}

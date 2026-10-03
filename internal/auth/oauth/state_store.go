@@ -2,8 +2,12 @@ package oauth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -20,11 +24,22 @@ type StateStore struct {
 	ttl         time.Duration
 	maxSize     int
 	redisClient *redis.Client
+
+	// bindSecret keys the browser binding. It is generated per process when
+	// not supplied; a shared secret should be supplied in clustered
+	// deployments so a state minted by one pod can be redeemed by another.
+	bindSecret []byte
 }
 
 type stateEntry struct {
 	provider  OAuthProvider
 	createdAt time.Time
+	// CodeVerifier is the PKCE verifier (RFC 7636) for this flow. It stays
+	// server-side and is only handed to the token endpoint at exchange, so a
+	// stolen authorization code is useless without it.
+	CodeVerifier string
+	// Nonce is echoed into the ID token and checked on return.
+	Nonce string
 }
 
 // NewStateStore creates an in-memory store with the given TTL for state tokens.
@@ -34,10 +49,146 @@ func NewStateStore(ttl time.Duration) *StateStore {
 		ttl = 10 * time.Minute
 	}
 	return &StateStore{
-		states:  make(map[string]stateEntry),
-		ttl:     ttl,
-		maxSize: 10_000,
+		states:     make(map[string]stateEntry),
+		ttl:        ttl,
+		maxSize:    10_000,
+		bindSecret: newBindSecret(),
 	}
+}
+
+// newBindSecret returns a random per-process key used to bind a state token to
+// the browser that requested it.
+func newBindSecret() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand does not realistically fail; a fixed key would still be
+		// no worse than the previous behaviour of no binding at all.
+		return []byte("scandrix-oauth-state-bind-fallback")
+	}
+	return b
+}
+
+// WithBindSecret supplies a shared binding key so that state tokens minted by
+// one API pod can be redeemed by another in a clustered deployment.
+func (s *StateStore) WithBindSecret(secret []byte) *StateStore {
+	if len(secret) > 0 {
+		s.bindSecret = append([]byte(nil), secret...)
+	}
+	return s
+}
+
+// Bind returns the value to store in the caller's browser cookie so the state
+// token can later be proven to belong to the same browser.
+//
+// AUDIT_REMEDIATION.md F-16 (login CSRF). The state store alone only proves the
+// token is unexpired and unused; without this binding, an attacker can start
+// their own OAuth flow, then walk a victim into the callback URL carrying the
+// attacker's code and state, and the victim's browser completes a login to the
+// attacker's identity. HMAC rather than the raw state so a leaked cookie cannot
+// be replayed as a state token on its own.
+func (s *StateStore) Bind(state string) string {
+	mac := hmac.New(sha256.New, s.bindSecret)
+	mac.Write([]byte(state))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifyBinding reports whether a cookie value matches the state token. The
+// comparison is constant time.
+func (s *StateStore) VerifyBinding(state, presented string) bool {
+	if state == "" || presented == "" {
+		return false
+	}
+	return hmac.Equal([]byte(s.Bind(state)), []byte(presented))
+}
+
+// GeneratePKCE mints a state token together with a PKCE code verifier and an
+// ID-token nonce, and returns all three. The verifier is stored server-side and
+// never leaves this process except in the token exchange.
+//
+// AUDIT_REMEDIATION.md: the user OAuth flow previously had no PKCE at all,
+// which is what RFC 9700 (OAuth 2.0 Security BCP) requires even for a
+// confidential client.
+func (s *StateStore) GeneratePKCE(provider OAuthProvider) (state, verifier, nonce string, err error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", "", err
+	}
+	state = hex.EncodeToString(buf)
+
+	// RFC 7636: 43-128 characters from the unreserved set. 32 random bytes
+	// base64url-encode to 43 characters.
+	vb := make([]byte, 32)
+	if _, err := rand.Read(vb); err != nil {
+		return "", "", "", err
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(vb)
+
+	nb := make([]byte, 16)
+	if _, err := rand.Read(nb); err != nil {
+		return "", "", "", err
+	}
+	nonce = base64.RawURLEncoding.EncodeToString(nb)
+
+	entry := stateEntry{provider: provider, createdAt: time.Now(), CodeVerifier: verifier, Nonce: nonce}
+
+	if s.redisClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		payload, mErr := json.Marshal(entry)
+		if mErr == nil {
+			key := "scandrix:oauth:state:" + state
+			if err := s.redisClient.Set(ctx, key, string(payload), s.ttl).Err(); err == nil {
+				return state, verifier, nonce, nil
+			}
+		}
+		// Fall through to memory if Redis is unavailable.
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.states) >= s.maxSize {
+		s.evictExpiredLocked()
+	}
+	s.states[state] = entry
+	return state, verifier, nonce, nil
+}
+
+// Consume atomically validates and removes a state token, returning the PKCE
+// verifier and nonce bound to it. Single-use is preserved for both the memory
+// and Redis backends.
+//
+// AUDIT_REMEDIATION.md.
+func (s *StateStore) Consume(state string, expectedProvider OAuthProvider) (verifier, nonce string, ok bool) {
+	if s.redisClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		key := "scandrix:oauth:state:" + state
+		luaScript := redis.NewScript(`
+			local val = redis.call('GET', KEYS[1])
+			if val then
+				redis.call('DEL', KEYS[1])
+				return val
+			else
+				return nil
+			end
+		`)
+		if res, err := luaScript.Run(ctx, s.redisClient, []string{key}).Text(); err == nil && res != "" {
+			var entry stateEntry
+			if json.Unmarshal([]byte(res), &entry) == nil && entry.provider == expectedProvider {
+				return entry.CodeVerifier, entry.Nonce, true
+			}
+			return "", "", false
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, exists := s.states[state]
+	if !exists || entry.provider != expectedProvider {
+		return "", "", false
+	}
+	delete(s.states, state)
+	return entry.CodeVerifier, entry.Nonce, true
 }
 
 // NewRedisStateStore creates a distributed state store backed by Redis with in-memory fallback.
@@ -65,8 +216,10 @@ func (s *StateStore) Generate(provider OAuthProvider) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		key := "scandrix:oauth:state:" + state
-		if err := s.redisClient.Set(ctx, key, string(provider), s.ttl).Err(); err == nil {
-			return state, nil
+		if payload, mErr := json.Marshal(stateEntry{provider: provider, createdAt: time.Now()}); mErr == nil {
+			if err := s.redisClient.Set(ctx, key, string(payload), s.ttl).Err(); err == nil {
+				return state, nil
+			}
 		}
 		// Fallback to memory if Redis write fails
 	}
@@ -109,7 +262,12 @@ func (s *StateStore) Validate(state string, expectedProvider OAuthProvider) bool
 
 		res, err := luaScript.Run(ctx, s.redisClient, []string{key}).Text()
 		if err == nil && res != "" {
-			return OAuthProvider(res) == expectedProvider
+			var entry stateEntry
+			if json.Unmarshal([]byte(res), &entry) == nil {
+				delete(s.states, state)
+				return entry.provider == expectedProvider
+			}
+			return false
 		}
 		// Fallback check in local memory
 	}

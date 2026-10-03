@@ -5,6 +5,10 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: scandrix-postgres
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 512
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scandrix}
@@ -29,13 +33,24 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: scandrix-rabbitmq
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 512
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-scandrix_admin}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}
     ports:
-      - "5672:5672"   # AMQP protocol
-      - "15672:15672" # Web management UI
+      # AMQP is reachable from the other compose services by service name, so it
+      # does not need a published port at all. Remove both mappings unless you
+      # are deliberately debugging the broker from the host.
+      # AMQP protocol
+      - "127.0.0.1:5672:5672"
+      # Management UI, bound to loopback. Publishing this on 0.0.0.0 exposed a
+      # full broker admin console to the network, and its credentials were the
+      # ones committed in rabbitmq.conf (AUDIT_REMEDIATION.md F-52).
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -52,14 +67,32 @@ services:
   redis:
     image: redis:7.2-alpine
     container_name: scandrix-redis
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 256
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Redis backs the rate limiters and the account-lockout counter, so an
+    # open instance let anyone on the network bypass both. It now requires a
+    # password and is published on loopback only. AUDIT_REMEDIATION.md F-54.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD must be provided in .env}
+      - --protected-mode
+      - "yes"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be provided in .env}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # PING is answered with NOAUTH without credentials, which used to make
+      # an unauthenticated instance look healthy.
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -74,10 +107,19 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scandrix-migrate
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
     restart: "no"
     entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      # Migrations need CREATE EXTENSION (superuser-only), so the privileged DSN
+      # is confined to this one-shot job and never reaches a service container.
+      - MIGRATION_DATABASE_URL=postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable
+      - DATABASE_URL=${MIGRATION_DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,15 +134,29 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scandrix-api
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - .env
     entrypoint: ["/app/bin/scandrix-api"]
     environment:
       - PORT=8080
-      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_RUNTIME_URL:-postgres://${SCANDRIX_RUNTIME_USER:-scandrix_runtime}:${SCANDRIX_RUNTIME_PASSWORD:?SCANDRIX_RUNTIME_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
+      # Appwrite archives review diffs and audit reports. Optional: when unset the
+      # orchestrator logs a warning and skips archival (F-63). These were present
+      # in .env but never forwarded, so the feature could never work in Compose.
+      - APPWRITE_ENDPOINT=${APPWRITE_ENDPOINT:-}
+      - APPWRITE_PROJECT_ID=${APPWRITE_PROJECT_ID:-}
+      - APPWRITE_API_KEY=${APPWRITE_API_KEY:-}
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be provided in .env}
       - INTEGRATION_ENCRYPTION_KEY=${INTEGRATION_ENCRYPTION_KEY:-}
@@ -150,15 +206,29 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scandrix-webhooks
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 1g
+    cpus: "1.0"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - .env
     entrypoint: ["/app/bin/scandrix-webhooks"]
     environment:
       - PORT=8081
-      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_RUNTIME_URL:-postgres://${SCANDRIX_RUNTIME_USER:-scandrix_runtime}:${SCANDRIX_RUNTIME_PASSWORD:?SCANDRIX_RUNTIME_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
+      # Appwrite archives review diffs and audit reports. Optional: when unset the
+      # orchestrator logs a warning and skips archival (F-63). These were present
+      # in .env but never forwarded, so the feature could never work in Compose.
+      - APPWRITE_ENDPOINT=${APPWRITE_ENDPOINT:-}
+      - APPWRITE_PROJECT_ID=${APPWRITE_PROJECT_ID:-}
+      - APPWRITE_API_KEY=${APPWRITE_API_KEY:-}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET:-}
       - BITBUCKET_WEBHOOK_SECRET=${BITBUCKET_WEBHOOK_SECRET:-}
@@ -166,6 +236,17 @@ services:
       - FORGEJO_WEBHOOK_SECRET=${FORGEJO_WEBHOOK_SECRET:-}
     ports:
       - "8081:8081"
+    # The shared root Dockerfile hardcodes a HEALTHCHECK against port 8080,
+    # which is correct for the API. This service runs on PORT=8081, so that
+    # probe always failed and the container sat UNHEALTHY indefinitely
+    # (FailingStreak grew without bound) even though /health answered 200.
+    # The health endpoint must match the port the process actually listens on.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,14 +265,34 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scandrix-worker
+    # AUDIT_REMEDIATION.md F-56: bound resources and drop privileges.
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - .env
     entrypoint: ["/app/bin/scandrix-worker"]
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-scandrix_app}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
-      - REDIS_URL=redis://redis:6379/0
+      # The worker serves its health probe on 8082, not the image default of 8080.
+      - HEALTH_PROBE_PORT=8082
+      # Least-privilege. The worker runs as scandrix_runtime (NOSUPERUSER,
+      # NOBYPASSRLS) so the RLS policies are actually enforced rather than
+      # bypassed. Verified end to end: a review persists the same review row,
+      # findings and audit trail under this role as under the owner role.
+      - DATABASE_URL=${DATABASE_RUNTIME_URL:-postgres://${SCANDRIX_RUNTIME_USER:-scandrix_runtime}:${SCANDRIX_RUNTIME_PASSWORD:?SCANDRIX_RUNTIME_PASSWORD must be provided in .env}@postgres:5432/${POSTGRES_DB:-scandrix}?sslmode=disable}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - RABBITMQ_URL=${RABBITMQ_URL:-amqp://${RABBITMQ_USER:-scandrix_admin}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD must be provided in .env}@rabbitmq:5672/}
+      # Appwrite archives review diffs and audit reports. Optional: when unset the
+      # orchestrator logs a warning and skips archival (F-63). These were present
+      # in .env but never forwarded, so the feature could never work in Compose.
+      - APPWRITE_ENDPOINT=${APPWRITE_ENDPOINT:-}
+      - APPWRITE_PROJECT_ID=${APPWRITE_PROJECT_ID:-}
+      - APPWRITE_API_KEY=${APPWRITE_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

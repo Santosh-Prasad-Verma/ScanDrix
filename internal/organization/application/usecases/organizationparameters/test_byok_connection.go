@@ -51,6 +51,19 @@ func NewTestBYOKConnectionUseCase() *TestBYOKConnectionUseCase {
 	}
 }
 
+// WithHTTPClient injects the HTTP client used for the live probe. The default
+// client is used when none is supplied; this exists so the probe can be
+// exercised against a local test server rather than a real provider.
+func (uc *TestBYOKConnectionUseCase) WithHTTPClient(c *http.Client) *TestBYOKConnectionUseCase {
+	if c != nil {
+		uc.httpClient = c
+	}
+	return uc
+}
+
+// Execute performs a real authenticated probe against the provider. It never
+// reports success without a successful provider response: the returned Success
+// flag is true only for a 2xx from the provider.
 func (uc *TestBYOKConnectionUseCase) Execute(ctx context.Context, input ByokTestInput) ByokTestResult {
 	start := time.Now()
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))

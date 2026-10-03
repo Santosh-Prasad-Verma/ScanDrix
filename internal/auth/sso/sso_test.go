@@ -19,12 +19,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beevik/etree"
 	"github.com/google/uuid"
+	dsig "github.com/russellhaering/goxmldsig"
 	"github.com/scandrix/backend/internal/auth/sso"
 	"github.com/scandrix/backend/pkg/models"
 )
 
 func TestSSOSAMLAndOIDCFederation(t *testing.T) {
+	ctx := context.Background()
+
 	now := time.Now().UTC()
 	samlHandler := sso.NewSAMLHandler()
 	oidcHandler := sso.NewOIDCHandler()
@@ -62,9 +66,12 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
 		t.Fatalf("failed setting IdP cert: %v", err)
 	}
 
+	// The elements need IDs: a real XMLDSig <Reference URI="#id"> binds the
+	// signature to a specific element, and an element without an ID cannot be
+	// referenced at all.
 	unsignedXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol">
-  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion">
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp123">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assert456">
     <Issuer>https://idp.okta.com/exk123</Issuer>
     <Subject>
       <NameID>alice@acme.com</NameID>
@@ -85,15 +92,13 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
   </Assertion>
 </Response>`, now.Add(-10*time.Minute).Format(time.RFC3339), now.Add(10*time.Minute).Format(time.RFC3339))
 
-	// Sign XML with RSA-SHA256
-	h256 := sha256.Sum256([]byte(unsignedXML))
-	sigBytes, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h256[:])
-	if err != nil {
-		t.Fatalf("failed signing test XML: %v", err)
-	}
-	sigBase64 := base64.StdEncoding.EncodeToString(sigBytes)
-
-	samlXML := strings.Replace(unsignedXML, "</Response>", fmt.Sprintf("<Signature xmlns=\"http://www.w3.org/2000/09/xmldsig#\"><SignedInfo><SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"/></SignedInfo><SignatureValue>%s</SignatureValue></Signature></Response>", sigBase64), 1)
+	// This fixture used to hash the whole unsigned document, embed a
+	// <SignedInfo> containing nothing but a SignatureMethod, and rely on the
+	// handler's non-XMLDSig fallback to "verify" it. That is not a signature:
+	// there was no <Reference> and no <DigestValue>, so nothing bound the
+	// signature to the content. Verification is now real XMLDSig, so the
+	// fixture has to be a real signed assertion.
+	samlXML := signAssertionEnveloped(t, unsignedXML, rsaKey, certPEM)
 
 	samlIdent, err := samlHandler.ParseAndVerifyAssertion([]byte(samlXML), entityID, now)
 	if err != nil {
@@ -142,7 +147,7 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
 	}
 	tokenStr := fmt.Sprintf("%s.%s", contentToSign, base64.RawURLEncoding.EncodeToString(oidcSig))
 
-	oidcIdent, err := oidcHandler.ParseAndVerifyIDToken(tokenStr, "https://accounts.google.com", "scandrix-client-id-abc", now)
+	oidcIdent, err := oidcHandler.ParseAndVerifyIDToken(ctx, tokenStr, "https://accounts.google.com", "scandrix-client-id-abc", now)
 	if err != nil {
 		t.Fatalf("OIDC ID token parsing failed: %v", err)
 	}
@@ -157,7 +162,7 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
 		base64.RawURLEncoding.EncodeToString([]byte(noneHeader)),
 		base64.RawURLEncoding.EncodeToString(claimsJSON),
 	)
-	_, errNone := oidcHandler.ParseAndVerifyIDToken(noneToken, "https://accounts.google.com", "scandrix-client-id-abc", now)
+	_, errNone := oidcHandler.ParseAndVerifyIDToken(ctx, noneToken, "https://accounts.google.com", "scandrix-client-id-abc", now)
 	if errNone == nil || !errors.Is(errNone, sso.ErrAlgorithmNone) {
 		t.Fatalf("expected ErrAlgorithmNone on alg: none, got %v", errNone)
 	}
@@ -168,14 +173,14 @@ func TestSSOSAMLAndOIDCFederation(t *testing.T) {
 		base64.RawURLEncoding.EncodeToString([]byte(confusionHeader)),
 		base64.RawURLEncoding.EncodeToString(claimsJSON),
 	)
-	_, errConfusion := oidcHandler.ParseAndVerifyIDToken(confusionToken, "https://accounts.google.com", "scandrix-client-id-abc", now)
+	_, errConfusion := oidcHandler.ParseAndVerifyIDToken(ctx, confusionToken, "https://accounts.google.com", "scandrix-client-id-abc", now)
 	if errConfusion == nil || !errors.Is(errConfusion, sso.ErrAlgorithmMismatch) {
 		t.Fatalf("expected ErrAlgorithmMismatch on algorithm confusion, got %v", errConfusion)
 	}
 
 	// 3d. Security Verification: Fail closed when no key is configured
 	unconfiguredHandler := sso.NewOIDCHandler()
-	_, errUnsigned := unconfiguredHandler.ParseAndVerifyIDToken(tokenStr, "https://accounts.google.com", "scandrix-client-id-abc", now)
+	_, errUnsigned := unconfiguredHandler.ParseAndVerifyIDToken(ctx, tokenStr, "https://accounts.google.com", "scandrix-client-id-abc", now)
 	if errUnsigned == nil || !errors.Is(errUnsigned, sso.ErrUnsignedToken) {
 		t.Fatalf("expected ErrUnsignedToken when key is unconfigured, got %v", errUnsigned)
 	}
@@ -333,11 +338,61 @@ func TestOIDCRemoteJWKSRotationAndDiscovery(t *testing.T) {
 	}
 	jwtToken := fmt.Sprintf("%s.%s", content, base64.RawURLEncoding.EncodeToString(sig))
 
-	ident, err := oidcHandler.ParseAndVerifyIDToken(jwtToken, "https://mock-idp.example.com", "client-app-1", now)
+	ident, err := oidcHandler.ParseAndVerifyIDToken(ctx, jwtToken, "https://mock-idp.example.com", "client-app-1", now)
 	if err != nil {
 		t.Fatalf("failed validating token via JWKS cache: %v", err)
 	}
 	if ident.Email != "charlie@example.com" || ident.ExternalID != "user-456" {
 		t.Fatalf("unexpected identity from JWKS token: %+v", ident)
 	}
+}
+
+// signAssertionEnveloped signs the <Assertion> inside the given SAML Response
+// with a genuine enveloped XMLDSig signature and returns the signed document.
+//
+// AUDIT_REMEDIATION.md F-24. Shared with saml_xmldsig_test.go's expectations:
+// no KeyInfo (goxmldsig's validator falls back to the configured IdP
+// certificate) and no re-indentation after signing.
+func signAssertionEnveloped(t *testing.T, unsignedXML string, key *rsa.PrivateKey, certPEM string) string {
+	t.Helper()
+
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(unsignedXML); err != nil {
+		t.Fatalf("parse unsigned SAML: %v", err)
+	}
+	assertion := doc.FindElement("//Assertion")
+	if assertion == nil {
+		t.Fatal("unsigned SAML has no Assertion element")
+	}
+
+	signCtx, err := dsig.NewSigningContext(key, nil)
+	if err != nil {
+		t.Fatalf("signing context: %v", err)
+	}
+	signCtx.IdAttribute = "ID"
+	if err := signCtx.SetSignatureMethod(dsig.RSASHA256SignatureMethod); err != nil {
+		t.Fatalf("set signature method: %v", err)
+	}
+	signedAssertion, err := signCtx.SignEnveloped(assertion)
+	if err != nil {
+		t.Fatalf("sign assertion: %v", err)
+	}
+	sigEl := signedAssertion.FindElement("./Signature")
+	if sigEl == nil {
+		t.Fatal("no Signature produced")
+	}
+	for _, child := range sigEl.ChildElements() {
+		if child.Tag == "KeyInfo" {
+			sigEl.RemoveChild(child)
+		}
+	}
+	parent := assertion.Parent()
+	parent.RemoveChild(assertion)
+	parent.AddChild(signedAssertion)
+
+	out, err := doc.WriteToString()
+	if err != nil {
+		t.Fatalf("serialize signed SAML: %v", err)
+	}
+	return out
 }

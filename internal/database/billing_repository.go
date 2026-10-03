@@ -36,7 +36,6 @@ func (r *Repository) RecordTokenUsage(ctx context.Context, wsID uuid.UUID, revie
 	})
 }
 
-
 // GetWorkspaceUsage calculates aggregated token usage and cost for a given time window.
 func (r *Repository) GetWorkspaceUsage(ctx context.Context, wsID uuid.UUID, since time.Time) (promptTokens, completionTokens int64, costUSD float64, err error) {
 	if r == nil || r.client == nil {
@@ -53,7 +52,6 @@ func (r *Repository) GetWorkspaceUsage(ctx context.Context, wsID uuid.UUID, sinc
 	})
 	return promptTokens, completionTokens, costUSD, err
 }
-
 
 // UpdateSpendLimit updates the monthly spend limit for a workspace.
 func (r *Repository) UpdateSpendLimit(ctx context.Context, wsID uuid.UUID, limitUSD float64) error {
@@ -72,7 +70,6 @@ func (r *Repository) UpdateSpendLimit(ctx context.Context, wsID uuid.UUID, limit
 		return err
 	})
 }
-
 
 // GetSpendLimit retrieves the configured monthly spend limit.
 func (r *Repository) GetSpendLimit(ctx context.Context, wsID uuid.UUID) (float64, error) {
@@ -93,7 +90,6 @@ func (r *Repository) GetSpendLimit(ctx context.Context, wsID uuid.UUID) (float64
 	}
 	return limit, nil
 }
-
 
 // GetActiveLicense retrieves the active enterprise license for a workspace.
 func (r *Repository) GetActiveLicense(ctx context.Context, wsID uuid.UUID) (*models.OrganizationLicense, error) {
@@ -127,7 +123,6 @@ func (r *Repository) GetActiveLicense(ctx context.Context, wsID uuid.UUID) (*mod
 	return &lic, nil
 }
 
-
 // ActivateLicense stores or updates an enterprise license in PostgreSQL.
 func (r *Repository) ActivateLicense(ctx context.Context, wsID uuid.UUID, licenseKey, orgName, planTier string, totalSeats int, expiresAt time.Time, features []string) error {
 	if r == nil || r.client == nil {
@@ -147,7 +142,6 @@ func (r *Repository) ActivateLicense(ctx context.Context, wsID uuid.UUID, licens
 	})
 
 }
-
 
 // RecordBillingTransaction stores a checkout or webhook transaction in PostgreSQL.
 func (r *Repository) RecordBillingTransaction(ctx context.Context, tx *models.BillingTransaction) error {
@@ -178,7 +172,6 @@ func (r *Repository) RecordBillingTransaction(ctx context.Context, tx *models.Bi
 	})
 }
 
-
 // UpdateBillingTransactionStatus updates the status and payment ID of an order.
 func (r *Repository) UpdateBillingTransactionStatus(ctx context.Context, wsID uuid.UUID, orderID, paymentID, signature, status string) error {
 	if r == nil || r.client == nil {
@@ -198,7 +191,6 @@ func (r *Repository) UpdateBillingTransactionStatus(ctx context.Context, wsID uu
 		return err
 	})
 }
-
 
 // UpgradeWorkspacePlan updates the active organization license and seat table to reflect a purchased plan.
 func (r *Repository) UpgradeWorkspacePlan(ctx context.Context, wsID uuid.UUID, planTier string, maxSeats int, expiresAt time.Time, features []string) error {
@@ -238,7 +230,6 @@ func (r *Repository) UpgradeWorkspacePlan(ctx context.Context, wsID uuid.UUID, p
 		return err
 	})
 }
-
 
 // UpgradeWorkspacePlanAtomic atomically marks a billing transaction captured and elevates the organization license and seat entitlements within a single tenant transaction.
 func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.UUID, orderID, paymentID, signature, planTier string, maxSeats int, expiresAt time.Time, features []string) error {
@@ -302,7 +293,6 @@ func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.U
 	})
 }
 
-
 // GetPlanConfiguration fetches dynamic plan pricing and quotas from PostgreSQL.
 func (r *Repository) GetPlanConfiguration(ctx context.Context, tier string) (*models.PlanConfiguration, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
@@ -339,19 +329,24 @@ func (r *Repository) GetPlanConfiguration(ctx context.Context, tier string) (*mo
 	return &plan, nil
 }
 
-
 // ListPlanConfigurations returns all active subscription plans from PostgreSQL.
 func (r *Repository) ListPlanConfigurations(ctx context.Context) ([]models.PlanConfiguration, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
 		return nil, nil
 	}
 
+	// Ordered by the explicit sort_order column (migration 030), not by
+	// amount_inr. Deriving presentation order from price meant a discount or a
+	// currency re-denomination silently reordered the public pricing table —
+	// which is how ENTERPRISE (seeded at ₹9,999) came to render above SCALE
+	// (₹24,990). tier is the tiebreaker so the order is total and stable.
 	query := `
 		SELECT tier, display_name, amount_inr, amount_usd, monthly_tokens,
 		       burst_limit_per_min, max_seats, max_repositories, max_concurrent_reviews,
-		       byok_allowed, allocated_models, features_enabled, created_at, updated_at
+		       byok_allowed, sort_order, self_serve, allocated_models, features_enabled,
+		       created_at, updated_at
 		FROM plan_configurations
-		ORDER BY amount_inr ASC;
+		ORDER BY sort_order ASC, tier ASC;
 	`
 	rows, err := r.client.Pool.Query(ctx, query)
 	if err != nil {
@@ -367,6 +362,7 @@ func (r *Repository) ListPlanConfigurations(ctx context.Context) ([]models.PlanC
 			&plan.Tier, &plan.DisplayName, &plan.AmountINR, &plan.AmountUSD,
 			&plan.MonthlyTokens, &plan.BurstLimitPerMin, &plan.MaxSeats,
 			&plan.MaxRepositories, &plan.MaxConcurrentReviews, &plan.BYOKAllowed,
+			&plan.SortOrder, &plan.SelfServe,
 			&modelsJSON, &featuresJSON, &plan.CreatedAt, &plan.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -377,7 +373,6 @@ func (r *Repository) ListPlanConfigurations(ctx context.Context) ([]models.PlanC
 	}
 	return plans, nil
 }
-
 
 // GetWorkspacePlanDetails queries the real license, database-configured quotas, and aggregated token consumption.
 func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID) (*models.WorkspacePlanDetails, error) {
@@ -420,8 +415,8 @@ func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID
 		now := time.Now().UTC()
 		if rawTier != "COMMUNITY" && !lic.ExpiresAt.IsZero() && now.After(lic.ExpiresAt) {
 			isExpired = true
-			if now.Before(lic.ExpiresAt.Add(72 * time.Hour)) {
-				// 72-hour grace period: keep tier features active, but flag grace period in UI
+			if now.Before(lic.ExpiresAt.Add(license.LicenseGracePeriod)) {
+				// Within the shared grace period: keep tier features active, but flag grace period in UI
 				subscriptionStatus = "GRACE_PERIOD"
 				activeTier = rawTier
 			} else {
@@ -479,7 +474,6 @@ func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID
 	}, nil
 }
 
-
 // PruneInactiveLicenseSeats downgrades inactive members to VIEWER to reclaim allocated seats.
 func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDays int) (int64, error) {
 	if r == nil || r.client == nil {
@@ -507,7 +501,6 @@ func (r *Repository) PruneInactiveLicenseSeats(ctx context.Context, inactivityDa
 	return rowsAffected, nil
 }
 
-
 // GetBillingTransaction retrieves a billing transaction record by workspace and order ID.
 func (r *Repository) GetBillingTransaction(ctx context.Context, wsID uuid.UUID, orderID string) (*models.BillingTransaction, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
@@ -533,7 +526,6 @@ func (r *Repository) GetBillingTransaction(ctx context.Context, wsID uuid.UUID, 
 	return &tx, nil
 }
 
-
 // ClaimBillingUpgrade atomically claims an order for upgrade processing, preventing duplicate webhook/checkout races.
 func (r *Repository) ClaimBillingUpgrade(ctx context.Context, wsID uuid.UUID, orderID string) (bool, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
@@ -554,7 +546,6 @@ func (r *Repository) ClaimBillingUpgrade(ctx context.Context, wsID uuid.UUID, or
 	})
 	return rowsAffected > 0, err
 }
-
 
 // ListPendingReconciliationTransactions retrieves billing transactions stuck in 'created' or 'processing_upgrade' older than the specified duration for automated ledger reconciliation.
 func (r *Repository) ListPendingReconciliationTransactions(ctx context.Context, olderThan time.Duration, limit int) ([]models.BillingTransaction, error) {
@@ -597,7 +588,6 @@ func (r *Repository) ListPendingReconciliationTransactions(ctx context.Context, 
 	return transactions, err
 }
 
-
 // ReconcileTransactionLedger records an automated reconciliation audit entry and updates the transaction status in the ledger.
 func (r *Repository) ReconcileTransactionLedger(ctx context.Context, wsID uuid.UUID, orderID, paymentID, reconciledStatus, notes string) error {
 	if r == nil || r.client == nil || r.client.Pool == nil {
@@ -608,20 +598,27 @@ func (r *Repository) ReconcileTransactionLedger(ctx context.Context, wsID uuid.U
 		SET status = $1, payment_id = CASE WHEN $2 != '' THEN $2 ELSE payment_id END, updated_at = NOW()
 		WHERE workspace_id = $3 AND order_id = $4;
 	`
+	// audit_logs columns are: id, workspace_id, actor_id, actor_email,
+	// ip_address, action, target_type, target_id, metadata, created_at.
+	//
+	// This statement previously named `actor_name` and `payload`, neither of
+	// which has ever existed on the table, so the billing reconciliation audit
+	// write failed at runtime. The actor is already identified by actor_email
+	// ('system:reconciliation'), so the display name is preserved inside the
+	// metadata document rather than in a column that does not exist.
 	auditQuery := `
-		INSERT INTO audit_logs (id, workspace_id, actor_email, actor_name, action, target_type, target_id, payload, created_at)
-		VALUES ($1, $2, 'system:reconciliation', 'Ledger Reconciliation Engine', 'billing.reconcile', 'billing_transaction', $3, $4, NOW());
+		INSERT INTO audit_logs (id, workspace_id, actor_email, action, target_type, target_id, metadata, created_at)
+		VALUES ($1, $2, 'system:reconciliation', 'billing.reconcile', 'billing_transaction', $3, $4::jsonb, NOW());
 	`
 	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, query, reconciledStatus, paymentID, wsID, orderID); err != nil {
 			return err
 		}
-		payload := fmt.Sprintf(`{"order_id":"%s","status":"%s","notes":"%s"}`, orderID, reconciledStatus, notes)
+		payload := fmt.Sprintf(`{"actor_name":"Ledger Reconciliation Engine","order_id":"%s","status":"%s","notes":"%s"}`, orderID, reconciledStatus, notes)
 		_, err := tx.Exec(ctx, auditQuery, uuid.New(), wsID, orderID, []byte(payload))
 		return err
 	})
 }
-
 
 // SpendLimitEvaluation holds monthly usage and configured spend limit for a workspace.
 type SpendLimitEvaluation struct {
@@ -633,7 +630,6 @@ type SpendLimitEvaluation struct {
 	TotalTokensUsed   int64     `json:"total_tokens_used"`
 	OwnerEmail        string    `json:"owner_email"`
 }
-
 
 // GetWorkspacesSpendEvaluation evaluates current month spend against limits across all workspaces.
 func (r *Repository) GetWorkspacesSpendEvaluation(ctx context.Context) ([]SpendLimitEvaluation, error) {
@@ -688,7 +684,6 @@ func (r *Repository) GetWorkspacesSpendEvaluation(ctx context.Context) ([]SpendL
 	return evaluations, nil
 }
 
-
 // LiveQuotaStatus represents multi-tenant token consumption and quota thresholds.
 type LiveQuotaStatus struct {
 	WorkspaceID         uuid.UUID `json:"workspace_id"`
@@ -703,7 +698,6 @@ type LiveQuotaStatus struct {
 	BillingPeriodStart  time.Time `json:"billing_period_start"`
 	BillingPeriodEnd    time.Time `json:"billing_period_end"`
 }
-
 
 // GetLiveTokenQuota evaluates real-time token usage against active plan allocation and spend caps.
 func (r *Repository) GetLiveTokenQuota(ctx context.Context, wsID uuid.UUID) (*LiveQuotaStatus, error) {
@@ -783,7 +777,6 @@ func (r *Repository) GetLiveTokenQuota(ctx context.Context, wsID uuid.UUID) (*Li
 	}, nil
 }
 
-
 // DailyUsageSummary holds daily token metrics for usage graphs.
 type DailyUsageSummary struct {
 	Date             string  `json:"date"`
@@ -792,7 +785,6 @@ type DailyUsageSummary struct {
 	TotalTokens      int64   `json:"total_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
 }
-
 
 // GetWorkspaceDailyUsageHistory aggregates daily token metrics for a lookback window.
 func (r *Repository) GetWorkspaceDailyUsageHistory(ctx context.Context, wsID uuid.UUID, days int) ([]DailyUsageSummary, error) {
@@ -836,4 +828,3 @@ func (r *Repository) GetWorkspaceDailyUsageHistory(ctx context.Context, wsID uui
 	})
 	return summaries, err
 }
-

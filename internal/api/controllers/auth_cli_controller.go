@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/dtos"
+	scandrixMiddleware "github.com/scandrix/backend/internal/api/middleware"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/auth/cliauth"
 	"github.com/scandrix/backend/internal/auth/clitokens"
@@ -193,10 +194,11 @@ func (c *AuthController) handleDeviceComplete(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
+	// Client IP must come from the proxy-aware extractor, not from a raw header
+	// read. A client sending its own X-Forwarded-For could otherwise pin its
+	// address to any value it liked and walk straight past a per-IP rate limit
+	// or lockout (AUDIT_REMEDIATION.md F-25).
+	clientIP := scandrixMiddleware.ExtractClientIP(r)
 	ctxWithIP := cliauth.WithClientIP(r.Context(), clientIP)
 
 	if err := c.deviceFlow.CompleteDeviceLogin(ctxWithIP, req.UserCode, accessToken, refreshToken, profile); err != nil {
@@ -1050,6 +1052,24 @@ func (c *AuthController) HandleCLIAuthorizePage(w http.ResponseWriter, r *http.R
 }
 
 // HandleCLIAuthorizeApprove completes the terminal authorization session with real credentials, OAuth, or active sessions.
+// cliPublicRegistrationAllowed reports whether the CLI approve endpoint may
+// create a brand-new account and workspace for an unauthenticated caller.
+//
+// This is closed by default and requires an explicit opt-in
+// (ALLOW_PUBLIC_CLI_REGISTRATION). It is an unauthenticated endpoint that is deliberately
+// exempt from the registration rate limiter, so leaving it open turns it into an
+// unthrottled owner-account factory — see AUDIT_REMEDIATION.md F-13.
+//
+// AUTH_STRICT_INVITES_ONLY is a second, independent kill switch: it forces
+// invite-only even if public registration was previously enabled, so an
+// operator can lock a running instance down without redeploying.
+func cliPublicRegistrationAllowed() bool {
+	if strings.EqualFold(os.Getenv("AUTH_STRICT_INVITES_ONLY"), "true") {
+		return false
+	}
+	return strings.EqualFold(os.Getenv("ALLOW_PUBLIC_CLI_REGISTRATION"), "true")
+}
+
 func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *http.Request) {
 	if c.deviceFlow == nil && c.loopbackMgr == nil {
 		http.Error(w, `{"error":"CLI authorization service not configured"}`, http.StatusServiceUnavailable)
@@ -1087,19 +1107,19 @@ func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *htt
 		}
 
 		if action == "login" {
-			user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
-			validPassword := false
-			if err == nil && user != nil {
-				validPassword = auth.VerifyPassword(req.Password, user.Password)
-			} else {
-				// Anti-enumeration: execute authentic dummy verification to eliminate timing delta (CWE-208)
-				_ = auth.DummyVerify(req.Password)
-			}
-
-			if err != nil || user == nil || !validPassword {
-				http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+			// Route through the shared credential path. This handler previously
+			// called auth.VerifyPassword directly, which skipped the account
+			// lockout, the per-account rate limiter, and failure accounting, so
+			// an attacker could brute-force a locked account through this route
+			// and obtain a full token pair (AUDIT_REMEDIATION.md F-03).
+			clientIP := scandrixMiddleware.ExtractClientIP(r)
+			res := c.AuthenticateCredentials(r.Context(), req.Email, req.Password, clientIP)
+			if res.Status != CredentialAuthOK {
+				writeCredentialAuthFailure(w, res)
 				return
 			}
+			user := res.User
+
 			if user.Status != "active" {
 				http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
 				return
@@ -1114,8 +1134,15 @@ func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *htt
 			userRole = models.UserRole(user.Role)
 			_ = c.repo.TouchAccountActivity(r.Context(), wsID, user.Email)
 		} else if action == "register" {
-			// Enforce strict enterprise registration policy if configured
-			if os.Getenv("ALLOW_PUBLIC_CLI_REGISTRATION") == "false" || os.Getenv("AUTH_STRICT_INVITES_ONLY") == "true" {
+			// Public self-registration is CLOSED by default.
+			//
+			// AUDIT_REMEDIATION.md F-13: both guards used to be opt-in, so an
+			// unset environment fell through to creating an unauthenticated
+			// account with role "owner" and its own workspace. This endpoint is
+			// also exempt from registerRateLimitMiddleware, so that path was
+			// effectively an unthrottled owner-account factory for anyone who
+			// knew the URL.
+			if !cliPublicRegistrationAllowed() {
 				http.Error(w, `{"error":"public self-registration is disabled; please contact your administrator for an invite"}`, http.StatusForbidden)
 				return
 			}
@@ -1127,8 +1154,15 @@ func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *htt
 			}
 
 			// Register new user account and personal workspace in database
-			if len(req.Password) < 8 {
-				http.Error(w, `{"error":"password must be at least 8 characters long"}`, http.StatusBadRequest)
+			// AUDIT_REMEDIATION.md F-21: was `len(password) < 8`, so the CLI
+			// accepted `password1`. Shares the one policy with the web path so
+			// the two cannot drift apart again.
+			if err := auth.ValidatePassword(req.Password, req.Email); err != nil {
+				msg := err.Error()
+				if errors.Is(err, auth.ErrPasswordTooShort) {
+					msg = fmt.Sprintf("password must be at least %d characters long", auth.MinPasswordLength)
+				}
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 				return
 			}
 			wsID = uuid.New()
@@ -1223,10 +1257,11 @@ func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *htt
 		Role:        userRole,
 	}
 
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
+	// Client IP must come from the proxy-aware extractor, not from a raw header
+	// read. A client sending its own X-Forwarded-For could otherwise pin its
+	// address to any value it liked and walk straight past a per-IP rate limit
+	// or lockout (AUDIT_REMEDIATION.md F-25).
+	clientIP := scandrixMiddleware.ExtractClientIP(r)
 	ctxWithIP := cliauth.WithClientIP(r.Context(), clientIP)
 
 	if req.State != "" && c.loopbackMgr != nil {
@@ -1248,7 +1283,7 @@ func (c *AuthController) HandleCLIAuthorizeApprove(w http.ResponseWriter, r *htt
 	}
 
 	// Set session cookie for persistent browser login
-	setAuthCookie(w, r, "scandrix_token", accessToken, 30*86400)
+	setAuthCookie(w, r, "scandrix_token", accessToken, int(auth.DefaultAccessTokenTTL.Seconds()))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1392,7 +1427,7 @@ func (c *AuthController) HandleValidateCLIKey(w http.ResponseWriter, r *http.Req
 			}
 			if queryTeamID != "" {
 				if parsedTeamID, err := uuid.Parse(queryTeamID); err == nil {
-					if team, err := c.repo.GetTeamByID(r.Context(), parsedTeamID); err == nil && team != nil && team.WorkspaceID == wsID {
+					if team, err := c.repo.GetTeamByID(r.Context(), wsID, parsedTeamID); err == nil && team != nil && team.WorkspaceID == wsID {
 						teamID = &team.ID
 						teamName = team.Name
 					}
@@ -1434,7 +1469,7 @@ func (c *AuthController) HandleValidateCLIKey(w http.ResponseWriter, r *http.Req
 			}
 			if queryTeamID != "" {
 				if parsedTeamID, err := uuid.Parse(queryTeamID); err == nil {
-					if team, err := c.repo.GetTeamByID(r.Context(), parsedTeamID); err == nil && team != nil && team.WorkspaceID == wsID {
+					if team, err := c.repo.GetTeamByID(r.Context(), wsID, parsedTeamID); err == nil && team != nil && team.WorkspaceID == wsID {
 						teamID = &team.ID
 						teamName = team.Name
 					}
@@ -1531,19 +1566,34 @@ func (c *AuthController) HandleValidateCLIKey(w http.ResponseWriter, r *http.Req
 // HandleCLILoginInfo inspects a pending browser or device authorization session
 // for confirmation UI rendering without leaking secrets or tokens.
 func (c *AuthController) HandleCLILoginInfo(w http.ResponseWriter, r *http.Request) {
+	// The CLI polls this to learn whether the browser approved its login.
+	//
+	// It previously accepted `user_code` on its own. A user code is short and
+	// human-typable ("WDJB-MJHT"), so an unauthenticated caller could enumerate
+	// codes, confirm which ones exist, and read back the session's user agent --
+	// recon for the social-engineering path where an attacker talks a user into
+	// approving a device they then control (AUDIT_REMEDIATION.md F-31).
+	//
+	// Only `state` and `device_code` are accepted now. Both are high-entropy
+	// secrets the initiating CLI already holds, and both are what the
+	// token-issuing /cli/auth/login-poll endpoint requires. A caller that presents
+	// neither is told nothing about whether any session exists.
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
-	userCode := strings.TrimSpace(r.URL.Query().Get("user_code"))
-	if userCode == "" {
-		userCode = strings.TrimSpace(r.URL.Query().Get("userCode"))
-	}
+	deviceCode := strings.TrimSpace(r.URL.Query().Get("device_code"))
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if state == "" && userCode == "" {
-		_ = json.NewEncoder(w).Encode(map[string]any{"found": false})
+	if state == "" && deviceCode == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":    "state or device_code query parameter is required",
+			"required": []string{"state", "device_code"},
+		})
 		return
 	}
 
+	// userAgent is not returned: it is a browser-fingerprinting aid and nothing
+	// the CLI needs to complete the flow.
 	if state != "" && c.loopbackMgr != nil {
 		if sess, found := c.loopbackMgr.GetSessionByState(state); found && sess != nil {
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1551,27 +1601,27 @@ func (c *AuthController) HandleCLILoginInfo(w http.ResponseWriter, r *http.Reque
 				"state":     sess.State,
 				"mode":      "loopback",
 				"status":    string(sess.Status),
-				"userAgent": sess.UserAgent,
 				"expiresAt": sess.ExpiresAt,
 			})
 			return
 		}
 	}
 
-	if userCode != "" && c.deviceFlow != nil {
-		if sess, err := c.deviceFlow.GetSessionByUserCode(r.Context(), userCode); err == nil && sess != nil {
+	if deviceCode != "" && c.deviceFlow != nil {
+		if sess, err := c.deviceFlow.GetSessionByDeviceCode(r.Context(), deviceCode); err == nil && sess != nil {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"found":     true,
 				"state":     sess.State,
 				"mode":      "device",
 				"status":    string(sess.Status),
-				"userAgent": sess.UserAgent,
 				"expiresAt": sess.ExpiresAt,
 			})
 			return
 		}
 	}
 
+	// Same response whether the session is absent or simply not yet approved, so
+	// this cannot be used to distinguish states.
 	_ = json.NewEncoder(w).Encode(map[string]any{"found": false})
 }
 
@@ -1619,13 +1669,13 @@ func (c *AuthController) HandleCLILoginPoll(w http.ResponseWriter, r *http.Reque
 		}
 		if res.Status == cliauth.StatusCompleted {
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "completed",
-				"accessToken":  res.AccessToken,
-				"refreshToken": res.RefreshToken,
-				"userEmail":    res.UserEmail,
-				"access_token": res.AccessToken,
+				"status":        "completed",
+				"accessToken":   res.AccessToken,
+				"refreshToken":  res.RefreshToken,
+				"userEmail":     res.UserEmail,
+				"access_token":  res.AccessToken,
 				"refresh_token": res.RefreshToken,
-				"user_email":   res.UserEmail,
+				"user_email":    res.UserEmail,
 			})
 			return
 		}
@@ -1650,13 +1700,13 @@ func (c *AuthController) HandleCLILoginPoll(w http.ResponseWriter, r *http.Reque
 		}
 		if res.Status == cliauth.StatusCompleted {
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":       "completed",
-				"accessToken":  res.AccessToken,
-				"refreshToken": res.RefreshToken,
-				"userEmail":    res.UserEmail,
-				"access_token": res.AccessToken,
+				"status":        "completed",
+				"accessToken":   res.AccessToken,
+				"refreshToken":  res.RefreshToken,
+				"userEmail":     res.UserEmail,
+				"access_token":  res.AccessToken,
 				"refresh_token": res.RefreshToken,
-				"user_email":   res.UserEmail,
+				"user_email":    res.UserEmail,
 			})
 			return
 		}
@@ -1758,10 +1808,9 @@ func (c *AuthController) HandleCLILoginComplete(w http.ResponseWriter, r *http.R
 			http.Error(w, `{"error":"device flow manager not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
-		clientIP := r.Header.Get("X-Forwarded-For")
-		if clientIP == "" {
-			clientIP = r.RemoteAddr
-		}
+		// Proxy-aware extraction; see F-25 -- a raw X-Forwarded-For read lets the
+		// caller spoof the address that the rate limiter keys on.
+		clientIP := scandrixMiddleware.ExtractClientIP(r)
 		ctxWithIP := cliauth.WithClientIP(r.Context(), clientIP)
 		if err := c.deviceFlow.CompleteDeviceLogin(ctxWithIP, req.UserCode, accessToken, refreshToken, profile); err != nil {
 			if errors.Is(err, cliauth.ErrTooManyAttempts) {
@@ -1848,4 +1897,3 @@ func (c *AuthController) handleRevokeCLIKey(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "key revoked successfully"})
 }
-

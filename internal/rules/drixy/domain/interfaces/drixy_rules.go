@@ -146,11 +146,11 @@ type DrixyRuleAtoms struct {
 
 // DrixyRuleDetector represents a compiled T0 deterministic regex pattern for mechanical rules.
 type DrixyRuleDetector struct {
-	Type        string `json:"type"` // "regex"
-	Pattern     string `json:"pattern"`
-	Flags       string `json:"flags,omitempty"`
-	CompiledBy  string `json:"compiledBy,omitempty"`
-	Reason      string `json:"reason,omitempty"`
+	Type       string `json:"type"` // "regex"
+	Pattern    string `json:"pattern"`
+	Flags      string `json:"flags,omitempty"`
+	CompiledBy string `json:"compiledBy,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // DrixyRulesInheritance defines organizational inheritance and scoping rules.
@@ -162,14 +162,14 @@ type DrixyRulesInheritance struct {
 
 // DrixyRuleExternalReference defines linked source file references.
 type DrixyRuleExternalReference struct {
-	FilePath        string             `json:"filePath"`
-	OriginalText    string             `json:"originalText,omitempty"`
-	LineRange       *LineRange         `json:"lineRange,omitempty"`
-	Description     string             `json:"description,omitempty"`
-	RepositoryName  string             `json:"repositoryName,omitempty"`
-	LastContentHash string             `json:"lastContentHash,omitempty"`
-	LastValidatedAt *time.Time         `json:"lastValidatedAt,omitempty"`
-	EstimatedTokens int                `json:"estimatedTokens,omitempty"`
+	FilePath        string              `json:"filePath"`
+	OriginalText    string              `json:"originalText,omitempty"`
+	LineRange       *LineRange          `json:"lineRange,omitempty"`
+	Description     string              `json:"description,omitempty"`
+	RepositoryName  string              `json:"repositoryName,omitempty"`
+	LastContentHash string              `json:"lastContentHash,omitempty"`
+	LastValidatedAt *time.Time          `json:"lastValidatedAt,omitempty"`
+	EstimatedTokens int                 `json:"estimatedTokens,omitempty"`
 	LastFetchError  *ExternalFetchError `json:"lastFetchError,omitempty"`
 }
 
@@ -232,26 +232,26 @@ type DrixyRules struct {
 
 // DrixyRuleMemory represents a memory rule variation.
 type DrixyRuleMemory struct {
-	UUID               string           `json:"uuid,omitempty"`
-	Title              string           `json:"title"`
-	Rule               string           `json:"rule"`
-	Path               string           `json:"path,omitempty"`
-	SourcePath         string           `json:"sourcePath,omitempty"`
-	Status             DrixyRulesStatus `json:"status"`
-	RepositoryID       string           `json:"repositoryId"`
-	SourceRepositoryID string           `json:"sourceRepositoryId,omitempty"`
-	LastContentHash    string           `json:"lastContentHash,omitempty"`
-	Origin             DrixyRulesOrigin `json:"origin,omitempty"`
-	CreatedAt          *time.Time       `json:"createdAt,omitempty"`
-	UpdatedAt          *time.Time       `json:"updatedAt,omitempty"`
-	Reason             *string          `json:"reason,omitempty"`
-	DirectoryID        string           `json:"directoryId,omitempty"`
+	UUID               string               `json:"uuid,omitempty"`
+	Title              string               `json:"title"`
+	Rule               string               `json:"rule"`
+	Path               string               `json:"path,omitempty"`
+	SourcePath         string               `json:"sourcePath,omitempty"`
+	Status             DrixyRulesStatus     `json:"status"`
+	RepositoryID       string               `json:"repositoryId"`
+	SourceRepositoryID string               `json:"sourceRepositoryId,omitempty"`
+	LastContentHash    string               `json:"lastContentHash,omitempty"`
+	Origin             DrixyRulesOrigin     `json:"origin,omitempty"`
+	CreatedAt          *time.Time           `json:"createdAt,omitempty"`
+	UpdatedAt          *time.Time           `json:"updatedAt,omitempty"`
+	Reason             *string              `json:"reason,omitempty"`
+	DirectoryID        string               `json:"directoryId,omitempty"`
 	RequestType        DrixyRuleRequestType `json:"requestType,omitempty"`
-	TargetRuleUUID     string           `json:"targetRuleUuid,omitempty"`
-	ResolvedAt         *time.Time       `json:"resolvedAt,omitempty"`
-	ResolvedBy         string           `json:"resolvedBy,omitempty"`
-	PinnedSync         bool             `json:"pinnedSync,omitempty"`
-	LockedByPlan       bool             `json:"lockedByPlan,omitempty"`
+	TargetRuleUUID     string               `json:"targetRuleUuid,omitempty"`
+	ResolvedAt         *time.Time           `json:"resolvedAt,omitempty"`
+	ResolvedBy         string               `json:"resolvedBy,omitempty"`
+	PinnedSync         bool                 `json:"pinnedSync,omitempty"`
+	LockedByPlan       bool                 `json:"lockedByPlan,omitempty"`
 }
 
 // FindMemoriesFilters defines parameters for locating past review memories.
@@ -311,5 +311,3 @@ func ResolveDrixyRuleSeverityLevelFromString(severity string) models.FindingSeve
 		return models.SeverityHigh
 	}
 }
-
-

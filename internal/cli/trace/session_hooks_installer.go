@@ -436,14 +436,20 @@ func RemoveCursorSessionHooks(repoRoot string) (SessionHookRemovalResult, error)
 
 // InstallCodexSessionHooks configures Codex session tracking hooks in ~/.codex/config.toml.
 func InstallCodexSessionHooks(configPath string) (SessionHookResult, error) {
-	resolved := ResolveCodexConfigPath(configPath)
+	resolved, err := ResolveCodexConfigPath(configPath)
+	if err != nil {
+		return SessionHookResult{SettingsPath: configPath}, err
+	}
 	changed, err := InstallCodexHooks(resolved)
 	return SessionHookResult{SettingsPath: resolved, Changed: changed}, err
 }
 
 // RemoveCodexSessionHooks removes ScanDrix hooks from ~/.codex/config.toml.
 func RemoveCodexSessionHooks(configPath string) (SessionHookRemovalResult, error) {
-	resolved := ResolveCodexConfigPath(configPath)
+	resolved, err := ResolveCodexConfigPath(configPath)
+	if err != nil {
+		return SessionHookRemovalResult{SettingsPath: configPath}, err
+	}
 	removed, err := RemoveCodexHooks(resolved)
 	return SessionHookRemovalResult{SettingsPath: resolved, Removed: removed}, err
 }

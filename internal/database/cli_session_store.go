@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"github.com/google/uuid"
@@ -43,6 +44,7 @@ func (s *PostgresCLISessionStore) ensureTable(ctx context.Context) {
 			access_token TEXT,
 			refresh_token TEXT,
 			user_id UUID,
+			workspace_id UUID,
 			user_email TEXT,
 			user_agent TEXT,
 			expires_at TIMESTAMPTZ NOT NULL,
@@ -54,7 +56,17 @@ func (s *PostgresCLISessionStore) ensureTable(ctx context.Context) {
 		CREATE INDEX IF NOT EXISTS idx_cli_auth_sessions_device ON cli_auth_sessions(device_code);
 		CREATE INDEX IF NOT EXISTS idx_cli_auth_sessions_user ON cli_auth_sessions(user_code);
 	`
-	_, err := s.repo.client.Pool.Exec(ctx, createTableSQL)
+	if _, err := s.repo.client.Pool.Exec(ctx, createTableSQL); err != nil {
+		return
+	}
+	// AUDIT_REMEDIATION.md F-37. The tenant column was added after the table
+	// first shipped, so upgrade existing tables in place. This is NOT RLS yet:
+	// see the F-37 row for why, and note that RLS needs a tenant-scoped policy
+	// which the device flow can now satisfy because approval binds the tenant.
+	_, err := s.repo.client.Pool.Exec(ctx, `
+		ALTER TABLE cli_auth_sessions ADD COLUMN IF NOT EXISTS workspace_id UUID;
+		CREATE INDEX IF NOT EXISTS idx_cli_auth_sessions_workspace ON cli_auth_sessions(workspace_id);
+	`)
 	if err == nil {
 		s.tableReady = true
 	}
@@ -67,7 +79,17 @@ func (s *PostgresCLISessionStore) CreateSession(ctx context.Context, session *cl
 
 	s.ensureTable(ctx)
 	if s.repo != nil {
-		_ = s.repo.CreateCLISession(ctx, session)
+		// A DB write failure must never be silent. It used to be discarded
+		// here, which is how a NOT NULL violation on session_id survived
+		// unnoticed: device sessions never persisted, and the memory
+		// fallback hid it until the process restarted or scaled out.
+		// The caller still succeeds (memory has the session), so surface the
+		// durability failure in logs rather than as a user-facing error.
+		// AUDIT_REMEDIATION.md F-27.
+		if err := s.repo.CreateCLISession(ctx, session); err != nil {
+			log.Printf("[cli-session] WARN durable store unavailable, session %s is memory-only: %v",
+				session.UUID, err)
+		}
 	}
 	return nil
 }
@@ -93,10 +115,18 @@ func (s *PostgresCLISessionStore) GetByUserCode(ctx context.Context, userCode st
 }
 
 // CompleteSession updates the session status to completed and saves authorization tokens.
-func (s *PostgresCLISessionStore) CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID uuid.UUID, email string) error {
-	_ = s.fallback.CompleteSession(ctx, userCode, accessToken, refreshToken, userID, email)
+// CompleteSession records the approval. The workspace is the tenant that
+// approved the device code in the browser; the CLI never supplies it.
+// AUDIT_REMEDIATION.md F-37.
+func (s *PostgresCLISessionStore) CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID, workspaceID uuid.UUID, email string) error {
+	// Fail closed: without a tenant the session must not be completed, because
+	// the CLI would receive a token scoped to nothing.
+	if workspaceID == uuid.Nil {
+		return cliauth.ErrNoWorkspace
+	}
+	_ = s.fallback.CompleteSession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email)
 	if s.repo != nil {
-		_ = s.repo.CompleteCLISession(ctx, userCode, accessToken, refreshToken, userID, email)
+		_ = s.repo.CompleteCLISession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email)
 	}
 	return nil
 }
@@ -108,6 +138,19 @@ func (s *PostgresCLISessionStore) MarkConsumed(ctx context.Context, sessionID uu
 		_ = s.repo.ConsumeCLISession(ctx, sessionID)
 	}
 	return nil
+}
+
+// ConsumeAndGetSession atomically claims a completed session for exactly one
+// caller and returns it.
+//
+// AUDIT_REMEDIATION.md F-27. The database path is authoritative when the
+// session has been persisted; the in-memory fallback is only consulted when
+// there is no repository, and it is itself atomic under a write lock.
+func (s *PostgresCLISessionStore) ConsumeAndGetSession(ctx context.Context, deviceCode string) (*cliauth.CLIDeviceSession, error) {
+	if s.repo != nil {
+		return s.repo.ConsumeCLISessionByDeviceCode(ctx, deviceCode)
+	}
+	return s.fallback.ConsumeAndGetSession(ctx, deviceCode)
 }
 
 // Compile-time check for interface implementation

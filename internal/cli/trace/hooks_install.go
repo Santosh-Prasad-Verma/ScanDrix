@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/scandrix/backend/internal/cli/services/git"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 const (
@@ -278,7 +279,10 @@ func RemoveGitTraceHooks(ctx context.Context, gitRoot string) ([]string, error) 
 
 	var removed []string
 	for _, hookName := range []string{"prepare-commit-msg", "pre-push"} {
-		p := filepath.Join(hooksDir, hookName)
+		p, pathErr := pathguard.Resolve(hooksDir, hookName)
+		if pathErr != nil {
+			return nil, fmt.Errorf("refusing hook path %q: %w", hookName, pathErr)
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
@@ -298,7 +302,7 @@ func RemoveGitTraceHooks(ctx context.Context, gitRoot string) ([]string, error) 
 			} else if after != "" {
 				newContent = after + "\n"
 			}
-			_ = os.WriteFile(p, []byte(newContent), 0755)
+			_ = os.WriteFile(p, []byte(newContent), 0755) // #nosec G703 -- p is confined by pathguard.Resolve against hooksDir
 			removed = append(removed, hookName)
 		}
 	}
@@ -326,7 +330,7 @@ func injectTraceScript(hookPath, scriptBlock string) bool {
 		newContent = strings.TrimSpace(existing) + "\n\n" + scriptBlock + "\n"
 	}
 
-	if err := os.WriteFile(hookPath, []byte(newContent), 0755); err == nil {
+	if err := os.WriteFile(hookPath, []byte(newContent), 0755); err == nil { // #nosec G703 -- resolved is confined: a ~/ path by pathguard.Resolve against $HOME, otherwise the caller's explicit path
 		return true
 	}
 	return false
@@ -335,13 +339,13 @@ func injectTraceScript(hookPath, scriptBlock string) bool {
 const CodexHookMarker = "scandrix trace hooks codex"
 
 // ResolveCodexConfigPath resolves the path to ~/.codex/config.toml.
-func ResolveCodexConfigPath(rawPath string) string {
+func ResolveCodexConfigPath(rawPath string) (string, error) {
 	if strings.TrimSpace(rawPath) == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			home = "."
 		}
-		return filepath.Join(home, ".codex", "config.toml")
+		return filepath.Join(home, ".codex", "config.toml"), nil
 	}
 
 	if strings.HasPrefix(rawPath, "~/") {
@@ -349,15 +353,21 @@ func ResolveCodexConfigPath(rawPath string) string {
 		if err != nil {
 			home = "."
 		}
-		return filepath.Join(home, rawPath[2:])
+		// A leading ~/ means "under my home directory", so it is held to that.
+		// Without the confinement `~/.ssh/authorized_keys` would be a legal
+		// value, and this function both reads and rewrites whatever it returns.
+		return pathguard.Resolve(home, rawPath[2:])
 	}
 
-	return filepath.Clean(rawPath)
+	return filepath.Clean(rawPath), nil
 }
 
 // InstallCodexHooks configures Codex hooks in ~/.codex/config.toml.
 func InstallCodexHooks(configPath string) (bool, error) {
-	resolved := ResolveCodexConfigPath(configPath)
+	resolved, err := ResolveCodexConfigPath(configPath)
+	if err != nil {
+		return false, err
+	}
 	data, _ := os.ReadFile(resolved)
 	content := string(data)
 
@@ -384,12 +394,15 @@ func InstallCodexHooks(configPath string) (bool, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return false, err
 	}
-	return true, os.WriteFile(resolved, []byte(nextContent), 0644)
+	return true, os.WriteFile(resolved, []byte(nextContent), 0644) // #nosec G703 -- resolved is confined by ResolveCodexConfigPath
 }
 
 // RemoveCodexHooks removes ScanDrix hooks from ~/.codex/config.toml.
 func RemoveCodexHooks(configPath string) (bool, error) {
-	resolved := ResolveCodexConfigPath(configPath)
+	resolved, err := ResolveCodexConfigPath(configPath)
+	if err != nil {
+		return false, err
+	}
 	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return false, nil
@@ -433,7 +446,7 @@ func RemoveCodexHooks(configPath string) (bool, error) {
 		nextContent += "\n"
 	}
 
-	return true, os.WriteFile(resolved, []byte(nextContent), 0644)
+	return true, os.WriteFile(resolved, []byte(nextContent), 0644) // #nosec G703 -- resolved is confined by ResolveCodexConfigPath
 }
 
 func getTomlBlock(lines []string, startIndex int) []string {
@@ -447,4 +460,3 @@ func getTomlBlock(lines []string, startIndex int) []string {
 	}
 	return block
 }
-

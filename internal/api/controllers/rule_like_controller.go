@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/rules/drixy/application/usecases"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/entities"
@@ -43,14 +44,29 @@ func (c *RuleLikeController) Routes() chi.Router {
 	return r
 }
 
+// resolveUserID returns the caller's identity from the verified session only.
+//
+// The previous implementation fell back to the `x-user-id` request header,
+// which is attacker-controlled. On today's mount that fallback is unreachable
+// because the route sits behind the authenticated group, but it is exactly the
+// identity-from-client-input pattern that AUDIT_REMEDIATION.md F-02 flagged, and
+// it would become live the moment this controller was mounted anywhere else.
 func (c *RuleLikeController) resolveUserID(r *http.Request) string {
 	if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil && profile.ID.String() != "" {
 		return profile.ID.String()
 	}
-	if hUser := r.Header.Get("x-user-id"); hUser != "" {
-		return hUser
-	}
 	return ""
+}
+
+// resolveOrganizationID returns the caller's workspace from the verified
+// session. It selects the RLS tenant context for drixy_rule_likes
+// (AUDIT_REMEDIATION.md F-37), so it must never come from a header or body.
+func (c *RuleLikeController) resolveOrganizationID(r *http.Request) string {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || wsID == uuid.Nil {
+		return ""
+	}
+	return wsID.String()
 }
 
 func (c *RuleLikeController) handleSetFeedback(w http.ResponseWriter, r *http.Request) {
@@ -67,12 +83,13 @@ func (c *RuleLikeController) handleSetFeedback(w http.ResponseWriter, r *http.Re
 	}
 
 	userID := c.resolveUserID(r)
-	if userID == "" {
+	organizationID := c.resolveOrganizationID(r)
+	if userID == "" || organizationID == "" {
 		http.Error(w, `{"error":"User not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
 
-	res, err := c.setRuleLikeUseCase.Execute(r.Context(), ruleID, entities.RuleFeedbackType(dto.Feedback), userID)
+	res, err := c.setRuleLikeUseCase.Execute(r.Context(), organizationID, ruleID, entities.RuleFeedbackType(dto.Feedback), userID)
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
@@ -91,12 +108,13 @@ func (c *RuleLikeController) handleRemoveFeedback(w http.ResponseWriter, r *http
 	}
 
 	userID := c.resolveUserID(r)
-	if userID == "" {
+	organizationID := c.resolveOrganizationID(r)
+	if userID == "" || organizationID == "" {
 		http.Error(w, `{"error":"User not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
 
-	removed, err := c.removeRuleLikeUseCase.Execute(r.Context(), ruleID, userID)
+	removed, err := c.removeRuleLikeUseCase.Execute(r.Context(), organizationID, ruleID, userID)
 	if err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return

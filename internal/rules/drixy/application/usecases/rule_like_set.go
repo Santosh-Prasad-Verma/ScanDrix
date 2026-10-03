@@ -24,8 +24,12 @@ func NewSetRuleLikeUseCase(ruleLikeService contracts.IRuleLikeService) *SetRuleL
 }
 
 // Execute persists or updates a user's feedback for a rule.
+// organizationID is the authenticated caller's workspace. It selects the RLS
+// tenant context and is never read from the request body
+// (AUDIT_REMEDIATION.md F-37).
 func (uc *SetRuleLikeUseCase) Execute(
 	ctx context.Context,
+	organizationID string,
 	ruleID string,
 	feedback entities.RuleFeedbackType,
 	userID string,
@@ -34,7 +38,7 @@ func (uc *SetRuleLikeUseCase) Execute(
 		return nil, fmt.Errorf("rule ID is required")
 	}
 
-	res, err := uc.ruleLikeService.SetFeedback(ctx, ruleID, feedback, userID)
+	res, err := uc.ruleLikeService.SetFeedback(ctx, organizationID, ruleID, feedback, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set rule feedback: %w", err)
 	}

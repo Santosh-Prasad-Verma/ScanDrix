@@ -16,8 +16,8 @@ type SarifLog struct {
 
 // SarifRun represents a single analysis run.
 type SarifRun struct {
-	Tool      SarifTool        `json:"tool"`
-	Results   []SarifResult    `json:"results"`
+	Tool        SarifTool         `json:"tool"`
+	Results     []SarifResult     `json:"results"`
 	Invocations []SarifInvocation `json:"invocations,omitempty"`
 }
 
@@ -28,10 +28,10 @@ type SarifTool struct {
 
 // SarifDriver contains tool metadata and rule definitions.
 type SarifDriver struct {
-	Name            string      `json:"name"`
-	Version         string      `json:"version"`
-	InformationURI  string      `json:"informationUri"`
-	Rules           []SarifRule `json:"rules"`
+	Name           string      `json:"name"`
+	Version        string      `json:"version"`
+	InformationURI string      `json:"informationUri"`
+	Rules          []SarifRule `json:"rules"`
 }
 
 // SarifRule defines a static analysis rule.
@@ -90,7 +90,7 @@ type SarifRegion struct {
 
 // SarifFix represents an automated replacement fix.
 type SarifFix struct {
-	Description     SarifMultiformatMsg `json:"description"`
+	Description     SarifMultiformatMsg   `json:"description"`
 	ArtifactChanges []SarifArtifactChange `json:"artifactChanges"`
 }
 
@@ -102,7 +102,7 @@ type SarifArtifactChange struct {
 
 // SarifReplacement specifies replacement content.
 type SarifReplacement struct {
-	DeletedRegion   SarifRegion `json:"deletedRegion"`
+	DeletedRegion   SarifRegion  `json:"deletedRegion"`
 	InsertedContent SarifContent `json:"insertedContent"`
 }
 
@@ -166,7 +166,12 @@ func (s *SarifFormatter) Format(w io.Writer, result *types.ReviewResult) error {
 				DefaultConfig: SarifDefaultConfig{
 					Level: s.mapSeverityToLevel(issue.Severity),
 				},
-				HelpURI: "https://docs.scandrix.dev/rules/" + ruleID,
+				// No per-rule documentation page exists, so there is no valid
+				// HelpURI to give. It used to be built by concatenation and
+				// 404'd for every rule. The field is omitempty, so leaving it
+				// empty omits it rather than publishing a dead link.
+				// AUDIT_REMEDIATION.md F-45.
+				HelpURI: "",
 			})
 		}
 

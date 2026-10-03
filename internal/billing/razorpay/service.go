@@ -116,6 +116,12 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 			} else {
 				amount = 999900 // ₹9,999.00
 			}
+		case license.TierScale:
+			if curr == "USD" {
+				amount = 29900 // $299.00
+			} else {
+				amount = 2499000 // ₹24,990.00
+			}
 		case license.TierDeveloper:
 			if curr == "USD" {
 				amount = 999 // $9.99

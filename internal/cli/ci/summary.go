@@ -113,7 +113,15 @@ func WriteStepSummaryFile(summary string) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	// GITHUB_STEP_SUMMARY is set by the Actions runner, but it is still an
+	// environment variable, and this opens the path for append. Refusing anything
+	// that is not a regular file keeps a symlink or a device node from being
+	// written to through it.
+	if info, statErr := os.Lstat(summaryPath); statErr == nil && !info.Mode().IsRegular() { // #nosec G703 -- summaryPath is checked with Lstat for a regular file immediately above
+		return fmt.Errorf("refusing to append to %q: not a regular file", summaryPath)
+	}
+
+	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G703 -- summaryPath is checked with Lstat for a regular file immediately above
 	if err != nil {
 		return err
 	}

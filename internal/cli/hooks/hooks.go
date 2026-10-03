@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/scandrix/backend/internal/cli/services/git"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 const (
@@ -33,13 +34,27 @@ func getHooksDir(workDir string) (string, error) {
 	if workDir == "" {
 		workDir = "."
 	}
-	svc := git.NewService(workDir)
-	if dir, err := svc.GetHooksDir(context.Background()); err == nil && dir != "" {
-		_ = os.MkdirAll(dir, 0755)
-		return dir, nil
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving working directory %q: %w", workDir, err)
 	}
 
-	gitDir := filepath.Join(workDir, ".git")
+	svc := git.NewService(absWorkDir)
+	if dir, err := svc.GetHooksDir(context.Background()); err == nil && dir != "" {
+		// GetHooksDir can resolve through a `.git` file, so its answer is
+		// confined before anything is created under it. The anchor is the
+		// repository's parent, which is where git puts a linked worktree's
+		// gitdir and therefore the only place a legitimate result can live.
+		anchor := filepath.Dir(absWorkDir)
+		safe, gErr := pathguard.ResolveUnder(anchor, dir)
+		if gErr != nil {
+			return "", fmt.Errorf("refusing hooks directory outside %s: %w", anchor, gErr)
+		}
+		_ = os.MkdirAll(safe, 0755)
+		return safe, nil
+	}
+
+	gitDir := filepath.Join(absWorkDir, ".git")
 	info, err := os.Stat(gitDir)
 	if err != nil {
 		return "", fmt.Errorf("not a git repository (missing .git directory in %s)", workDir)
@@ -50,22 +65,47 @@ func getHooksDir(workDir string) (string, error) {
 		return dir, nil
 	}
 
-	// Linked git worktree: .git is a file containing "gitdir: <path>"
+	// Linked git worktree or submodule: `.git` is a *file* whose contents name
+	// the real git directory.
+	//
+	// That content is repository data, and a repository is untrusted input: a
+	// `gitdir:` of `../../../etc/cron.d` would otherwise make this function
+	// return an arbitrary directory, and the installer then writes an executable
+	// pre-commit hook there. So the resolved target is confined to the
+	// repository's own parent directory -- the only place git itself ever puts a
+	// linked worktree's gitdir, e.g. `<parent>/.git/worktrees/<name>`.
 	if data, rErr := os.ReadFile(gitDir); rErr == nil {
 		text := strings.TrimSpace(string(data))
 		if strings.HasPrefix(text, "gitdir:") {
 			target := strings.TrimSpace(strings.TrimPrefix(text, "gitdir:"))
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(workDir, target)
+			if target == "" {
+				return "", fmt.Errorf("malformed .git file in %s: empty gitdir", workDir)
 			}
-			parent := filepath.Dir(target)
+
+			var resolved string
+			if filepath.IsAbs(target) {
+				// Absolute, as git writes for worktrees created outside the repo.
+				resolved = filepath.Clean(target)
+			} else {
+				resolved = filepath.Clean(filepath.Join(absWorkDir, target))
+			}
+
+			// The anchor is the repository's parent: a linked worktree's gitdir is
+			// always `<parent>/.git/worktrees/<name>`, so nothing legitimate
+			// reaches outside it.
+			anchor := filepath.Dir(absWorkDir)
+			if _, err := pathguard.ResolveUnder(anchor, resolved); err != nil {
+				return "", fmt.Errorf("refusing gitdir from .git file that points outside %s: %w", anchor, err)
+			}
+
+			parent := filepath.Dir(resolved)
 			if filepath.Base(parent) == "worktrees" {
 				commonHooks := filepath.Join(filepath.Dir(parent), "hooks")
-				_ = os.MkdirAll(commonHooks, 0755)
+				_ = os.MkdirAll(commonHooks, 0755) // #nosec G703 -- the gitdir from the .git file is confined by pathguard.ResolveUnder before use
 				return commonHooks, nil
 			}
-			commonHooks := filepath.Join(target, "hooks")
-			_ = os.MkdirAll(commonHooks, 0755)
+			commonHooks := filepath.Join(resolved, "hooks")
+			_ = os.MkdirAll(commonHooks, 0755) // #nosec G703 -- the gitdir from the .git file is confined by pathguard.ResolveUnder before use
 			return commonHooks, nil
 		}
 	}
@@ -256,7 +296,7 @@ func Install(workDir string, preCommit, prePush bool, failOnSeverity string, fas
 			existing = string(data)
 		}
 		updated := injectHookBlock(existing, generatePreCommitBlock(failOnSeverity, isFast))
-		if err := os.WriteFile(hookPath, []byte(updated), 0755); err != nil {
+		if err := os.WriteFile(hookPath, []byte(updated), 0755); err != nil { // #nosec G703 -- hookPath is a constant name under the hooks dir returned by getHooksDir, which confines the gitdir
 			return fmt.Errorf("failed writing pre-commit hook: %w", err)
 		}
 	}
@@ -268,7 +308,7 @@ func Install(workDir string, preCommit, prePush bool, failOnSeverity string, fas
 			existing = string(data)
 		}
 		updated := injectHookBlock(existing, generatePrePushBlock(failOnSeverity, isFast))
-		if err := os.WriteFile(hookPath, []byte(updated), 0755); err != nil {
+		if err := os.WriteFile(hookPath, []byte(updated), 0755); err != nil { // #nosec G703 -- hookPath is a constant name under the hooks dir returned by getHooksDir, which confines the gitdir
 			return fmt.Errorf("failed writing pre-push hook: %w", err)
 		}
 	}
@@ -290,7 +330,7 @@ func Uninstall(workDir string) error {
 			if removeEntireFile {
 				_ = os.Remove(hookPath)
 			} else {
-				_ = os.WriteFile(hookPath, []byte(cleaned), 0755)
+				_ = os.WriteFile(hookPath, []byte(cleaned), 0755) // #nosec G703 -- hookPath is a constant name under the hooks dir returned by getHooksDir, which confines the gitdir
 			}
 		}
 	}

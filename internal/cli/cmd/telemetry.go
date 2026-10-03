@@ -142,7 +142,7 @@ func initBeaconService(ctx context.Context) (*beacon.SelfHostedBeaconService, fu
 
 	store := beacon.NewPostgresTelemetryStateStore(dbClient.Pool)
 	_ = store.EnsureTable(ctx)
-	collector := beacon.NewHeartbeatCollectorService(dbClient.Pool, slog.Default())
+	collector := beacon.NewHeartbeatCollectorService(dbClient, slog.Default())
 	transport := beacon.NewBeaconHTTPProvider(slog.Default())
 	service := beacon.NewSelfHostedBeaconService(store, collector, transport, slog.Default())
 

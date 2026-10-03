@@ -38,7 +38,7 @@ func TestApplyLocalSuggestion(t *testing.T) {
 	}
 
 	replacement := "\tsecret := os.Getenv(\"SECRET\")"
-	err := ApplyLocalSuggestion(testFile, 4, 4, replacement)
+	err := ApplyLocalSuggestion(tmpDir, testFile, 4, 4, replacement)
 	if err != nil {
 		t.Fatalf("ApplyLocalSuggestion failed: %v", err)
 	}

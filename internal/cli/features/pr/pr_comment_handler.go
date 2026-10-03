@@ -11,6 +11,7 @@ import (
 
 	"github.com/scandrix/backend/internal/cli/services/api"
 	"github.com/scandrix/backend/internal/cli/utils"
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 // ReviewCommentPayload defines the request body for posting an inline PR comment.
@@ -74,7 +75,16 @@ func (h *PRCommentHandler) PostReviewComment(ctx context.Context, payload Review
 }
 
 // ApplyLocalSuggestion writes the replacement code directly to the local target file.
-func ApplyLocalSuggestion(filePath string, startLine, endLine int, replacement string) error {
+// ApplyLocalSuggestion rewrites a region of a file in place. filePath comes from
+// a review suggestion, so root bounds it: without a boundary the suggestion
+// chooses which file on the host gets rewritten.
+func ApplyLocalSuggestion(root, filePath string, startLine, endLine int, replacement string) error {
+	resolved, pathErr := pathguard.ResolvePath(root, filePath)
+	if pathErr != nil {
+		return fmt.Errorf("refusing to modify %q: %w", filePath, pathErr)
+	}
+	filePath = resolved
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read target file %s: %w", filePath, err)
@@ -96,7 +106,7 @@ func ApplyLocalSuggestion(filePath string, startLine, endLine int, replacement s
 	}
 
 	out := strings.Join(newLines, "\n")
-	if err := os.WriteFile(filePath, []byte(out), 0644); err != nil {
+	if err := os.WriteFile(filePath, []byte(out), 0644); err != nil { // #nosec G703 -- filePath is re-resolved by pathguard.ResolvePath at the top of ApplyLocalSuggestion
 		return fmt.Errorf("failed to write patched file %s: %w", filePath, err)
 	}
 

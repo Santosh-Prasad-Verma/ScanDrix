@@ -36,7 +36,6 @@ func (r *Repository) InsertOutboxEvent(ctx context.Context, event *models.Outbox
 	})
 }
 
-
 // IngestWebhookEventTx atomically creates the incoming pull request review record and the outbox event within a single tenant transaction.
 func (r *Repository) IngestWebhookEventTx(ctx context.Context, rev *models.PullRequestReview, event *models.OutboxRecord) error {
 	if r == nil || r.client == nil {
@@ -92,30 +91,37 @@ func (r *Repository) IngestWebhookEventTx(ctx context.Context, rev *models.PullR
 	})
 }
 
-
 // FetchPendingOutboxEvents retrieves un-dispatched events for the background publisher relay.
 func (r *Repository) FetchPendingOutboxEvents(ctx context.Context, limit int) ([]models.OutboxRecord, error) {
 	if r == nil || r.client == nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
 
+	// A PROCESSING row is only reclaimable once its *claim* is older than the
+	// timeout. Keying this off created_at instead meant a row that sat in
+	// PENDING before being claimed was re-published on the next relay pass.
 	query := `
 		UPDATE outbox_events
-		SET status = 'PROCESSING'
+		SET status = 'PROCESSING',
+		    visibility_timeout = NOW() + $2::interval
 		WHERE id IN (
 			SELECT id
 			FROM outbox_events
 			WHERE status = 'PENDING'
-			   OR (status = 'PROCESSING' AND created_at < NOW() - INTERVAL '5 minutes')
+			   OR (status = 'PROCESSING' AND visibility_timeout < NOW())
 			ORDER BY created_at ASC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING id, workspace_id, event_type, payload, status, retry_count, created_at;
 	`
+	// reclaimAfter is how long a PROCESSING claim may stand before another
+	// relay is allowed to take the row.
+	const reclaimAfter = "60 seconds"
+
 	var records []models.OutboxRecord
 	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, query, limit)
+		rows, err := tx.Query(ctx, query, limit, reclaimAfter)
 		if err != nil {
 			return fmt.Errorf("failed to fetch pending outbox events: %w", err)
 		}
@@ -139,7 +145,6 @@ func (r *Repository) FetchPendingOutboxEvents(ctx context.Context, limit int) ([
 	return records, nil
 }
 
-
 // MarkOutboxEventPublished marks an event as successfully published to the message broker.
 func (r *Repository) MarkOutboxEventPublished(ctx context.Context, eventID uuid.UUID) error {
 	if r == nil || r.client == nil {
@@ -156,7 +161,6 @@ func (r *Repository) MarkOutboxEventPublished(ctx context.Context, eventID uuid.
 		return err
 	})
 }
-
 
 // MarkOutboxEventFailed marks an event as failed, incrementing retries and resetting to PENDING or FAILED.
 func (r *Repository) MarkOutboxEventFailed(ctx context.Context, eventID uuid.UUID, errMsg string) error {
@@ -175,7 +179,6 @@ func (r *Repository) MarkOutboxEventFailed(ctx context.Context, eventID uuid.UUI
 		return err
 	})
 }
-
 
 // RetryDeadLetterOutboxEvents resets failed or DLQ outbox events back to PENDING status.
 func (r *Repository) RetryDeadLetterOutboxEvents(ctx context.Context, limit int) (int, error) {
@@ -206,7 +209,6 @@ func (r *Repository) RetryDeadLetterOutboxEvents(ctx context.Context, limit int)
 	return count, nil
 }
 
-
 // GetOutboxMetrics queries delivery stats from outbox_events.
 func (r *Repository) GetOutboxMetrics(ctx context.Context, wsID uuid.UUID) (totalDelivered, pending, retrying, dlq int64, lastEventAt *time.Time, err error) {
 	if r == nil || r.client == nil {
@@ -228,7 +230,6 @@ func (r *Repository) GetOutboxMetrics(ctx context.Context, wsID uuid.UUID) (tota
 	})
 	return totalDelivered, pending, retrying, dlq, lastEventAt, err
 }
-
 
 // ClaimInboxMessage atomically claims a message in the database for processing.
 func (r *Repository) ClaimInboxMessage(ctx context.Context, messageID, consumerID string) (bool, error) {
@@ -267,7 +268,6 @@ func (r *Repository) ClaimInboxMessage(ctx context.Context, messageID, consumerI
 	return claimed, err
 }
 
-
 // GetInboxAttemptCount retrieves the attempt count for an inbox record.
 func (r *Repository) GetInboxAttemptCount(ctx context.Context, messageID, consumerID string) int {
 	if r == nil || r.client == nil {
@@ -281,7 +281,6 @@ func (r *Repository) GetInboxAttemptCount(ctx context.Context, messageID, consum
 	return count
 }
 
-
 // MarkInboxCompleted marks the inbox message as completed.
 func (r *Repository) MarkInboxCompleted(ctx context.Context, messageID, consumerID string) error {
 	if r == nil || r.client == nil {
@@ -293,7 +292,6 @@ func (r *Repository) MarkInboxCompleted(ctx context.Context, messageID, consumer
 		return err
 	})
 }
-
 
 // MarkInboxFailed marks the inbox message as failed.
 func (r *Repository) MarkInboxFailed(ctx context.Context, messageID, consumerID string, failErr error) error {
@@ -311,7 +309,6 @@ func (r *Repository) MarkInboxFailed(ctx context.Context, messageID, consumerID 
 	})
 }
 
-
 // ReleaseInboxMessage resets the status so the message can be reclaimed.
 func (r *Repository) ReleaseInboxMessage(ctx context.Context, messageID, consumerID string, attemptCount int) error {
 	if r == nil || r.client == nil {
@@ -323,4 +320,3 @@ func (r *Repository) ReleaseInboxMessage(ctx context.Context, messageID, consume
 		return err
 	})
 }
-

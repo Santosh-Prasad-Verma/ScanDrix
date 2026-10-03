@@ -19,14 +19,18 @@ type mockASTStore struct {
 	edges []graph.ASTEdge
 }
 
-func (m *mockASTStore) BatchInsertASTNodes(_ context.Context, _ uuid.UUID, nodes []graph.ASTNode) error {
+func (m *mockASTStore) WorkspaceIDForRepository(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+	return uuid.New(), nil
+}
+
+func (m *mockASTStore) BatchInsertASTNodes(_ context.Context, _ uuid.UUID, _ uuid.UUID, nodes []graph.ASTNode) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nodes = append(m.nodes, nodes...)
 	return nil
 }
 
-func (m *mockASTStore) BatchInsertASTEdges(_ context.Context, _ uuid.UUID, edges []graph.ASTEdge) error {
+func (m *mockASTStore) BatchInsertASTEdges(_ context.Context, _ uuid.UUID, _ uuid.UUID, edges []graph.ASTEdge) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.edges = append(m.edges, edges...)
@@ -90,7 +94,7 @@ func Caller() string {
 	)
 
 	repoID := uuid.New()
-	err = worker.SweepRepository(context.Background(), repoID, tmpDir)
+	err = worker.SweepRepository(context.Background(), uuid.New(), repoID, tmpDir)
 	if err != nil {
 		t.Fatalf("SweepRepository failed: %v", err)
 	}
@@ -142,7 +146,7 @@ func TestSweepEmptyDirectory(t *testing.T) {
 	store := &mockASTStore{}
 	worker := backfill.NewWorker(store)
 
-	err := worker.SweepRepository(context.Background(), uuid.New(), tmpDir)
+	err := worker.SweepRepository(context.Background(), uuid.New(), uuid.New(), tmpDir)
 	if err != nil {
 		t.Fatalf("expected no error for empty dir, got %v", err)
 	}
@@ -163,7 +167,7 @@ func A() {}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Immediately cancel
 
-	err := worker.SweepRepository(ctx, uuid.New(), tmpDir)
+	err := worker.SweepRepository(ctx, uuid.New(), uuid.New(), tmpDir)
 	if err == nil {
 		// Either returns ctx.Err() or completes before checking — both are valid
 		t.Log("sweep completed before cancellation check (fast path)")

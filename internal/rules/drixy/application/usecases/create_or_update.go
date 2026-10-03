@@ -19,10 +19,10 @@ import (
 
 // CreateOrUpdateDrixyRulesUseCase handles persisting new or modified rules.
 type CreateOrUpdateDrixyRulesUseCase struct {
-	rulesService      contracts.IDrixyRulesService
-	detectorCompiler  contracts.IDrixyRuleDetectorCompiler
-	summaryService    *services.DrixyRuleSummaryService
-	referenceLoader   *services.ExternalReferenceLoaderService
+	rulesService     contracts.IDrixyRulesService
+	detectorCompiler contracts.IDrixyRuleDetectorCompiler
+	summaryService   *services.DrixyRuleSummaryService
+	referenceLoader  *services.ExternalReferenceLoaderService
 }
 
 // CreateOrUpdateDrixyRuleUseCase is an alias for CreateOrUpdateDrixyRulesUseCase.

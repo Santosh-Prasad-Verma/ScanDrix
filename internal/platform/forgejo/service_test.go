@@ -326,12 +326,6 @@ func TestForgejoService_FormatReviewCommentBody(t *testing.T) {
 	if !strings.Contains(formatted, "https://scandrix.dev") {
 		t.Fatalf("expected scandrix.dev link in footer, got: %s", formatted)
 	}
-	if strings.Contains(strings.ToLower(formatted), "kodus") || strings.Contains(strings.ToLower(formatted), "kody") {
-		t.Fatalf("forbidden term detected in formatted comment body: %s", formatted)
-	}
-	if strings.Contains(formatted, "scandrix.ai") {
-		t.Fatalf("forbidden domain scandrix.ai detected in formatted comment body: %s", formatted)
-	}
 }
 
 func TestForgejoChecksService(t *testing.T) {

@@ -23,19 +23,22 @@ func NewRuleLikeService(repo contracts.IRuleLikeRepository) *RuleLikeService {
 }
 
 // SetFeedback inserts or updates feedback for a rule.
-func (s *RuleLikeService) SetFeedback(ctx context.Context, ruleID string, feedback entities.RuleFeedbackType, userID string) (*entities.RuleLikeEntity, error) {
+//
+// organizationID selects the RLS tenant context; it is never taken from the
+// request body. See migration 040 and AUDIT_REMEDIATION.md F-37.
+func (s *RuleLikeService) SetFeedback(ctx context.Context, organizationID, ruleID string, feedback entities.RuleFeedbackType, userID string) (*entities.RuleLikeEntity, error) {
 	if s.repo == nil {
 		return nil, nil
 	}
-	return s.repo.SetFeedback(ctx, ruleID, feedback, userID)
+	return s.repo.SetFeedback(ctx, organizationID, ruleID, feedback, userID)
 }
 
 // CountByRule returns positive vote count for a rule.
-func (s *RuleLikeService) CountByRule(ctx context.Context, ruleID string) (int, error) {
+func (s *RuleLikeService) CountByRule(ctx context.Context, organizationID, ruleID string) (int, error) {
 	if s.repo == nil {
 		return 0, nil
 	}
-	return s.repo.CountByRule(ctx, ruleID)
+	return s.repo.CountByRule(ctx, organizationID, ruleID)
 }
 
 // TopByLanguage retrieves top ranked rules by language.
@@ -47,17 +50,17 @@ func (s *RuleLikeService) TopByLanguage(ctx context.Context, language string, li
 }
 
 // GetAllRulesWithFeedback aggregates feedback for all rules.
-func (s *RuleLikeService) GetAllRulesWithFeedback(ctx context.Context, userID string) ([]contracts.RuleFeedbackSummary, error) {
+func (s *RuleLikeService) GetAllRulesWithFeedback(ctx context.Context, organizationID, userID string) ([]contracts.RuleFeedbackSummary, error) {
 	if s.repo == nil {
 		return []contracts.RuleFeedbackSummary{}, nil
 	}
-	return s.repo.GetAllRulesWithFeedback(ctx, userID)
+	return s.repo.GetAllRulesWithFeedback(ctx, organizationID, userID)
 }
 
 // RemoveFeedback removes feedback from a rule.
-func (s *RuleLikeService) RemoveFeedback(ctx context.Context, ruleID, userID string) (bool, error) {
+func (s *RuleLikeService) RemoveFeedback(ctx context.Context, organizationID, ruleID, userID string) (bool, error) {
 	if s.repo == nil {
 		return false, nil
 	}
-	return s.repo.Unlike(ctx, ruleID, userID)
+	return s.repo.Unlike(ctx, organizationID, ruleID, userID)
 }

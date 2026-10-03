@@ -317,6 +317,24 @@ func (r *PgPullRequestReviewRepository) Query(ctx context.Context, filter domain
 	}
 
 	offset := (filter.Page - 1) * filter.PageSize
+
+	allowedReviewSortColumns := map[string]string{
+		"created_at":     "created_at",
+		"updated_at":     "updated_at",
+		"pull_number":    "pull_number",
+		"state":          "state",
+		"findings_count": "findings_count",
+		"duration_ms":    "duration_ms",
+	}
+	sortCol, ok := allowedReviewSortColumns[strings.ToLower(filter.OrderBy)]
+	if !ok {
+		sortCol = "created_at"
+	}
+	sortDir := "DESC"
+	if strings.ToUpper(filter.OrderDir) == "ASC" {
+		sortDir = "ASC"
+	}
+
 	querySQL := fmt.Sprintf(`
 		SELECT id, created_at, updated_at, workspace_id, repository_id, pull_number,
 		       title, head_sha, base_sha, author_username, state, findings_count,
@@ -326,7 +344,7 @@ func (r *PgPullRequestReviewRepository) Query(ctx context.Context, filter domain
 		WHERE %s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, filter.OrderBy, filter.OrderDir, argIdx, argIdx+1)
+	`, whereClause, sortCol, sortDir, argIdx, argIdx+1)
 
 	args = append(args, filter.PageSize, offset)
 	rows, err := r.pool.Query(ctx, querySQL, args...)
@@ -489,6 +507,24 @@ func (r *PgCodeFindingRepository) Query(ctx context.Context, filter domain.CodeF
 	}
 
 	offset := (filter.Page - 1) * filter.PageSize
+
+	allowedFindingSortColumns := map[string]string{
+		"created_at":       "created_at",
+		"updated_at":       "updated_at",
+		"severity":         "severity",
+		"category":         "category",
+		"file_path":        "file_path",
+		"confidence_score": "confidence_score",
+	}
+	sortCol, ok := allowedFindingSortColumns[strings.ToLower(filter.OrderBy)]
+	if !ok {
+		sortCol = "created_at"
+	}
+	sortDir := "DESC"
+	if strings.ToUpper(filter.OrderDir) == "ASC" {
+		sortDir = "ASC"
+	}
+
 	querySQL := fmt.Sprintf(`
 		SELECT id, created_at, updated_at, workspace_id, review_id, repository_id,
 		       rule_id, category, severity, file_path, line_start, line_end,
@@ -498,7 +534,7 @@ func (r *PgCodeFindingRepository) Query(ctx context.Context, filter domain.CodeF
 		WHERE %s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, filter.OrderBy, filter.OrderDir, argIdx, argIdx+1)
+	`, whereClause, sortCol, sortDir, argIdx, argIdx+1)
 
 	args = append(args, filter.PageSize, offset)
 	rows, err := r.pool.Query(ctx, querySQL, args...)

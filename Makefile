@@ -21,6 +21,7 @@ build:
 	go build -o $(BIN_DIR)/scandrix-analytics-cli ./cmd/analytics-cli
 	go build -o $(BIN_DIR)/scandrix-try ./cmd/try
 	go build -o $(BIN_DIR)/scandrix-migrate ./cmd/migrate
+	go build -o $(BIN_DIR)/scandrix-keygen ./cmd/scandrix-keygen
 	@echo "All 10 binaries compiled successfully into $(BIN_DIR)/"
 
 install: build

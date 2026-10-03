@@ -184,11 +184,14 @@ func TestPollCliLoginUseCase(t *testing.T) {
 func TestCompleteCliLoginUseCase(t *testing.T) {
 	ctx := context.Background()
 	repo := infrastructure.NewInMemoryCliAuthSessionRepository()
-	jwtService := infrastructure.NewJwtTokenService(domain.JWTConfig{
+	jwtService, ctorErr := infrastructure.NewJwtTokenService(domain.JWTConfig{
 		Secret:        "test-secret-key-32-chars-long-abc",
 		RefreshSecret: "test-refresh-secret-32-chars-long",
 		ExpiresIn:     15 * time.Minute,
 	})
+	if ctorErr != nil {
+		t.Fatalf("jwtService construction failed: %v", ctorErr)
+	}
 	completeUC := application.NewCompleteCliLoginUseCase(repo, jwtService)
 
 	now := time.Now().UTC()

@@ -9,7 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/sandbox/contracts"
 )
 
@@ -36,15 +37,149 @@ type ISandboxLeaseRepository interface {
 // ═══════════════════════════════════════════════════════════════
 
 type PgSandboxLeaseRepository struct {
-	pool *pgxpool.Pool
+	// client is used rather than a raw pool so every query runs with the RLS
+	// system-worker flag set. Sandbox lease operations are all background jobs
+	// (acquire, release, reap, cleanup) and are not request-scoped, so they have
+	// no single tenant to run under. Reading them through a bare pool made every
+	// one of them fail under a non-superuser runtime role.
+	client *database.Client
 }
 
-func NewPgSandboxLeaseRepository(pool *pgxpool.Pool) *PgSandboxLeaseRepository {
-	return &PgSandboxLeaseRepository{pool: pool}
+func NewPgSandboxLeaseRepository(client *database.Client) *PgSandboxLeaseRepository {
+	return &PgSandboxLeaseRepository{client: client}
+}
+
+// execAsSystem runs a write against sandbox_leases with the system-worker RLS
+// flag set. Lease acquire, release, kill and cleanup are background operations
+// with no request tenant, so they cannot satisfy a tenant-scoped policy.
+// leaseColumns is the column order every lease query projects.
+const leaseColumns = `pr_key, sandbox_id, organization_id, repository_id, pr_number, consumer, state, lease_count, created_at, expires_at, kill_at, cleanup_status, cleanup_attempts, cleanup_retry_at, cleanup_error, cleanup_started_at`
+
+// rowScanner is satisfied by both pgx.Row and pgx.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanLease reads one lease row. sandbox_id, cleanup_status, cleanup_error,
+// organization_id and repository_id are nullable columns, so they are scanned
+// through pointers and folded into the non-pointer model fields. Scanning them
+// straight into a string fails on a freshly acquired lease, which has no
+// sandbox yet.
+func scanLease(row rowScanner) (*SandboxLease, error) {
+	var (
+		lease       SandboxLease
+		sandboxID   *string
+		orgID       *uuid.UUID
+		repository  *string
+		prNumber    *string
+		consumer    *string
+		state       *string
+		cleanStatus *string
+		cleanError  *string
+	)
+
+	if err := row.Scan(
+		&lease.PrKey, &sandboxID, &orgID, &repository, &prNumber,
+		&consumer, &state, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
+		&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
+		&cleanError, &lease.CleanupStartedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	if sandboxID != nil {
+		lease.SandboxID = *sandboxID
+	}
+	if repository != nil {
+		lease.RepositoryID = *repository
+	}
+	if prNumber != nil {
+		lease.PRNumber = *prNumber
+	}
+	if consumer != nil {
+		lease.Consumer = *consumer
+	}
+	if state != nil {
+		lease.State = LeaseState(*state)
+	}
+	lease.OrganizationID = orgID
+	if cleanStatus != nil {
+		lease.CleanupStatus = CleanupStatus(*cleanStatus)
+	}
+	if cleanError != nil {
+		lease.CleanupError = *cleanError
+	}
+
+	return &lease, nil
+}
+
+// scanRowAsSystem runs a single-row query with the RLS system-worker flag set
+// and scans it into dest before the transaction commits.
+//
+// dest is passed in rather than returning a pgx.Row on purpose: a Row is only
+// valid while its transaction is open, so a fluent
+// queryRowAsSystem(...).Scan(...) would scan against a connection that has
+// already been returned to the pool. Scanning inside the closure is the only
+// correct ordering.
+func (r *PgSandboxLeaseRepository) scanRowAsSystem(ctx context.Context, dest []any, sql string, args ...any) error {
+	if r == nil || r.client == nil {
+		return errors.New("database pool uninitialized")
+	}
+	return r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, sql, args...).Scan(dest...)
+	})
+}
+
+// queryLeaseAsSystem runs a single-row lease query with the system-worker flag
+// and scans it before the transaction commits. A missing row yields (nil, nil).
+func (r *PgSandboxLeaseRepository) queryLeaseAsSystem(ctx context.Context, sql string, args ...any) (*SandboxLease, error) {
+	var lease *SandboxLease
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		scanned, err := scanLease(tx.QueryRow(ctx, sql, args...))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		lease = scanned
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return lease, nil
+}
+
+// queryAsSystem runs a multi-row query and hands the rows to fn while the
+// transaction is still open. The rows must be fully consumed by fn; the caller
+// must not retain them past the callback.
+func (r *PgSandboxLeaseRepository) queryAsSystem(ctx context.Context, fn func(pgx.Rows) error, sql string, args ...any) error {
+	if r == nil || r.client == nil {
+		return errors.New("database pool uninitialized")
+	}
+	return r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		return fn(rows)
+	})
+}
+
+func (r *PgSandboxLeaseRepository) execAsSystem(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	var tag pgconn.CommandTag
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		var e error
+		tag, e = tx.Exec(ctx, sql, args...)
+		return e
+	})
+	return tag, err
 }
 
 func (r *PgSandboxLeaseRepository) UpsertAcquire(ctx context.Context, prKey string, leaseTTL time.Duration, consumer string) (*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -71,32 +206,21 @@ func (r *PgSandboxLeaseRepository) UpsertAcquire(ctx context.Context, prKey stri
 		RETURNING pr_key, sandbox_id, organization_id, repository_id, pr_number, consumer, state, lease_count, created_at, expires_at, kill_at, cleanup_status, cleanup_attempts, cleanup_retry_at, cleanup_error, cleanup_started_at;
 	`
 
-	var lease SandboxLease
-	var orgID *uuid.UUID
-	var cleanStatus *string
-
-	err = r.pool.QueryRow(ctx, query,
+	lease, err := r.queryLeaseAsSystem(ctx, query,
 		prKey, orgUUID, dec.RepositoryID, dec.PRNumber, consumer, now, expiresAt,
-	).Scan(
-		&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-		&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-		&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-		&lease.CleanupError, &lease.CleanupStartedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert acquire sandbox lease: %w", err)
 	}
-
-	lease.OrganizationID = orgID
-	if cleanStatus != nil {
-		lease.CleanupStatus = CleanupStatus(*cleanStatus)
+	if lease == nil {
+		return nil, errors.New("failed to upsert acquire sandbox lease: no row returned")
 	}
 
-	return &lease, nil
+	return lease, nil
 }
 
 func (r *PgSandboxLeaseRepository) DecrementLease(ctx context.Context, prKey string) (*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -111,12 +235,11 @@ func (r *PgSandboxLeaseRepository) DecrementLease(ctx context.Context, prKey str
 	var orgID *uuid.UUID
 	var cleanStatus *string
 
-	err := r.pool.QueryRow(ctx, query, prKey).Scan(
-		&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-		&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-		&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-		&lease.CleanupError, &lease.CleanupStartedAt,
-	)
+	var scanned *SandboxLease
+	scanned, err := r.queryLeaseAsSystem(ctx, query, prKey)
+	if scanned != nil {
+		lease = *scanned
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -132,7 +255,7 @@ func (r *PgSandboxLeaseRepository) DecrementLease(ctx context.Context, prKey str
 }
 
 func (r *PgSandboxLeaseRepository) UpdateReady(ctx context.Context, prKey, sandboxID string) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
@@ -141,12 +264,12 @@ func (r *PgSandboxLeaseRepository) UpdateReady(ctx context.Context, prKey, sandb
 		SET state = 'READY', sandbox_id = $2
 		WHERE pr_key = $1 AND state = 'CREATING';
 	`
-	_, err := r.pool.Exec(ctx, query, prKey, sandboxID)
+	_, err := r.execAsSystem(ctx, query, prKey, sandboxID)
 	return err
 }
 
 func (r *PgSandboxLeaseRepository) MarkInvalidated(ctx context.Context, prKey string) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
@@ -155,12 +278,12 @@ func (r *PgSandboxLeaseRepository) MarkInvalidated(ctx context.Context, prKey st
 		SET state = 'INVALIDATED'
 		WHERE pr_key = $1 AND state IN ('CREATING', 'READY');
 	`
-	_, err := r.pool.Exec(ctx, query, prKey)
+	_, err := r.execAsSystem(ctx, query, prKey)
 	return err
 }
 
 func (r *PgSandboxLeaseRepository) FindByPrKey(ctx context.Context, prKey string) (*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -170,32 +293,21 @@ func (r *PgSandboxLeaseRepository) FindByPrKey(ctx context.Context, prKey string
 		WHERE pr_key = $1;
 	`
 
-	var lease SandboxLease
-	var orgID *uuid.UUID
-	var cleanStatus *string
-
-	err := r.pool.QueryRow(ctx, query, prKey).Scan(
-		&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-		&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-		&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-		&lease.CleanupError, &lease.CleanupStartedAt,
-	)
+	// queryLeaseAsSystem reports a missing row as (nil, nil), so an absent
+	// lease yields a nil pointer rather than a pointer to a zero struct — the
+	// caller can tell "no such lease" from "a lease with nothing set".
+	lease, err := r.queryLeaseAsSystem(ctx, query, prKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-
-	lease.OrganizationID = orgID
-	if cleanStatus != nil {
-		lease.CleanupStatus = CleanupStatus(*cleanStatus)
-	}
-	return &lease, nil
+	return lease, nil
 }
 
 func (r *PgSandboxLeaseRepository) FindExpired(ctx context.Context, now time.Time) ([]*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -205,47 +317,42 @@ func (r *PgSandboxLeaseRepository) FindExpired(ctx context.Context, now time.Tim
 		WHERE expires_at < $1;
 	`
 
-	rows, err := r.pool.Query(ctx, query, now)
+	// Rows are consumed inside the transaction: a pgx.Rows returned from the
+	// closure and iterated after commit fails with "conn busy".
+	var result []*SandboxLease
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, now)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			lease, err := scanLease(rows)
+			if err != nil {
+				return err
+			}
+			result = append(result, lease)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var result []*SandboxLease
-	for rows.Next() {
-		var lease SandboxLease
-		var orgID *uuid.UUID
-		var cleanStatus *string
-		if err := rows.Scan(
-			&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-			&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-			&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-			&lease.CleanupError, &lease.CleanupStartedAt,
-		); err != nil {
-			return nil, err
-		}
-		lease.OrganizationID = orgID
-		if cleanStatus != nil {
-			lease.CleanupStatus = CleanupStatus(*cleanStatus)
-		}
-		result = append(result, &lease)
-	}
-
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *PgSandboxLeaseRepository) Delete(ctx context.Context, prKey string) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
 	query := `DELETE FROM sandbox_leases WHERE pr_key = $1;`
-	_, err := r.pool.Exec(ctx, query, prKey)
+	_, err := r.execAsSystem(ctx, query, prKey)
 	return err
 }
 
 func (r *PgSandboxLeaseRepository) SetKillAt(ctx context.Context, prKey string, killAt time.Time) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
@@ -254,22 +361,22 @@ func (r *PgSandboxLeaseRepository) SetKillAt(ctx context.Context, prKey string, 
 		SET kill_at = $2
 		WHERE pr_key = $1 AND sandbox_id IS NOT NULL AND sandbox_id != '';
 	`
-	_, err := r.pool.Exec(ctx, query, prKey, killAt)
+	_, err := r.execAsSystem(ctx, query, prKey, killAt)
 	return err
 }
 
 func (r *PgSandboxLeaseRepository) ClearKillAt(ctx context.Context, prKey string) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
 	query := `UPDATE sandbox_leases SET kill_at = NULL WHERE pr_key = $1;`
-	_, err := r.pool.Exec(ctx, query, prKey)
+	_, err := r.execAsSystem(ctx, query, prKey)
 	return err
 }
 
 func (r *PgSandboxLeaseRepository) FindReadyToKill(ctx context.Context, now time.Time) ([]*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -279,37 +386,29 @@ func (r *PgSandboxLeaseRepository) FindReadyToKill(ctx context.Context, now time
 		WHERE kill_at <= $1 AND sandbox_id IS NOT NULL AND sandbox_id != '';
 	`
 
-	rows, err := r.pool.Query(ctx, query, now)
+	// The rows are consumed inside the transaction callback. Returning them to
+	// the caller and iterating afterwards would use a connection that has already
+	// been released back to the pool.
+	result := make([]*SandboxLease, 0)
+	err := r.queryAsSystem(ctx, func(rows pgx.Rows) error {
+		for rows.Next() {
+			lease, err := scanLease(rows)
+			if err != nil {
+				return err
+			}
+			result = append(result, lease)
+		}
+		return rows.Err()
+	}, query, now)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var result []*SandboxLease
-	for rows.Next() {
-		var lease SandboxLease
-		var orgID *uuid.UUID
-		var cleanStatus *string
-		if err := rows.Scan(
-			&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-			&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-			&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-			&lease.CleanupError, &lease.CleanupStartedAt,
-		); err != nil {
-			return nil, err
-		}
-		lease.OrganizationID = orgID
-		if cleanStatus != nil {
-			lease.CleanupStatus = CleanupStatus(*cleanStatus)
-		}
-		result = append(result, &lease)
-	}
-
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *PgSandboxLeaseRepository) ClaimCleanup(ctx context.Context, prKey, expectedSandboxID string, requireLeaseCountZero bool) (*SandboxLease, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return nil, errors.New("database pool uninitialized")
 	}
 
@@ -330,12 +429,11 @@ func (r *PgSandboxLeaseRepository) ClaimCleanup(ctx context.Context, prKey, expe
 	var orgID *uuid.UUID
 	var cleanStatus *string
 
-	err := r.pool.QueryRow(ctx, query, prKey, expectedSandboxID, time.Now().UTC(), requireLeaseCountZero).Scan(
-		&lease.PrKey, &lease.SandboxID, &orgID, &lease.RepositoryID, &lease.PRNumber,
-		&lease.Consumer, &lease.State, &lease.LeaseCount, &lease.CreatedAt, &lease.ExpiresAt,
-		&lease.KillAt, &cleanStatus, &lease.CleanupAttempts, &lease.CleanupRetryAt,
-		&lease.CleanupError, &lease.CleanupStartedAt,
-	)
+	var scanned *SandboxLease
+	scanned, err := r.queryLeaseAsSystem(ctx, query, prKey, expectedSandboxID, time.Now().UTC(), requireLeaseCountZero)
+	if scanned != nil {
+		lease = *scanned
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -351,7 +449,7 @@ func (r *PgSandboxLeaseRepository) ClaimCleanup(ctx context.Context, prKey, expe
 }
 
 func (r *PgSandboxLeaseRepository) CompleteCleanup(ctx context.Context, prKey, expectedSandboxID string) (bool, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return false, errors.New("database pool uninitialized")
 	}
 
@@ -359,7 +457,7 @@ func (r *PgSandboxLeaseRepository) CompleteCleanup(ctx context.Context, prKey, e
 		DELETE FROM sandbox_leases
 		WHERE pr_key = $1 AND sandbox_id = $2 AND cleanup_status = 'in_progress';
 	`
-	cmd, err := r.pool.Exec(ctx, query, prKey, expectedSandboxID)
+	cmd, err := r.execAsSystem(ctx, query, prKey, expectedSandboxID)
 	if err != nil {
 		return false, err
 	}
@@ -367,7 +465,7 @@ func (r *PgSandboxLeaseRepository) CompleteCleanup(ctx context.Context, prKey, e
 }
 
 func (r *PgSandboxLeaseRepository) FailCleanup(ctx context.Context, prKey, expectedSandboxID, errMsg string) (bool, error) {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return false, errors.New("database pool uninitialized")
 	}
 
@@ -384,7 +482,7 @@ func (r *PgSandboxLeaseRepository) FailCleanup(ctx context.Context, prKey, expec
 			cleanup_error = $4
 		WHERE pr_key = $1 AND sandbox_id = $2 AND cleanup_status = 'in_progress';
 	`
-	cmd, err := r.pool.Exec(ctx, query, prKey, expectedSandboxID, retryAt, truncatedErr)
+	cmd, err := r.execAsSystem(ctx, query, prKey, expectedSandboxID, retryAt, truncatedErr)
 	if err != nil {
 		return false, err
 	}
@@ -392,7 +490,7 @@ func (r *PgSandboxLeaseRepository) FailCleanup(ctx context.Context, prKey, expec
 }
 
 func (r *PgSandboxLeaseRepository) ResetStaleCleanup(ctx context.Context, prKey string, staleThreshold time.Time) error {
-	if r == nil || r.pool == nil {
+	if r == nil || r.client == nil {
 		return errors.New("database pool uninitialized")
 	}
 
@@ -404,7 +502,7 @@ func (r *PgSandboxLeaseRepository) ResetStaleCleanup(ctx context.Context, prKey 
 		  AND cleanup_status = 'in_progress'
 		  AND cleanup_started_at < $2;
 	`
-	_, err := r.pool.Exec(ctx, query, prKey, staleThreshold)
+	_, err := r.execAsSystem(ctx, query, prKey, staleThreshold)
 	return err
 }
 

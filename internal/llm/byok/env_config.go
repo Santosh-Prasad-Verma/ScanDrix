@@ -25,6 +25,9 @@ type EnvLLMConfig struct {
 	AzureKey        string
 	AzureEndpoint   string
 	FireworksKey    string
+	MistralKey      string
+	GroqKey         string
+	CohereKey       string
 	OpenAIBaseURL   string
 	DefaultModel    string
 	DefaultProvider string
@@ -58,6 +61,9 @@ func LoadEnvLLMConfig() EnvLLMConfig {
 		AzureKey:        getEnvFirst("AZURE_OPENAI_API_KEY", "API_AZURE_OPENAI_API_KEY"),
 		AzureEndpoint:   getEnvFirst("AZURE_OPENAI_ENDPOINT", "API_AZURE_OPENAI_ENDPOINT"),
 		FireworksKey:    getEnvFirst("FIREWORKS_API_KEY", "API_FIREWORKS_API_KEY"),
+		MistralKey:      getEnvFirst("MISTRAL_API_KEY", "API_MISTRAL_API_KEY"),
+		GroqKey:         getEnvFirst("GROQ_API_KEY", "API_GROQ_API_KEY"),
+		CohereKey:       getEnvFirst("COHERE_API_KEY", "API_COHERE_API_KEY"),
 		OpenAIBaseURL:   getEnvFirst("OPENAI_BASE_URL", "API_OPENAI_FORCE_BASE_URL"),
 		DefaultModel:    getEnvFirst("API_LLM_PROVIDER_MODEL", "AI_MODEL_DEFAULT", "SCANDRIX_DEFAULT_MODEL"),
 		DefaultProvider: getEnvFirst("API_LLM_PROVIDER", "AI_PROVIDER_DEFAULT", "SCANDRIX_DEFAULT_PROVIDER"),
@@ -76,5 +82,8 @@ func (c EnvLLMConfig) HasManagedCredentials() bool {
 		c.MoonshotKey != "" ||
 		c.ZaiKey != "" ||
 		c.AzureKey != "" ||
-		c.FireworksKey != ""
+		c.FireworksKey != "" ||
+		c.MistralKey != "" ||
+		c.GroqKey != "" ||
+		c.CohereKey != ""
 }

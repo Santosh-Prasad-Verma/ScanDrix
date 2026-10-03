@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"github.com/google/uuid"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/scandrix/backend/internal/config"
 	coreconfig "github.com/scandrix/backend/internal/core/infrastructure/config"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/enterprise/scim"
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review"
@@ -139,6 +141,14 @@ func main() {
 		aiGatewayOpts = append(aiGatewayOpts, llm.WithMistral(cfg.MistralAPIKey))
 		slog.Info("Mistral AI provider attached to API gateway")
 	}
+	if cfg.GroqAPIKey != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithGroq(cfg.GroqAPIKey))
+		slog.Info("Groq Cloud provider attached to API gateway")
+	}
+	if cfg.CohereAPIKey != "" {
+		aiGatewayOpts = append(aiGatewayOpts, llm.WithCohere(cfg.CohereAPIKey))
+		slog.Info("Cohere AI provider attached to API gateway")
+	}
 	if cfg.XAIAPIKey != "" {
 		aiGatewayOpts = append(aiGatewayOpts, llm.WithXAI(cfg.XAIAPIKey))
 		slog.Info("xAI Grok provider attached to API gateway")
@@ -243,23 +253,44 @@ func main() {
 	// ═══════════════════════════════════════════════════════════════
 	// 7. MASTER ROUTER & HTTP SERVER BINDING (REST & SSE endpoints)
 	// ═══════════════════════════════════════════════════════════════
+	licenseManager, err := license.NewManagerFromEnv()
+	if err != nil {
+		slog.Error("Enterprise license configuration is invalid; refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if ent := licenseManager.Entitlement(); ent.Tier != license.TierCommunity {
+		slog.Info("Enterprise license loaded",
+			"tier", string(ent.Tier),
+			"seats", ent.SeatLimit(),
+			"expires_at", ent.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+
+	// SCIM is a single-tenant integration: an IdP holds one bearer token and
+	// provisions into one workspace. Binding the tenant and the resolver is what
+	// makes the seat-quota check in handleCreateUser actually run; without it SCIM
+	// provisions seats for free past the licensed limit.
+	if scimWS := scim.BindTenant(ctx, repo, scimService, license.NewResolver(licenseManager, database.NewLicenseStore(repo), repo)); scimWS != uuid.Nil {
+		slog.Info("SCIM provisioning bound to workspace", "workspace_id", scimWS.String())
+	}
+
 	r := api.BuildRouter(api.RouterConfig{
-		Repo:               repo,
-		AuthService:        authenticator,
-		Orchestrator:       orchestrator,
-		StreamHub:          streamHub,
-		Evaluator:          evaluator,
-		SCIMService:        scimService,
-		DeviceFlow:         deviceFlow,
-		OAuthService:       oauthService,
-		Mailer:             emailSender,
-		BillingService:     billingService,
-		BudgetLimiter:      budgetLimiter,
-		CacheClient:        cacheClient,
-		AppBaseURL:         cfg.AppBaseURL,
-		JWTSecret:          cfg.JWTSecret,
-		CLITokenService:    cliTokenService,
-		LoopbackManager:    loopbackManager,
+		Repo:                     repo,
+		AuthService:              authenticator,
+		Orchestrator:             orchestrator,
+		StreamHub:                streamHub,
+		Evaluator:                evaluator,
+		SCIMService:              scimService,
+		DeviceFlow:               deviceFlow,
+		LicenseManager:           licenseManager,
+		OAuthService:             oauthService,
+		Mailer:                   emailSender,
+		BillingService:           billingService,
+		BudgetLimiter:            budgetLimiter,
+		CacheClient:              cacheClient,
+		AppBaseURL:               cfg.AppBaseURL,
+		JWTSecret:                cfg.JWTSecret,
+		CLITokenService:          cliTokenService,
+		LoopbackManager:          loopbackManager,
 		HelpdeskService:          helpdeskService,
 		DeviceQuotaManager:       deviceQuotaManager,
 		RequireEmailVerification: cfg.RequireEmailVerification,

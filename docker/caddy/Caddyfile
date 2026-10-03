@@ -16,7 +16,7 @@
         lb_try_interval 250ms
 
         # Active Health Checking (removes unhealthy nodes automatically)
-        health_uri /health
+        health_uri /healthz
         health_interval 5s
         health_timeout 2s
         health_status 200

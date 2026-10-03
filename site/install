@@ -52,7 +52,7 @@ print_dim() {
   printf "${DARK}%s${RESET}\n" "$1"
 }
 
-REPO="scandrix/backend"
+REPO="Santosh-Prasad-Verma/ScanDrix"
 BINARY_NAME="scandrix"
 INSTALL_DIR="/usr/local/bin"
 

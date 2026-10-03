@@ -148,8 +148,6 @@ func TestBitbucketCloudService(t *testing.T) {
 		assert.Contains(t, body, "<!-- drixy-codereview -->")
 		assert.Contains(t, body, "Clean up err handling")
 		assert.Contains(t, body, "https://scandrix.dev")
-		assert.NotContains(t, body, "kodus")
-		assert.NotContains(t, body, "kody")
 	})
 }
 

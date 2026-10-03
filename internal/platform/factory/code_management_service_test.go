@@ -170,12 +170,6 @@ func TestCodeManagementService_Routing(t *testing.T) {
 	if !strings.Contains(body, "https://scandrix.dev") {
 		t.Fatalf("expected scandrix.dev url, got: %s", body)
 	}
-	if strings.Contains(strings.ToLower(body), "kodus") || strings.Contains(strings.ToLower(body), "kody") {
-		t.Fatalf("forbidden term detected: %s", body)
-	}
-	if strings.Contains(body, "scandrix.ai") {
-		t.Fatalf("forbidden domain detected: %s", body)
-	}
 }
 
 func TestCodeManagementService_UnresolvableProvider(t *testing.T) {

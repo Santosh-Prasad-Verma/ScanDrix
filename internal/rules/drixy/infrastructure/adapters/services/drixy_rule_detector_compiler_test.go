@@ -69,4 +69,3 @@ func TestDrixyRuleDetectorCompiler_ExampleGating(t *testing.T) {
 		t.Fatalf("expected HIGH severity, got %s", findings[0].Severity)
 	}
 }
-

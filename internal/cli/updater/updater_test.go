@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/scandrix/backend/internal/cli/updater"
@@ -104,5 +105,35 @@ func TestCheckUpdate_ServerError(t *testing.T) {
 	_, err := updater.CheckUpdate("v1.0.0", server.URL)
 	if err == nil {
 		t.Fatalf("expected error from 500 response, got nil")
+	}
+}
+
+// The release server URL is either built from SCANDRIX_UPDATE_REPO or handed in
+// by a caller. Reaching an unvalidated one turns the update check into an SSRF
+// probe, and its response into attacker-chosen "latest version" text.
+func TestCheckUpdateRefusesUnreachableDestinations(t *testing.T) {
+	rejected := []string{
+		"http://169.254.169.254/latest/meta-data/", // cloud metadata
+		"http://10.0.0.5/internal",
+		"file:///etc/passwd",
+		"https://evil.test@trusted.test/x",
+		"not-a-url",
+	}
+
+	for _, raw := range rejected {
+		t.Run(raw, func(t *testing.T) {
+			info, err := updater.CheckUpdate("v1.0.0", raw)
+			if err == nil {
+				t.Fatalf("expected %q to be refused, got %+v", raw, info)
+			}
+			if !strings.Contains(err.Error(), "refusing") {
+				t.Fatalf("expected an explicit refusal, got: %v", err)
+			}
+			// A refused check must not claim an update is available, since that
+			// is what would prompt the user to run an install.
+			if info.UpdateAvailable {
+				t.Fatalf("a refused check must not report an available update")
+			}
+		})
 	}
 }

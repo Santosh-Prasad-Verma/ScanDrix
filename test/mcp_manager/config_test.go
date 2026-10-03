@@ -15,6 +15,11 @@ import (
 func TestConfigDefaultsAndOverrides(t *testing.T) {
 	// Set custom environment variables
 	os.Setenv("MCP_MANAGER_PORT", "4500")
+	// AUDIT_REMEDIATION.md F-46: Load() no longer invents a DATABASE_URL. It
+	// used to fall back to postgres://postgres:postgres@..., a superuser that
+	// bypasses row-level security, so this test has to supply a real
+	// least-privilege DSN of its own.
+	os.Setenv("DATABASE_URL", "postgres://scandrix_runtime:test@127.0.0.1:5432/scandrix?sslmode=disable")
 	testSecret := generateRandomTestKey()
 	os.Setenv("MCP_MANAGER_SECRET", testSecret)
 	os.Setenv("JWT_SECRET", generateRandomTestKey())
@@ -23,6 +28,7 @@ func TestConfigDefaultsAndOverrides(t *testing.T) {
 	os.Setenv("MCP_DOCS_PASSWORD", "securepass")
 	os.Setenv("SCANDRIX_MCP_SERVER_URL", "https://custom-mcp.scandrix.io")
 	defer func() {
+		os.Unsetenv("DATABASE_URL")
 		os.Unsetenv("MCP_MANAGER_PORT")
 		os.Unsetenv("MCP_MANAGER_SECRET")
 		os.Unsetenv("JWT_SECRET")

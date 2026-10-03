@@ -21,7 +21,7 @@ import (
 
 const (
 	SubstantiveCommentLengthThreshold = 100
-	MaxCandidateRulesPerRun          = 12
+	MaxCandidateRulesPerRun           = 12
 )
 
 // DrixyCommentAnalysisService coordinates filtering, synthesis, and deduplication of review rules.

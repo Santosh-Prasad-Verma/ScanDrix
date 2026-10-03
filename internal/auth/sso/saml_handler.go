@@ -2,7 +2,6 @@ package sso
 
 import (
 	"bytes"
-	"crypto"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
@@ -12,6 +11,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/beevik/etree"
+	dsig "github.com/russellhaering/goxmldsig"
 
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -145,15 +147,27 @@ type rawSAMLAttribute struct {
 	Values []string `xml:"AttributeValue"`
 }
 
-// VerifySignature validates XMLDSig cryptographic signature against IdP certificate,
-// enforcing strict defense against XML Signature Wrapping (XSW) attacks (CWE-347).
+// VerifySignature validates the XMLDSig signature on a SAML payload.
+//
+// This previously hashed a hand-rolled set of candidate canonicalizations and
+// compared them, then fell back to hashing the document with the <Signature>
+// element removed. That is not XMLDSig: it never verified <DigestValue>, so
+// nothing tied the signature to the content it claimed to cover, and the
+// fallback matched only documents signed the way this package's own test
+// fixture was signed. A conforming IdP signature would have failed.
+//
+// Verification is now delegated to goxmldsig, which performs exclusive
+// canonicalisation, resolves the <Reference>, checks <DigestValue> over the
+// referenced element, and verifies the signature over canonicalised
+// <SignedInfo>. The XSW and algorithm guards are retained because goxmldsig
+// does not enforce them on its own.
+//
+// AUDIT_REMEDIATION.md F-24.
 func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) error {
 	if cert == nil {
 		return errors.New("cannot verify signature: no IdP certificate configured")
 	}
-
-	rsaPub, ok := cert.PublicKey.(*rsa.PublicKey)
-	if !ok {
+	if _, ok := cert.PublicKey.(*rsa.PublicKey); !ok {
 		return errors.New("unsupported public key type: expected RSA")
 	}
 
@@ -181,90 +195,75 @@ func (h *SAMLHandler) VerifySignature(xmlData []byte, cert *x509.Certificate) er
 	if sig == nil && resp.Assertion.Signature != nil {
 		sig = resp.Assertion.Signature
 	}
-
 	if sig == nil {
 		return errors.New("missing XMLDSig signature in SAML payload")
 	}
 
-	cleanSig := strings.ReplaceAll(sig.SignatureValue, "\n", "")
-	cleanSig = strings.ReplaceAll(cleanSig, "\r", "")
-	cleanSig = strings.TrimSpace(cleanSig)
-	sigBytes, err := base64.StdEncoding.DecodeString(cleanSig)
-	if err != nil {
-		return fmt.Errorf("invalid base64 signature: %w", err)
+	// 2. Algorithm enforcement. goxmldsig will verify SHA-1, so the rejection
+	//    is kept here (CWE-327).
+	if sig.SignedInfo.Reference == nil {
+		return errors.New("XMLDSig has no <Reference>: signature is not bound to any content (CWE-347)")
 	}
-
-	// 2. Algorithm enforcement (reject MD5/SHA-1)
-	algo := strings.ToLower(sig.SignedInfo.SignatureMethod.Algorithm)
-	var hashFunc crypto.Hash
-	if strings.Contains(algo, "rsa-sha256") || strings.Contains(algo, "sha256") {
-		hashFunc = crypto.SHA256
-	} else if strings.Contains(algo, "rsa-sha384") || strings.Contains(algo, "sha384") {
-		hashFunc = crypto.SHA384
-	} else if strings.Contains(algo, "rsa-sha512") || strings.Contains(algo, "sha512") {
-		hashFunc = crypto.SHA512
-	} else {
+	if !isAcceptedHash(sig.SignedInfo.SignatureMethod.Algorithm) {
 		return fmt.Errorf("insecure or unsupported signature algorithm '%s': only RSA-SHA256/384/512 are accepted (CWE-327)", sig.SignedInfo.SignatureMethod.Algorithm)
 	}
+	if !isAcceptedHash(sig.SignedInfo.Reference.DigestMethod.Algorithm) {
+		return fmt.Errorf("insecure or unsupported digest algorithm '%s': only SHA-256/384/512 are accepted (CWE-327)", sig.SignedInfo.Reference.DigestMethod.Algorithm)
+	}
 
-	// 3. If Reference URI is present, verify binding to Assertion or Response ID
-	if sig.SignedInfo.Reference != nil && sig.SignedInfo.Reference.URI != "" {
-		refURI := strings.TrimPrefix(sig.SignedInfo.Reference.URI, "#")
-		if refURI != "" && refURI != resp.ID && refURI != resp.Assertion.ID {
-			return fmt.Errorf("XMLDSig reference mismatch: signature references '%s', but assertion ID is '%s'", refURI, resp.Assertion.ID)
+	// 3. The reference must resolve to this assertion or response.
+	refURI := strings.TrimPrefix(strings.TrimSpace(sig.SignedInfo.Reference.URI), "#")
+	if refURI == "" {
+		return errors.New("XMLDSig <Reference> has an empty URI: signature is not bound to any content (CWE-347)")
+	}
+	if refURI != resp.ID && refURI != resp.Assertion.ID {
+		return fmt.Errorf("XMLDSig reference mismatch: signature references '%s', but assertion ID is '%s'", refURI, resp.Assertion.ID)
+	}
+
+	// 4. Real XMLDSig validation: exclusive canonicalisation, <Reference>
+	//    resolution, <DigestValue> over the referenced element, and signature
+	//    verification over canonicalised <SignedInfo>.
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(xmlData); err != nil {
+		return fmt.Errorf("failed parsing XML for signature validation: %w", err)
+	}
+
+	store := &dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
+	ctx := dsig.NewDefaultValidationContext(store)
+	ctx.IdAttribute = "ID"
+
+	// ctx.Validate checks a signature that covers the element it is handed, so
+	// the element named by the <Reference> has to be the one validated. An IdP
+	// may sign either the Response or the Assertion.
+	target := doc.Root()
+	if refURI != resp.ID {
+		found := false
+		for _, el := range doc.FindElements("//*") {
+			if el.SelectAttrValue("ID", "") == refURI {
+				target = el
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("XMLDSig <Reference> URI '#%s' does not resolve to any element in the document (CWE-347)", refURI)
 		}
 	}
 
-	// 4. In standard XMLDSig, signature is computed over canonicalized <SignedInfo>...</SignedInfo>
-	if idxStart := bytes.Index(xmlData, []byte("<SignedInfo")); idxStart != -1 {
-		if idxEnd := bytes.Index(xmlData[idxStart:], []byte("</SignedInfo>")); idxEnd != -1 {
-			rawBlock := xmlData[idxStart : idxStart+idxEnd+len("</SignedInfo>")]
-			
-			// Build canonicalization variants to accommodate exc-c14n namespace propagation and whitespace rules
-			signedInfoCandidates := [][]byte{
-				rawBlock,
-			}
-
-			// Variant: inject XMLDSig default namespace if omitted by parent <Signature> inheritance
-			if !bytes.Contains(rawBlock, []byte("xmlns")) {
-				injected := bytes.Replace(rawBlock, []byte("<SignedInfo"), []byte(`<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"`), 1)
-				signedInfoCandidates = append(signedInfoCandidates, injected)
-			}
-
-			// Variant: normalized line endings (LF only)
-			if bytes.Contains(rawBlock, []byte("\r\n")) {
-				lfNormalized := bytes.ReplaceAll(rawBlock, []byte("\r\n"), []byte("\n"))
-				signedInfoCandidates = append(signedInfoCandidates, lfNormalized)
-			}
-
-			for _, candidate := range signedInfoCandidates {
-				hasher := hashFunc.New()
-				hasher.Write(candidate)
-				digest := hasher.Sum(nil)
-				if err := rsa.VerifyPKCS1v15(rsaPub, hashFunc, digest, sigBytes); err == nil {
-					return nil
-				}
-			}
-		}
+	if _, err := ctx.Validate(target); err != nil {
+		return fmt.Errorf("XMLDSig validation failed: %w", err)
 	}
-
-	// 5. Fallback to enveloped document digest (with <Signature> element stripped)
-	dataForDigest := xmlData
-	if idxStart := bytes.Index(xmlData, []byte("<Signature")); idxStart != -1 {
-		if idxEnd := bytes.Index(xmlData[idxStart:], []byte("</Signature>")); idxEnd != -1 {
-			dataForDigest = append(append([]byte{}, xmlData[:idxStart]...), xmlData[idxStart+idxEnd+len("</Signature>"):]...)
-		}
-	}
-
-	hasher := hashFunc.New()
-	hasher.Write(dataForDigest)
-	digest := hasher.Sum(nil)
-
-	if err := rsa.VerifyPKCS1v15(rsaPub, hashFunc, digest, sigBytes); err != nil {
-		return fmt.Errorf("cryptographic XMLDSig signature verification failed: %w", err)
-	}
-
 	return nil
+}
+
+// isAcceptedHash reports whether an algorithm identifier names an RSA-SHA2
+// signature or digest method. MD5 and SHA-1 are rejected outright.
+func isAcceptedHash(algo string) bool {
+	a := strings.ToLower(algo)
+	if strings.Contains(a, "md5") || strings.Contains(a, "sha1") {
+		return false
+	}
+	return strings.Contains(a, "sha256") || strings.Contains(a, "sha384") || strings.Contains(a, "sha512")
 }
 
 // HasIdPCertificate reports whether an IdP X.509 certificate has been loaded.

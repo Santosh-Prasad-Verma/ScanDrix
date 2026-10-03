@@ -2,6 +2,7 @@ package cliauth_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -101,13 +102,20 @@ func TestCLIDeviceFlowLifecycle(t *testing.T) {
 		t.Fatalf("email mismatch: %s", pollResCompleted.UserEmail)
 	}
 
-	// 5. Re-poll consumed session -> replay defense, status consumed with NO tokens
+	// 5. Re-poll a consumed session -> replay defence.
+	//
+	// This used to assert only that no tokens came back, and accepted a bare
+	// "consumed" status with a nil error. The status alone is a weak signal for
+	// the caller: RFC 8628 3.5 expects an error once a grant has been issued,
+	// and "consumed" is exactly the condition that tells a user their code may
+	// have been captured by someone else. The poll now returns
+	// ErrSessionConsumed, and the test pins that (AUDIT_REMEDIATION.md F-27).
 	pollResConsumed, err := manager.PollDeviceLogin(ctx, initRes.DeviceCode)
-	if err != nil {
-		t.Fatalf("poll consumed failed: %v", err)
+	if !errors.Is(err, cliauth.ErrSessionConsumed) {
+		t.Fatalf("expected ErrSessionConsumed on replay, got %v", err)
 	}
-	if pollResConsumed.Status != cliauth.StatusConsumed {
-		t.Fatalf("expected consumed status on replay, got %s", pollResConsumed.Status)
+	if pollResConsumed == nil || pollResConsumed.Status != cliauth.StatusConsumed {
+		t.Fatalf("expected consumed status on replay, got %+v", pollResConsumed)
 	}
 	if pollResConsumed.AccessToken != "" || pollResConsumed.RefreshToken != "" {
 		t.Fatal("consumed session must not yield tokens on subsequent polls")

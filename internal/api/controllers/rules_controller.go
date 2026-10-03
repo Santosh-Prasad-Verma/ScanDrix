@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -60,6 +62,7 @@ func (c *RulesController) Routes() chi.Router {
 
 	r.Get("/catalog", c.handleGetCatalog)
 	r.Post("/test", c.handleTestRule)
+	r.Post("/test/batch", c.handleTestRuleBatch)
 	r.Post("/generate", c.handleGenerateRule)
 	r.Get("/", c.handleListRules)
 	r.Post("/", c.handleCreateRule)
@@ -133,6 +136,7 @@ func (c *RulesController) handleTestRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	started := time.Now()
 	re, err := regexp.Compile(req.RegexRule)
 	if err != nil {
 		http.Error(w, `{"error":"invalid regex syntax"}`, http.StatusBadRequest)
@@ -140,22 +144,107 @@ func (c *RulesController) handleTestRule(w http.ResponseWriter, r *http.Request)
 	}
 
 	lines := strings.Split(req.CodeSnippet, "\n")
+	matchedLines, snippets := matchLines(re, lines)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(dtos.TestRuleResponse{
+		Matched:         len(matchedLines) > 0,
+		MatchLines:      matchedLines,
+		MatchSnippets:   snippets,
+		ExecutionTimeMs: time.Since(started).Milliseconds(),
+	})
+}
+
+// matchLines returns the 1-based line numbers that matched and their trimmed
+// text. Shared by the single-file and batch endpoints so the two cannot drift.
+func matchLines(re *regexp.Regexp, lines []string) ([]int, []string) {
 	matchedLines := make([]int, 0)
 	snippets := make([]string, 0)
-
 	for idx, line := range lines {
 		if re.MatchString(line) {
 			matchedLines = append(matchedLines, idx+1)
 			snippets = append(snippets, strings.TrimSpace(line))
 		}
 	}
+	return matchedLines, snippets
+}
+
+// Bounds on a batch dry run. A dry run is an interactive sample, not an import,
+// so these are generous for real use and small enough that one request cannot
+// pin a core. Exceeding them is reported via `truncated` rather than hidden.
+const (
+	// MaxBatchFiles and MaxBatchTotalBytes bound one batch request. They are
+	// exported because they are part of the endpoint's contract: a client that
+	// wants to chunk a larger dry run has to know the ceiling.
+	MaxBatchFiles      = 500
+	MaxBatchTotalBytes = 16 << 20 // 16 MiB
+)
+
+// handleTestRuleBatch matches one pattern against many files in a single call.
+//
+// The dashboard previously issued one POST /rules/test per file, so a dry run
+// over a handful of pull requests cost a few hundred sequential round trips.
+func (c *RulesController) handleTestRuleBatch(w http.ResponseWriter, r *http.Request) {
+	var req dtos.TestRuleBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RegexRule == "" {
+		http.Error(w, `{"error":"regex_rule is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	compileStart := time.Now()
+	re, err := regexp.Compile(req.RegexRule)
+	if err != nil {
+		http.Error(w, `{"error":"invalid regex syntax"}`, http.StatusBadRequest)
+		return
+	}
+	compileMs := time.Since(compileStart).Milliseconds()
+
+	resp := dtos.TestRuleBatchResponse{
+		Files:     make([]dtos.RuleTestFileResult, 0, len(req.Files)),
+		MatchRate: 0,
+		CompileMs: compileMs,
+	}
+
+	matchStart := time.Now()
+	totalBytes := 0
+	for _, f := range req.Files {
+		if len(resp.Files) >= MaxBatchFiles {
+			resp.Truncated = true
+			break
+		}
+		if totalBytes >= MaxBatchTotalBytes {
+			resp.Truncated = true
+			break
+		}
+		totalBytes += len(f.Content)
+
+		lines := strings.Split(f.Content, "\n")
+		resp.TotalLines += len(lines)
+		matchedLines, snippets := matchLines(re, lines)
+		resp.Files = append(resp.Files, dtos.RuleTestFileResult{
+			Path:          f.Path,
+			Matched:       len(matchedLines) > 0,
+			MatchLines:    matchedLines,
+			MatchSnippets: snippets,
+		})
+	}
+	resp.MatchTimeMs = time.Since(matchStart).Milliseconds()
+
+	// FilesScanned is the denominator that makes the match rate mean anything.
+	// A truncated batch is counted only over the files actually inspected, so
+	// the rate never claims coverage that was not performed.
+	resp.FilesScanned = len(resp.Files)
+	for _, fr := range resp.Files {
+		if fr.Matched {
+			resp.FilesMatched++
+		}
+	}
+	if resp.FilesScanned > 0 {
+		resp.MatchRate = float64(resp.FilesMatched) / float64(resp.FilesScanned)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(dtos.TestRuleResponse{
-		Matched:       len(matchedLines) > 0,
-		MatchLines:    matchedLines,
-		MatchSnippets: snippets,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (c *RulesController) handleCreateRule(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +276,8 @@ func (c *RulesController) handleCreateRule(w http.ResponseWriter, r *http.Reques
 
 	if c.repo != nil {
 		if err := c.repo.CreateReviewRule(r.Context(), &rule); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed creating rule: %v"}`, err), http.StatusInternalServerError)
+			slog.Error("failed creating rule in database", "error", err, "workspace_id", wsID)
+			http.Error(w, `{"error":"failed to create review rule"}`, http.StatusInternalServerError)
 			return
 		}
 	}

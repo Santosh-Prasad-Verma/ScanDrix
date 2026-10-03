@@ -393,3 +393,54 @@ func TestSharedCorrections(t *testing.T) {
 		t.Errorf("expected Corrections.Forgets to contain dec-jwt-auth, got %+v", updatedRec.Corrections)
 	}
 }
+
+// SessionID arrives inside a TraceEvent, so it is untrusted. Record appends to
+// whatever path it derives, which makes this a write primitive aimed by input.
+func TestRecordRejectsSessionIDContainingPathSeparators(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &TraceStore{baseDir: base}
+	rel, err := filepath.Rel(base, victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bad := []string{
+		rel,                  // "../..../victim.txt"
+		"../escape",          // plain traversal
+		"nested/child",       // separator in an id that should be a slug
+		`..\\windows\\style`, // windows separator
+		"..",
+		".",
+	}
+
+	for _, id := range bad {
+		t.Run(id, func(t *testing.T) {
+			if err := store.Record(TraceEvent{SessionID: id}); err == nil {
+				t.Fatalf("expected session id %q to be rejected", id)
+			}
+		})
+	}
+
+	got, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("reading victim: %v", readErr)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("the victim file was appended to: %q", string(got))
+	}
+
+	// A legitimate id still works, so the guard is not simply refusing
+	// everything.
+	if err := store.Record(TraceEvent{SessionID: "sess-1234", EventID: "evt-1"}); err != nil {
+		t.Fatalf("a legitimate session id must be accepted: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(base, "sess-1234.jsonl")); statErr != nil {
+		t.Fatalf("expected the session file to be written under the base dir: %v", statErr)
+	}
+}

@@ -136,16 +136,16 @@ type PullRequestSizeRow struct {
 
 // LeadTimeBreakdownRow decomposes cycle phases into coding, pickup, and review latencies.
 type LeadTimeBreakdownRow struct {
-	WeekStart          string  `json:"week_start"`
-	PRCount            int     `json:"pr_count"`
-	CodingTimeMinutes  float64 `json:"coding_time_minutes"`
-	CodingTimeHours    float64 `json:"coding_time_hours"`
-	PickupTimeMinutes  float64 `json:"pickup_time_minutes"`
-	PickupTimeHours    float64 `json:"pickup_time_hours"`
-	ReviewTimeMinutes  float64 `json:"review_time_minutes"`
-	ReviewTimeHours    float64 `json:"review_time_hours"`
-	TotalTimeMinutes   float64 `json:"total_time_minutes"`
-	TotalTimeHours     float64 `json:"total_time_hours"`
+	WeekStart         string  `json:"week_start"`
+	PRCount           int     `json:"pr_count"`
+	CodingTimeMinutes float64 `json:"coding_time_minutes"`
+	CodingTimeHours   float64 `json:"coding_time_hours"`
+	PickupTimeMinutes float64 `json:"pickup_time_minutes"`
+	PickupTimeHours   float64 `json:"pickup_time_hours"`
+	ReviewTimeMinutes float64 `json:"review_time_minutes"`
+	ReviewTimeHours   float64 `json:"review_time_hours"`
+	TotalTimeMinutes  float64 `json:"total_time_minutes"`
+	TotalTimeHours    float64 `json:"total_time_hours"`
 }
 
 // ImplementationRateBreakdown encapsulates sent, implemented, and rate metrics.
@@ -302,9 +302,9 @@ type ReviewOperationalMetricComparison struct {
 
 // ReviewOperationalRateComparison measures percentage point shifts in operational rates.
 type ReviewOperationalRateComparison struct {
-	PercentageChange       float64 `json:"percentage_change"`
-	Trend                  string  `json:"trend"`
-	PercentagePointChange  float64 `json:"percentage_point_change"`
+	PercentageChange      float64 `json:"percentage_change"`
+	Trend                 string  `json:"trend"`
+	PercentagePointChange float64 `json:"percentage_point_change"`
 }
 
 // ReviewOperationalMetrics aggregates current, previous, and comparison pipeline stats.
@@ -380,12 +380,19 @@ type TopDeveloper struct {
 	TotalPRs int    `json:"total_prs"`
 }
 
-// CompanyRanking ranks an organization against global cohort velocity.
+// CompanyRanking ranks an organization against a cohort of companies.
+//
+// Every field is a pointer because no cross-company cohort data is collected.
+// These were previously hardcoded to Rank 1 / TotalCompanies 1 /
+// PercentageOfTotalPRs 100.0, where the percentage was computed against a
+// denominator containing only this company's own PRs. That reads as a #1
+// global ranking while being an artefact of the placeholder.
+// AUDIT_REMEDIATION.md F-41.
 type CompanyRanking struct {
-	Rank                 int     `json:"rank"`
-	TotalCompanies       int     `json:"total_companies"`
-	PercentageOfTotalPRs float64 `json:"percentage_of_total_prs"`
-	TotalPRsAllCompanies int     `json:"total_prs_all_companies"`
+	Rank                 *int     `json:"rank"`
+	TotalCompanies       *int     `json:"total_companies"`
+	PercentageOfTotalPRs *float64 `json:"percentage_of_total_prs"`
+	TotalPRsAllCompanies *int     `json:"total_prs_all_companies"`
 }
 
 // CompanyDashboardMetrics aggregates headline executive KPIs.
@@ -396,6 +403,10 @@ type CompanyDashboardMetrics struct {
 	TopSuggestionsCategories []SuggestionCategoryCount `json:"top_suggestions_categories"`
 	TopDeveloper             TopDeveloper              `json:"top_developer"`
 	CompanyRanking           CompanyRanking            `json:"company_ranking"`
+
+	// Unavailable names absent metrics as "<metric>:<reason>".
+	// AUDIT_REMEDIATION.md F-41.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 // CompanyDashboardAdditionalMetrics provides supplementary engineering health signals.
@@ -410,8 +421,8 @@ type CompanyDashboardAdditionalMetrics struct {
 
 // CompanyDashboard encapsulates the executive overview for engineering leadership.
 type CompanyDashboard struct {
-	OrganizationID    string                             `json:"organization_id"`
+	OrganizationID    string                              `json:"organization_id"`
 	Period            struct{ StartDate, EndDate string } `json:"period"`
-	Metrics           CompanyDashboardMetrics            `json:"metrics"`
-	AdditionalMetrics CompanyDashboardAdditionalMetrics  `json:"additional_metrics"`
+	Metrics           CompanyDashboardMetrics             `json:"metrics"`
+	AdditionalMetrics CompanyDashboardAdditionalMetrics   `json:"additional_metrics"`
 }

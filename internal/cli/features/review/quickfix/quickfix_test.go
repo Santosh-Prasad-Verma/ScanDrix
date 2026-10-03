@@ -64,7 +64,7 @@ func Auth() {
  	fmt.Println(secret)
 `
 
-	res, err := ApplySuggestedDiff(filePath, diff, true)
+	res, err := ApplySuggestedDiff(tempDir, filePath, diff, true)
 	if err != nil {
 		t.Fatalf("ApplySuggestedDiff failed: %v", err)
 	}
@@ -133,5 +133,90 @@ func TestInteractiveFixSession_YesAndSkip(t *testing.T) {
 	f2Bytes, _ := os.ReadFile(filePath2)
 	if !strings.Contains(string(f2Bytes), "println(2)") {
 		t.Fatalf("file2 was modified when skipped: %s", string(f2Bytes))
+	}
+}
+
+// The target file of a suggested fix is chosen by the model. A suggestion
+// naming a path outside the repository must be refused, not applied.
+//
+// Before the confinement, ApplyPatchToFile read the target, wrote a `.bak`
+// beside it, and renamed a temporary file over it -- so this was a write
+// primitive aimed anywhere on the filesystem.
+func TestApplyRefusesTargetsOutsideTheRepository(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	victim := filepath.Join(outside, "authorized_keys")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rel, err := filepath.Rel(root, victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diff := `--- a/x
++++ b/x
+@@ -1,1 +1,1 @@
+-original
++overwritten
+`
+
+	if _, err := ApplySuggestedDiff(root, rel, diff, true); err == nil {
+		t.Fatal("expected a target outside the repository to be refused")
+	}
+
+	got, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("reading victim: %v", readErr)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("the victim file was modified: %q", string(got))
+	}
+	if _, statErr := os.Stat(victim + ".bak"); statErr == nil {
+		t.Fatal("a backup was written next to the victim file")
+	}
+}
+
+// The interactive session must skip an escaping suggestion rather than apply it.
+func TestInteractiveSessionSkipsEscapingSuggestion(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.go")
+	if err := os.WriteFile(victim, []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(root, victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	findings := []models.CodeFinding{{
+		Title:         "escape",
+		FilePath:      rel,
+		StartLine:     1,
+		SuggestedDiff: "-package x\n+package y\n",
+	}}
+
+	var out bytes.Buffer
+	session := NewInteractiveFixSession(root, strings.NewReader("a\n"), &out)
+	applied, skipped, err := session.ReviewAndApply(findings)
+	if err != nil {
+		t.Fatalf("ReviewAndApply: %v", err)
+	}
+	if applied != 0 {
+		t.Errorf("expected 0 applied, got %d", applied)
+	}
+	if skipped != 1 {
+		t.Errorf("expected 1 skipped, got %d", skipped)
+	}
+
+	got, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("reading victim: %v", readErr)
+	}
+	if string(got) != "package x\n" {
+		t.Fatalf("the escaping suggestion was applied: %q", string(got))
 	}
 }

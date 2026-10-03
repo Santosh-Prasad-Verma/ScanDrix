@@ -228,16 +228,22 @@ services:
     image: localstack/localstack:3.8.1
     container_name: scandrix-localstack
     restart: unless-stopped
+    # Loopback only: LocalStack holds the AWS credentials this stack uses.
+    # AUDIT_REMEDIATION.md F-55.
     ports:
-      - "4566:4566"
+      - "127.0.0.1:4566:4566"
     environment:
-      - SERVICES=kms,s3,sqs,secretsmanager
+      # dynamodb is required for Terraform state locking on Terraform 1.9.x.
+      # AUDIT_REMEDIATION.md F-59.
+      - SERVICES=kms,s3,sqs,secretsmanager,dynamodb
       - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-      - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
       - cluster_localstack_data:/var/lib/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
+      # /var/run/docker.sock was mounted here, handing container-escape to
+      # anything that could reach :4566. None of the services above need it:
+      # LocalStack only uses the Docker socket to launch ECS/Lambda containers.
+      # AUDIT_REMEDIATION.md F-55.
       - ./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]

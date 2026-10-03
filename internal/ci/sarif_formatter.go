@@ -94,7 +94,12 @@ func FormatSARIF(findings []CIFinding) ([]byte, error) {
 				ShortDescription: SARIFMultiformatMsg{
 					Text: f.RuleTitle,
 				},
-				HelpURI: "https://scandrix.dev/rules/" + ruleID,
+				// No per-rule documentation page exists, so there is no valid
+				// HelpURI to give. It used to be built by concatenation and
+				// 404'd for every rule. The field is omitempty, so leaving it
+				// empty omits it rather than publishing a dead link.
+				// AUDIT_REMEDIATION.md F-45.
+				HelpURI: "",
 			}
 		}
 

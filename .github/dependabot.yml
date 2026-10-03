@@ -18,6 +18,17 @@ updates:
       - "github-actions"
       - "ci"
 
+  # The root Dockerfile is the one docker-compose builds and
+  # docker-build-scan.yml scans, but dependabot only watched /docker, so its
+  # base images were never updated. AUDIT_REMEDIATION.md F-72.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "docker"
+
   - package-ecosystem: "docker"
     directory: "/docker"
     schedule:

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -54,6 +55,8 @@ type Config struct {
 	KMSMasterKey             string
 	SCIMBearerToken          string
 	HelpdeskJWTPrivateKeyPEM string
+	AirGapped                bool
+	AirGapAllowedHosts       []string
 
 	// Web App & OAuth Configuration
 	AppBaseURL                 string
@@ -113,6 +116,8 @@ type Config struct {
 	XAIAPIKey        string
 	MistralAPIKey    string
 	NovitaAPIKey     string
+	GroqAPIKey       string
+	CohereAPIKey     string
 
 	// Ephemeral Sandbox Execution
 	SandboxProvider          string
@@ -256,6 +261,8 @@ func Load() (*Config, error) {
 		KMSMasterKey:               os.Getenv("KMS_MASTER_KEY"),
 		SCIMBearerToken:            os.Getenv("SCIM_BEARER_TOKEN"),
 		HelpdeskJWTPrivateKeyPEM:   os.Getenv("HELPDESK_JWT_PRIVATE_KEY_PEM"),
+		AirGapped:                  os.Getenv("AIR_GAPPED") == "true",
+		AirGapAllowedHosts:         parseCommaSeparated(getEnvOrDefault("AIRGAP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")),
 		AppBaseURL:                 getEnvOrDefault("APP_BASE_URL", "http://localhost:3000"),
 		GitHubOAuthClientID:        os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
 		GitHubOAuthClientSecret:    os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
@@ -291,8 +298,10 @@ func Load() (*Config, error) {
 		AlibabaAPIKey:              os.Getenv("ALIBABA_API_KEY"),
 		MiniMaxAPIKey:              os.Getenv("MINIMAX_API_KEY"),
 		XAIAPIKey:                  os.Getenv("XAI_API_KEY"),
-		MistralAPIKey:              os.Getenv("MISTRAL_API_KEY"),
+		MistralAPIKey:              getEnvOrDefault("MISTRAL_API_KEY", os.Getenv("API_MISTRAL_API_KEY")),
 		NovitaAPIKey:               getEnvOrDefault("NOVITA_API_KEY", os.Getenv("API_NOVITA_AI_API_KEY")),
+		GroqAPIKey:                 getEnvOrDefault("GROQ_API_KEY", os.Getenv("API_GROQ_API_KEY")),
+		CohereAPIKey:               getEnvOrDefault("COHERE_API_KEY", os.Getenv("API_COHERE_API_KEY")),
 		SandboxProvider:            getEnvOrDefault("SANDBOX_PROVIDER", "auto"),
 		E2BAPIKey:                  getEnvOrDefault("E2B_API_KEY", os.Getenv("API_E2B_KEY")),
 		E2BDomain:                  getEnvOrDefault("E2B_DOMAIN", "e2b.dev"),
@@ -337,15 +346,38 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.JWTSecret) == "" {
 			validationErrors = append(validationErrors, "JWT_SECRET is required in production and staging (Master Rule 1.1 & 1.6)")
 		}
-		if cfg.AppwriteProjectID == "" {
-			validationErrors = append(validationErrors, "APPWRITE_PROJECT_ID is required in production")
+		// Appwrite is deliberately NOT a startup requirement (F-63).
+		//
+		// It is only used to archive review diffs, and every call site already
+		// degrades: NewArtifactClient accepts empty credentials, the orchestrator
+		// guards on a nil client, and an upload failure is a warning, not an
+		// error. Requiring it here meant an optional artifact-archive feature
+		// would crash-loop the whole API in production -- taking auth, findings
+		// and dashboards down with it -- and it defeated the :? compose guard
+		// differently for Terraform, which passed neither variable at all.
+		//
+		// This is deliberately different from SMTP_HOST just below. A missing
+		// mailer silently discards password-reset and confirmation email and
+		// locks users out of their own accounts, which is a security-relevant
+		// failure. A missing artifact store loses review history and nothing
+		// else. The two are not the same class of dependency.
+		if appEnv == EnvProduction && (cfg.AppwriteProjectID == "" || cfg.AppwriteAPIKey == "") {
+			slog.Warn("Appwrite storage is not configured: review diff and audit-report " +
+				"archival will be skipped. Set APPWRITE_PROJECT_ID and APPWRITE_API_KEY to enable it. " +
+				"No other feature depends on this.")
 		}
-		if cfg.AppwriteAPIKey == "" {
-			validationErrors = append(validationErrors, "APPWRITE_API_KEY is required in production")
+		// Without SMTP_HOST the mailer returns ErrSMTPNotConfigured for every
+		// send, so password reset and email confirmation deliver nothing while
+		// appearing to succeed. That locks users out of their accounts, so it
+		// is a hard startup failure rather than a warning
+		// (AUDIT_REMEDIATION.md F-04).
+		if strings.TrimSpace(cfg.SMTPHost) == "" {
+			validationErrors = append(validationErrors,
+				"SMTP_HOST is required in production and staging; without it all transactional email (password reset, email confirmation, billing) is silently discarded")
 		}
 		if cfg.AnthropicAPIKey == "" && cfg.OpenAIAPIKey == "" && cfg.GeminiAPIKey == "" &&
 			cfg.DeepSeekAPIKey == "" && cfg.OpenRouterAPIKey == "" && cfg.BedrockToken == "" && cfg.VertexToken == "" &&
-			cfg.VLLMEndpoint == "" {
+			cfg.VLLMEndpoint == "" && cfg.MistralAPIKey == "" && cfg.GroqAPIKey == "" && cfg.CohereAPIKey == "" {
 			validationErrors = append(validationErrors, "At least one AI provider key or local LLM endpoint must be configured in environment variables")
 		}
 	}

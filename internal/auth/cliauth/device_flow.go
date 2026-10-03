@@ -30,6 +30,9 @@ var (
 	ErrSessionDenied   = errors.New("authorization denied by user")
 	ErrSlowDown        = errors.New("slow_down")
 	ErrTooManyAttempts = errors.New("too many invalid verification attempts")
+	// ErrNoWorkspace is returned when a device session would be completed or
+	// redeemed without an owning tenant. AUDIT_REMEDIATION.md F-37.
+	ErrNoWorkspace = errors.New("device session has no workspace binding")
 )
 
 // SessionStatus tracks state of RFC 8628 device authorization.
@@ -55,13 +58,23 @@ type CLIDeviceSession struct {
 	AccessToken  string        `json:"access_token,omitempty"`
 	RefreshToken string        `json:"refresh_token,omitempty"`
 	UserID       *uuid.UUID    `json:"user_id,omitempty"`
-	UserEmail    string        `json:"user_email,omitempty"`
-	UserAgent    string        `json:"user_agent,omitempty"`
-	ExpiresAt    time.Time     `json:"expires_at"`
-	ConsumedAt   *time.Time    `json:"consumed_at,omitempty"`
-	CompletedAt  *time.Time    `json:"completed_at,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	// WorkspaceID is the tenant that approved this device session. It is empty
+	// while the session is PENDING, because nobody has authenticated yet, and is
+	// written on the browser-approval leg. Redemption refuses any session that
+	// still has no tenant.
+	//
+	// AUDIT_REMEDIATION.md F-37: the OAuth device flow authenticates by
+	// device_code before a tenant exists, so the row could not be tenant-scoped.
+	// Binding the tenant on approval is the RFC 8628 pattern every major
+	// provider uses, and it is what makes RLS on this table possible.
+	WorkspaceID uuid.UUID  `json:"workspace_id,omitempty"`
+	UserEmail   string     `json:"user_email,omitempty"`
+	UserAgent   string     `json:"user_agent,omitempty"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	ConsumedAt  *time.Time `json:"consumed_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // DeviceLoginInitiateResult is returned to the CLI client.
@@ -100,8 +113,19 @@ type SessionStore interface {
 	CreateSession(ctx context.Context, session *CLIDeviceSession) error
 	GetByDeviceCode(ctx context.Context, deviceCode string) (*CLIDeviceSession, error)
 	GetByUserCode(ctx context.Context, userCode string) (*CLIDeviceSession, error)
-	CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID uuid.UUID, email string) error
+	CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID uuid.UUID, workspaceID uuid.UUID, email string) error
 	MarkConsumed(ctx context.Context, sessionID uuid.UUID) error
+
+	// ConsumeAndGetSession atomically transitions a completed session to
+	// consumed and returns it, or returns ErrSessionAlreadyConsumed when
+	// another caller won the race.
+	//
+	// AUDIT_REMEDIATION.md F-27: the poll path used to be
+	// GetByDeviceCode -> MarkConsumed, with the MarkConsumed error discarded.
+	// Two concurrent polls both observed StatusCompleted and both received the
+	// tokens, so a one-time authorization could be redeemed twice. The check
+	// and the transition have to be a single indivisible operation.
+	ConsumeAndGetSession(ctx context.Context, deviceCode string) (*CLIDeviceSession, error)
 }
 
 // InMemorySessionStore provides a thread-safe implementation of SessionStore.
@@ -150,7 +174,7 @@ func (s *InMemorySessionStore) GetByUserCode(ctx context.Context, userCode strin
 	return nil, ErrSessionNotFound
 }
 
-func (s *InMemorySessionStore) CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID uuid.UUID, email string) error {
+func (s *InMemorySessionStore) CompleteSession(ctx context.Context, userCode string, accessToken, refreshToken string, userID, workspaceID uuid.UUID, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cleanCode := strings.ToUpper(strings.TrimSpace(userCode))
@@ -159,11 +183,18 @@ func (s *InMemorySessionStore) CompleteSession(ctx context.Context, userCode str
 			if sess.Status != StatusPending {
 				return fmt.Errorf("session is %s", sess.Status)
 			}
+			// Fail closed: a device session with no owning tenant is not
+			// completable, because the CLI would receive a token that is not
+			// scoped to any workspace. AUDIT_REMEDIATION.md F-37.
+			if workspaceID == uuid.Nil {
+				return ErrNoWorkspace
+			}
 			now := time.Now().UTC()
 			sess.Status = StatusCompleted
 			sess.AccessToken = accessToken
 			sess.RefreshToken = refreshToken
 			sess.UserID = &userID
+			sess.WorkspaceID = workspaceID
 			sess.UserEmail = email
 			sess.CompletedAt = &now
 			sess.UpdatedAt = now
@@ -185,6 +216,38 @@ func (s *InMemorySessionStore) MarkConsumed(ctx context.Context, sessionID uuid.
 	sess.ConsumedAt = &now
 	sess.UpdatedAt = now
 	return nil
+}
+
+// ConsumeAndGetSession atomically claims a completed session for a single
+// caller. The claim and the read happen under one write lock, so concurrent
+// polls cannot both receive the tokens.
+//
+// See the interface comment for AUDIT_REMEDIATION.md F-27.
+func (s *InMemorySessionStore) ConsumeAndGetSession(ctx context.Context, deviceCode string) (*CLIDeviceSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, sess := range s.sessions {
+		if sess.DeviceCode != deviceCode {
+			continue
+		}
+		if sess.Status == StatusConsumed {
+			return nil, ErrSessionConsumed
+		}
+		if sess.Status != StatusCompleted {
+			return nil, ErrSessionPending
+		}
+		now := time.Now().UTC()
+		sess.Status = StatusConsumed
+		sess.ConsumedAt = &now
+		sess.UpdatedAt = now
+
+		// Return a copy so the caller cannot mutate stored state, and so the
+		// tokens survive even after the store drops them.
+		claimed := *sess
+		return &claimed, nil
+	}
+	return nil, ErrSessionNotFound
 }
 
 // DeviceFlowManager manages the RFC 8628 device authorization grant.
@@ -308,6 +371,15 @@ func (m *DeviceFlowManager) PollDeviceLogin(ctx context.Context, deviceCode stri
 		return &DeviceLoginPollResult{Status: StatusExpired}, ErrSessionNotFound
 	}
 
+	// A completed session that never recorded a tenant must not be redeemed.
+	// This is the enforcement point that makes the row tenant-owned: the CLI
+	// holds only device_code, so the tenant has to come from the row, and a
+	// row without one cannot yield a scoped token.
+	// AUDIT_REMEDIATION.md F-37.
+	if sess.Status == StatusCompleted && sess.WorkspaceID == uuid.Nil {
+		return &DeviceLoginPollResult{Status: StatusDenied}, ErrNoWorkspace
+	}
+
 	// Check expiration
 	if sess.Status == StatusPending && time.Now().UTC().After(sess.ExpiresAt) {
 		return &DeviceLoginPollResult{Status: StatusExpired}, nil
@@ -346,22 +418,46 @@ func (m *DeviceFlowManager) PollDeviceLogin(ctx context.Context, deviceCode stri
 	}
 	m.mu.Unlock()
 
+	if sess.Status == StatusConsumed {
+		// The code was already redeemed. RFC 8628 3.5 expects an error here
+		// rather than another status, and it is the signal that matters to the
+		// user: a consumed device code means someone else may have captured it.
+		// Returning a bare "consumed" status with a 200 made that invisible.
+		return &DeviceLoginPollResult{Status: StatusConsumed, Interval: reqInterval}, ErrSessionConsumed
+	}
+
 	if sess.Status != StatusCompleted {
 		return &DeviceLoginPollResult{Status: sess.Status, Interval: reqInterval}, nil
 	}
 
-	// One-time consumption: mark consumed and clear re-fetchability
-	_ = m.store.MarkConsumed(ctx, sess.UUID)
+	// One-time consumption.
+	//
+	// AUDIT_REMEDIATION.md F-27: this used to be
+	// `sess, _ := GetByDeviceCode(...)` followed by `_ = MarkConsumed(...)`.
+	// The read and the write were separate steps and the error was discarded,
+	// so two concurrent polls both saw StatusCompleted and both were handed the
+	// access and refresh tokens. ConsumeAndGetSession performs the transition
+	// and the read as one indivisible operation, and reports the loser rather
+	// than silently issuing a second token pair.
+	claimed, err := m.store.ConsumeAndGetSession(ctx, deviceCode)
+	if err != nil {
+		if errors.Is(err, ErrSessionConsumed) {
+			// Someone else already redeemed this code. RFC 8628 3.5: a token
+			// that has been issued must not be handed out again.
+			return &DeviceLoginPollResult{Status: StatusConsumed, Interval: reqInterval}, ErrSessionConsumed
+		}
+		return &DeviceLoginPollResult{Status: StatusExpired, Interval: reqInterval}, ErrSessionNotFound
+	}
 
 	return &DeviceLoginPollResult{
 		Status:            StatusCompleted,
-		AccessToken:       sess.AccessToken,
-		RefreshToken:      sess.RefreshToken,
-		UserEmail:         sess.UserEmail,
+		AccessToken:       claimed.AccessToken,
+		RefreshToken:      claimed.RefreshToken,
+		UserEmail:         claimed.UserEmail,
 		Interval:          reqInterval,
-		AccessTokenCamel:  sess.AccessToken,
-		RefreshTokenCamel: sess.RefreshToken,
-		UserEmailCamel:    sess.UserEmail,
+		AccessTokenCamel:  claimed.AccessToken,
+		RefreshTokenCamel: claimed.RefreshToken,
+		UserEmailCamel:    claimed.UserEmail,
 	}, nil
 }
 
@@ -451,7 +547,9 @@ func (m *DeviceFlowManager) CompleteDeviceLogin(ctx context.Context, userCode st
 	m.consecutiveFailures = 0
 	m.mu.Unlock()
 
-	return m.store.CompleteSession(ctx, cleanCode, accessToken, refreshToken, user.ID, user.Email)
+	// The tenant comes from the authenticated browser session that approved
+	// this device code, never from the CLI. AUDIT_REMEDIATION.md F-37.
+	return m.store.CompleteSession(ctx, cleanCode, accessToken, refreshToken, user.ID, user.WorkspaceID, user.Email)
 }
 
 // GetSessionByUserCode retrieves a copy of the pending device session without modifying its state.

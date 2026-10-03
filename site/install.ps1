@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "scandrix/backend"
+$Repo = "Santosh-Prasad-Verma/ScanDrix"
 $BinaryName = "scandrix.exe"
 $InstallDir = "$env:LOCALAPPDATA\ScanDrix\bin"
 

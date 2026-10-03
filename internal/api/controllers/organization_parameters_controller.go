@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ import (
 
 // OrgParametersRepository defines the data access contract for organization parameter configurations (Clean Architecture).
 type OrgParametersRepository interface {
-	ListWorkspaces(ctx context.Context) ([]models.Workspace, error)
+	ListWorkspacesForUser(ctx context.Context, email string) ([]models.Workspace, error)
 	GetOrganizationParameter(ctx context.Context, wsID uuid.UUID, key string) (*models.OrganizationParameter, error)
 	SetOrganizationParameter(ctx context.Context, wsID uuid.UUID, key string, val []byte, desc string) error
 	DeleteOrganizationParameter(ctx context.Context, wsID uuid.UUID, key string) error
@@ -124,7 +125,10 @@ func (c *OrganizationParametersController) resolveWorkspaceID(r *http.Request) (
 		return wsID, nil
 	}
 	if c.repo != nil {
-		wsList, err := c.repo.ListWorkspaces(r.Context())
+		// Scoped to the caller. An empty email yields an empty list, never
+		// every workspace in the deployment.
+		email, _ := auth.CallerEmail(r.Context())
+		wsList, err := c.repo.ListWorkspacesForUser(r.Context(), email)
 		if err == nil && len(wsList) > 0 {
 			return wsList[0].ID, nil
 		}
@@ -176,16 +180,11 @@ func (c *OrganizationParametersController) handleFindByKey(w http.ResponseWriter
 	}
 
 	if c.repo == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"statusCode": http.StatusOK,
-			"data": map[string]any{
-				"uuid":        uuid.New().String(),
-				"configKey":   key,
-				"configValue": map[string]any{},
-				"createdAt":   time.Now().UTC().Format(time.RFC3339),
-				"updatedAt":   time.Now().UTC().Format(time.RFC3339),
-			},
-		})
+		// This used to invent a record: a fresh UUID and current timestamps for
+		// a configuration value that was never stored. A client caching that
+		// response would treat invented state as real, which is worse than an
+		// error because an error is honest (AUDIT_REMEDIATION.md F-10).
+		http.Error(w, `{"error":"organization parameters unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -196,6 +195,18 @@ func (c *OrganizationParametersController) handleFindByKey(w http.ResponseWriter
 	}
 
 	if param == nil {
+		// Nothing is stored for this key.
+		//
+		// This previously answered 200 with a freshly generated uuid and the
+		// current timestamps, presenting a record that was never written as
+		// real persisted state (AUDIT_REMEDIATION.md F-10). A client caching
+		// that would treat invented identifiers as authoritative.
+		//
+		// For the keys that have a genuine, documented application default the
+		// default is still returned, because it is a real value the application
+		// uses — but it is labelled as a default, and uuid/createdAt/updatedAt
+		// are null rather than invented. For any other key there is no
+		// meaningful default, so the key simply does not exist.
 		var defaultVal any
 		switch key {
 		case models.OrgParamKeyBYOKConfig:
@@ -212,17 +223,24 @@ func (c *OrganizationParametersController) handleFindByKey(w http.ResponseWriter
 		case models.OrgParamKeyTimezoneConfig:
 			defaultVal = map[string]any{"timezone": "UTC"}
 		default:
-			defaultVal = map[string]any{}
+			http.Error(w,
+				fmt.Sprintf(`{"error":"no organization parameter with key %q exists for this workspace","persisted":false}`, key),
+				http.StatusNotFound,
+			)
+			return
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"statusCode": http.StatusOK,
 			"data": map[string]any{
-				"uuid":        uuid.New().String(),
+				"uuid":        nil, // nothing persisted, so there is no identifier
 				"configKey":   key,
 				"configValue": defaultVal,
-				"createdAt":   time.Now().UTC().Format(time.RFC3339),
-				"updatedAt":   time.Now().UTC().Format(time.RFC3339),
+				"createdAt":   nil,
+				"updatedAt":   nil,
+				"persisted":   false,
+				"isDefault":   true,
+				"note":        "no stored value for this key; the configValue is the documented application default and is not persisted",
 			},
 		})
 		return
@@ -403,11 +421,10 @@ func (c *OrganizationParametersController) handleDeleteBYOK(w http.ResponseWrite
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"statusCode": http.StatusOK,
-			"data":       map[string]any{"success": true},
-		})
+		// This reported {"success":true} without deleting anything, so an
+		// operator could believe a BYOK API credential was revoked while it
+		// remained live in the database (AUDIT_REMEDIATION.md F-10).
+		http.Error(w, `{"error":"cannot delete: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -536,15 +553,58 @@ func (c *OrganizationParametersController) handleTestBYOK(w http.ResponseWriter,
 		return
 	}
 
+	// Dispatch a live probe. The previous response reported success with a fixed
+	// 85 ms latency without ever using the API key, so a user testing a broken
+	// credential was told it worked. The use case performs a real authenticated
+	// request, measures the real latency, classifies provider errors, and
+	// rejects unsafe base URLs.
+	if c.testByokModelUC == nil {
+		writeByokTestError(w, http.StatusServiceUnavailable,
+			"BYOK verification is not available on this deployment")
+		return
+	}
+
+	result := c.testByokModelUC.Execute(r.Context(), orgparamusecases.ByokTestInput{
+		Provider:        provider,
+		APIKey:          req.APIKey,
+		BaseURL:         req.BaseURL,
+		ModelID:         req.Model,
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
+	})
+
+	status := http.StatusOK
+	if !result.Success {
+		// A refused credential is a client-visible outcome, not a server fault.
+		switch result.Code {
+		case "auth", "not_found", "bad_request", "rate_limit":
+			status = http.StatusBadRequest
+		default:
+			status = http.StatusBadGateway
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"statusCode": http.StatusOK,
+		"statusCode": status,
 		"data": map[string]any{
-			"ok":        true,
-			"code":      "ok",
-			"latencyMs": 85,
-			"message":   "Connected and verified successfully.",
+			"ok":              result.Success,
+			"code":            result.Code,
+			"latencyMs":       result.LatencyMs,
+			"message":         result.Message,
+			"httpStatus":      result.HTTPStatus,
+			"providerMessage": result.ProviderMessage,
 		},
+	})
+}
+
+func writeByokTestError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"statusCode": code,
+		"error":      message,
 	})
 }
 
@@ -705,12 +765,12 @@ func (c *OrganizationParametersController) handleModelCapabilities(w http.Respon
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
-			"supportsThinking":        caps.SupportsReasoning || traits.ThinksByDefault,
-			"supportsStreaming":       caps.SupportsStreaming,
-			"supportsTools":           caps.ToolCalling == "native",
-			"supportsJsonSchema":      caps.StructuredOutput == "json_schema",
-			"supportsVision":          true,
-			"supportsTemperature":     supportsTemp,
+			"supportsThinking":       caps.SupportsReasoning || traits.ThinksByDefault,
+			"supportsStreaming":      caps.SupportsStreaming,
+			"supportsTools":          caps.ToolCalling == "native",
+			"supportsJsonSchema":     caps.StructuredOutput == "json_schema",
+			"supportsVision":         true,
+			"supportsTemperature":    supportsTemp,
 			"maxContextWindowTokens": caps.MaxInputTokens,
 		},
 	})
@@ -725,15 +785,21 @@ func (c *OrganizationParametersController) handleModelOverrides(w http.ResponseW
 
 	w.Header().Set("Content-Type", "application/json")
 	if c.repo == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"statusCode": http.StatusOK,
-			"data":       map[string]any{"overrides": []any{}},
-		})
+		http.Error(w, `{"error":"model overrides unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
 	param, err := c.repo.GetOrganizationParameter(r.Context(), wsID, models.OrgParamKeyModelOverrides)
-	if err != nil || param == nil {
+	if err != nil {
+		// A query failure used to be reported as "no overrides configured",
+		// which is indistinguishable from a real empty result and hides the
+		// outage (AUDIT_REMEDIATION.md F-43).
+		slog.Error("orgparams.model_overrides_failed", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"model overrides unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if param == nil {
+		// Genuinely absent: an empty list is the truthful answer here.
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"statusCode": http.StatusOK,
 			"data":       map[string]any{"overrides": []any{}},
@@ -743,7 +809,11 @@ func (c *OrganizationParametersController) handleModelOverrides(w http.ResponseW
 
 	var overrides any
 	if err := json.Unmarshal(param.ConfigValue, &overrides); err != nil {
-		overrides = []any{}
+		// The stored value is not the expected shape. Returning an empty list
+		// here would silently discard real configuration.
+		slog.Error("orgparams.model_overrides_malformed", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"stored model overrides are malformed"}`, http.StatusInternalServerError)
+		return
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]any{

@@ -74,51 +74,95 @@ func TestEd25519LicenseVerifier(t *testing.T) {
 		t.Fatalf("failed generating keypair: %v", err)
 	}
 
-	claims := license.LicenseClaims{
-		LicenseID:          uuid.New(),
-		WorkspaceID:        uuid.New(),
-		CustomerName:       "Enterprise Bank Corp",
-		Tier:               "enterprise",
-		MaxSeats:           500,
-		AllowBYOK:          true,
-		AllowAirGap:        true,
-		AllowDORAAnalytics: true,
-		IssuedAt:           time.Now().UTC().Add(-1 * time.Hour),
-		ExpiresAt:          time.Now().UTC().Add(365 * 24 * time.Hour),
+	payload := license.LicensePayload{
+		LicenseID:       uuid.New(),
+		CustomerName:    "Enterprise Bank Corp",
+		CustomerID:      "enterprise-bank",
+		Tier:            license.TierEnterprise,
+		MaxSeats:        500,
+		MaxRepositories: 0,
+		Features: []string{
+			string(license.FeatureSSOSAML),
+			string(license.FeatureSCIM),
+		},
+		IssuedAt:  time.Now().UTC().Add(-1 * time.Hour),
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
 	}
 
-	claimsJSON, _ := json.Marshal(claims)
-	signature := ed25519.Sign(priv, claimsJSON)
-
-	envelope := license.SignedLicenseEnvelope{
-		PayloadB64:   base64.StdEncoding.EncodeToString(claimsJSON),
-		SignatureB64: base64.StdEncoding.EncodeToString(signature),
+	token, err := license.IssueLicense(payload, priv)
+	if err != nil {
+		t.Fatalf("failed issuing license: %v", err)
 	}
-	envJSON, _ := json.Marshal(envelope)
 
-	verifier := license.NewLicenseVerifier(pub)
-	verifiedClaims, err := verifier.VerifyLicense(envJSON)
+	mgr := license.NewLicenseManager(pub)
+	loaded, err := mgr.LoadLicense(token)
 	if err != nil {
 		t.Fatalf("license verification failed: %v", err)
 	}
 
-	if verifiedClaims.CustomerName != "Enterprise Bank Corp" || verifiedClaims.MaxSeats != 500 {
-		t.Fatalf("verified claims corrupted: %+v", verifiedClaims)
+	if loaded.CustomerName != "Enterprise Bank Corp" || loaded.MaxSeats != 500 {
+		t.Fatalf("verified payload corrupted: %+v", loaded)
 	}
-	if !verifiedClaims.AllowBYOK || !verifiedClaims.AllowAirGap {
-		t.Fatalf("expected enterprise features enabled, got %+v", verifiedClaims)
+	if !mgr.HasFeature(license.FeatureSSOSAML) || !mgr.HasFeature(license.FeatureSCIM) {
+		t.Fatalf("expected enterprise features enabled, got %+v", mgr.GetActiveLicense())
 	}
 
-	// Tampered license should fail
-	tamperedClaims := claims
-	tamperedClaims.MaxSeats = 99999
-	tamperedJSON, _ := json.Marshal(tamperedClaims)
-	tamperedEnv := envelope
-	tamperedEnv.PayloadB64 = base64.StdEncoding.EncodeToString(tamperedJSON)
-	tamperedEnvJSON, _ := json.Marshal(tamperedEnv)
+	ent := mgr.Entitlement()
+	if !ent.Valid || ent.Tier != license.TierEnterprise {
+		t.Fatalf("expected valid enterprise entitlement, got %+v", ent)
+	}
+	if ent.Source != license.SourceSigned {
+		t.Fatalf("expected signed source, got %q", ent.Source)
+	}
 
-	_, errTampered := verifier.VerifyLicense(tamperedEnvJSON)
-	if errTampered == nil {
+	// A license signed by an untrusted key must not verify.
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed generating second keypair: %v", err)
+	}
+	foreign := license.NewLicenseManager(otherPub)
+	if _, err := foreign.LoadLicense(token); err == nil {
+		t.Fatal("expected license signed by an untrusted key to fail verification")
+	}
+
+	// A payload swapped under a valid signature must not verify: re-sign an
+	// enlarged payload, then graft it under the original signature.
+	tampered := payload
+	tampered.MaxSeats = 99999
+	tamperedBytes, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatalf("failed marshaling tampered payload: %v", err)
+	}
+
+	originalToken := mustIssue(t, payload, priv)
+	originalRaw, err := base64.StdEncoding.DecodeString(originalToken)
+	if err != nil {
+		t.Fatalf("failed decoding original token: %v", err)
+	}
+	var originalEnvelope license.SignedLicenseToken
+	if err := json.Unmarshal(originalRaw, &originalEnvelope); err != nil {
+		t.Fatalf("failed unmarshaling original envelope: %v", err)
+	}
+
+	forged := license.SignedLicenseToken{
+		Payload:   base64.StdEncoding.EncodeToString(tamperedBytes),
+		Signature: originalEnvelope.Signature,
+	}
+	forgedRaw, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("failed marshaling forged envelope: %v", err)
+	}
+	forgedMgr := license.NewLicenseManager(pub)
+	if _, err := forgedMgr.LoadLicense(base64.StdEncoding.EncodeToString(forgedRaw)); err == nil {
 		t.Fatal("expected tampered license to fail verification")
 	}
+}
+
+func mustIssue(t *testing.T, payload license.LicensePayload, priv ed25519.PrivateKey) string {
+	t.Helper()
+	token, err := license.IssueLicense(payload, priv)
+	if err != nil {
+		t.Fatalf("failed issuing license: %v", err)
+	}
+	return token
 }

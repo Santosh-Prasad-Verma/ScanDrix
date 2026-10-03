@@ -3,9 +3,9 @@
     "id": "scandrix-docs-default",
     "name": "ScanDrix Docs",
     "category": "documentation",
-    "baseUrl": "https://docs.scandrix.io/mcp",
+    "baseUrl": "https://docs.scandrix.dev/mcp",
     "protocol": "http",
-    "logoUrl": "https://scandrix.io/assets/logo.png",
+    "logoUrl": "https://scandrix.dev/assets/logo.png",
     "headers": {},
     "authMethods": [{ "id": "none", "type": "none", "default": true }]
   },
@@ -15,7 +15,7 @@
     "category": "task-management",
     "baseUrl": "/mcp/issues",
     "protocol": "http",
-    "logoUrl": "https://scandrix.io/assets/logo.png",
+    "logoUrl": "https://scandrix.dev/assets/logo.png",
     "headers": {},
     "authMethods": [{ "id": "none", "type": "none", "default": true }]
   },

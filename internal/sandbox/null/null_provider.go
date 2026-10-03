@@ -2,6 +2,7 @@ package null
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -57,7 +58,6 @@ func NewNullSandboxInstance() *NullSandboxInstance {
 	}
 }
 
-
 func (s *NullSandboxInstance) GetID() uuid.UUID {
 	return s.id
 }
@@ -109,17 +109,17 @@ func (s *NullSandboxInstance) ReadFile(relPath string) ([]byte, error) {
 	return data, nil
 }
 
+// Run does not execute the command. It reports a non-zero exit status and an
+// explicit error rather than ExitCode 0, which would present a command that
+// never ran as a clean pass (AUDIT_REMEDIATION.md F-38).
 func (s *NullSandboxInstance) Run(ctx context.Context, command string, envs map[string]string, timeout time.Duration) (*sandbox.SandboxRunResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.destroyed {
 		return nil, fmt.Errorf("null sandbox %s destroyed", s.id)
 	}
-	return &sandbox.SandboxRunResult{
-		Stdout:   "null run: " + command,
-		ExitCode: 0,
-		Duration: time.Millisecond,
-	}, nil
+	return nil, fmt.Errorf("null sandbox: refusing to report a result for %q; no command was executed "+
+		"(set a real sandbox provider such as E2B, or ALLOW_UNSANDBOXED_COMMAND_EXECUTION=true in development)", command)
 }
 
 func (s *NullSandboxInstance) Cleanup(ctx context.Context) error {
@@ -131,17 +131,27 @@ func (s *NullSandboxInstance) Cleanup(ctx context.Context) error {
 }
 
 // RemoteCommands implementation
+// ErrNoSearchBackend is returned instead of a fabricated "no matches" result.
+//
+// The null provider previously returned "No matches found." without searching
+// anything, so a vulnerability-pattern scan over it reported the code as clean
+// (AUDIT_REMEDIATION.md F-39). Per AGENTS.md Rule 2.7.2 an absent result must
+// be reported as absent, never substituted with a plausible empty answer.
+var ErrNoSearchBackend = errors.New(
+	"null sandbox: no search backend is configured; a pattern search cannot be performed and must not be reported as clean",
+)
+
 func (s *NullSandboxInstance) Grep(ctx context.Context, pattern, path, glob string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.destroyed {
 		return "", fmt.Errorf("null sandbox %s destroyed", s.id)
 	}
-	_, err := sandbox.ResolveRepoPath(s.repoDir, path)
-	if err != nil {
+	if _, err := sandbox.ResolveRepoPath(s.repoDir, path); err != nil {
 		return "", err
 	}
-	return "No matches found.", nil
+	// Honest failure: the search did not run, so it has no result.
+	return "", ErrNoSearchBackend
 }
 
 func (s *NullSandboxInstance) Read(ctx context.Context, path string, start, end int) (string, error) {

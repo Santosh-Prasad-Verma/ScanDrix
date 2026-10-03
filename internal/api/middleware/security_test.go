@@ -340,3 +340,89 @@ func TestTierRateLimitMiddleware(t *testing.T) {
 	}
 }
 
+// F-26: the exemption used to be `strings.HasPrefix(path, "/cli")`, which
+// covered every /cli route. That made /cli/business-validation reachable with
+// nothing but an ambient session cookie. The exemption is now an explicit list of
+// device-flow *initiation* endpoints; everything else under /cli gets the normal
+// Sec-Fetch-Site / Origin check.
+//
+// These tests drive the middleware directly with a cross-site browser request,
+// which is exactly the case the prefix match used to wave through.
+func TestCSRFExemptionIsLimitedToDeviceFlowInitiation(t *testing.T) {
+	csrf := middleware.CSRFProtection([]string{"http://localhost:3000"})
+	hit := func(path string) *httptest.ResponseRecorder {
+		h := csrf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		// No Authorization header: this is an ambient-cookie browser request.
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Still exempt: CLI device-flow start, which is a top-level navigation away
+	// from the browser and has no ambient credential to abuse.
+	for _, p := range []string{
+		"/api/v1/cli/auth/login-init",
+		"/api/v1/cli/auth/device-init",
+		"/api/v1/cli/authorize/approve",
+	} {
+		if rec := hit(p); rec.Code != http.StatusOK {
+			t.Errorf("%s should remain CSRF-exempt, got %d", p, rec.Code)
+		}
+	}
+
+	// No longer exempt: every other /cli mutation, including the endpoint that
+	// motivated the fix.
+	for _, p := range []string{
+		"/api/v1/cli/business-validation",
+		"/api/v1/cli/validate-key",
+		"/api/v1/cli/sessions/events",
+		"/api/v1/cli/memory/captures",
+		"/cli/anything",
+		"/clievil",
+	} {
+		if rec := hit(p); rec.Code != http.StatusForbidden {
+			t.Errorf("%s must be CSRF-checked, got %d (want 403)", p, rec.Code)
+		}
+	}
+}
+
+// The non-/cli exemptions must survive the narrowing.
+func TestCSRFNonCLIBypassesStillApply(t *testing.T) {
+	csrf := middleware.CSRFProtection([]string{"http://localhost:3000"})
+	hit := func(path string) int {
+		h := csrf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for _, p := range []string{"/api/v1/webhooks/github", "/api/v1/auth/oauth/callback"} {
+		if code := hit(p); code != http.StatusOK {
+			t.Errorf("%s should remain exempt, got %d", p, code)
+		}
+	}
+
+	// An explicit bearer token is inherently CSRF-immune and still bypasses.
+	h := csrf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cli/business-validation", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("bearer-authenticated CLI call should bypass CSRF, got %d", rec.Code)
+	}
+}

@@ -23,6 +23,10 @@ type BucketInfo struct {
 	Slug        string `json:"slug"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	// RulesCount is the number of library rules that list this bucket. It is
+	// counted from the catalog rather than left off, so a client that wants to
+	// show a total is not left to invent a zero.
+	RulesCount int `json:"rules_count"`
 }
 
 // LibraryDrixyRule models a pre-authored catalog rule.
@@ -66,7 +70,7 @@ type IDrixyRulesService interface {
 	IDrixyRulesRepository
 
 	GetLibraryDrixyRules(ctx context.Context, filters map[string]any, userID string) ([]LibraryDrixyRule, error)
-	GetLibraryDrixyRulesWithFeedback(ctx context.Context, filters map[string]any, userID string) ([]LibraryDrixyRule, error)
+	GetLibraryDrixyRulesWithFeedback(ctx context.Context, organizationID string, filters map[string]any, userID string) ([]LibraryDrixyRule, error)
 	GetLibraryDrixyRulesBuckets(ctx context.Context) ([]BucketInfo, error)
 
 	FindRulesByDirectory(ctx context.Context, organizationID, repositoryID, directoryID string) ([]interfaces.DrixyRule, error)

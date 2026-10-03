@@ -270,6 +270,41 @@ func (m *mockBillingRepo) UpgradeWorkspacePlan(ctx context.Context, wsID uuid.UU
 	return nil
 }
 
+func (m *mockBillingRepo) ListPlanConfigurations(ctx context.Context) ([]models.PlanConfiguration, error) {
+	return []models.PlanConfiguration{
+		{
+			Tier:        "COMMUNITY",
+			DisplayName: "Community Free Plan",
+			AmountINR:   0,
+			AmountUSD:   0,
+		},
+		{
+			Tier:        "DEVELOPER",
+			DisplayName: "Developer Plan",
+			AmountINR:   79900,
+			AmountUSD:   999,
+		},
+		{
+			Tier:        "TEAM",
+			DisplayName: "Team Plan",
+			AmountINR:   149900,
+			AmountUSD:   1900,
+		},
+		{
+			Tier:        "SCALE",
+			DisplayName: "Scale Plan",
+			AmountINR:   2499000,
+			AmountUSD:   29900,
+		},
+		{
+			Tier:        "ENTERPRISE",
+			DisplayName: "Enterprise Custom Plan",
+			AmountINR:   999900,
+			AmountUSD:   12900,
+		},
+	}, nil
+}
+
 func signPayload(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
@@ -400,5 +435,53 @@ func TestBillingLifecycleWebhooksPlanChangedAndRuleQuotaSync(t *testing.T) {
 	}
 	if repo.syncRulesCalls[0].MaxAllowedRules != 50 {
 		t.Fatalf("expected max 50 allowed rules for PRO, got %d", repo.syncRulesCalls[0].MaxAllowedRules)
+	}
+}
+
+func TestBillingControllerListPlans(t *testing.T) {
+	limiter := llm.NewTokenBudgetLimiter()
+	repo := &mockBillingRepo{}
+	ctrl := controllers.NewBillingController(nil, repo, limiter)
+	router := ctrl.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/plans", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Success bool                       `json:"success"`
+		Plans   []models.PlanConfiguration `json:"plans"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed decoding json: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatalf("expected success=true")
+	}
+
+	if len(resp.Plans) != 5 {
+		t.Fatalf("expected 5 plans, got %d", len(resp.Plans))
+	}
+
+	// Verify SCALE plan is in the response with correct database pricing
+	var foundScale bool
+	for _, p := range resp.Plans {
+		if p.Tier == "SCALE" {
+			foundScale = true
+			if p.AmountINR != 2499000 {
+				t.Fatalf("expected SCALE AmountINR=2499000, got %d", p.AmountINR)
+			}
+			if p.AmountUSD != 29900 {
+				t.Fatalf("expected SCALE AmountUSD=29900, got %d", p.AmountUSD)
+			}
+		}
+	}
+	if !foundScale {
+		t.Fatalf("SCALE plan not found in ListPlans response")
 	}
 }

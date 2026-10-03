@@ -601,4 +601,40 @@ func TestResolveManagedSlotFromConfig(t *testing.T) {
 	if slotAnthropic == nil || slotAnthropic.Provider != ProviderAnthropic || slotAnthropic.APIKey != "sk-ant-test" {
 		t.Fatalf("unexpected anthropic slot: %+v", slotAnthropic)
 	}
+
+	cfgGemini := EnvLLMConfig{
+		DefaultModel: "gemini-2.5-pro",
+		GeminiKey:    "gemini-test-key",
+	}
+	slotGemini := ResolveManagedSlotFromConfig(cfgGemini)
+	if slotGemini == nil || slotGemini.Provider != ProviderGoogleGemini || slotGemini.APIKey != "gemini-test-key" {
+		t.Fatalf("unexpected gemini slot: %+v", slotGemini)
+	}
+
+	cfgMistral := EnvLLMConfig{
+		DefaultModel: "mistral-large-latest",
+		MistralKey:   "mistral-test-key",
+	}
+	slotMistral := ResolveManagedSlotFromConfig(cfgMistral)
+	if slotMistral == nil || slotMistral.Provider != ProviderOpenAICompatible || slotMistral.APIKey != "mistral-test-key" || slotMistral.BaseURL != "https://api.mistral.ai/v1" {
+		t.Fatalf("unexpected mistral slot: %+v", slotMistral)
+	}
+
+	cfgGroq := EnvLLMConfig{
+		DefaultModel: "llama-3.3-70b-versatile",
+		GroqKey:      "groq-test-key",
+	}
+	slotGroq := ResolveManagedSlotFromConfig(cfgGroq)
+	if slotGroq == nil || slotGroq.Provider != ProviderOpenAICompatible || slotGroq.APIKey != "groq-test-key" || slotGroq.BaseURL != "https://api.groq.com/openai/v1" {
+		t.Fatalf("unexpected groq slot: %+v", slotGroq)
+	}
+
+	cfgCohere := EnvLLMConfig{
+		DefaultModel: "command-r-plus",
+		CohereKey:    "cohere-test-key",
+	}
+	slotCohere := ResolveManagedSlotFromConfig(cfgCohere)
+	if slotCohere == nil || slotCohere.Provider != ProviderOpenAICompatible || slotCohere.APIKey != "cohere-test-key" || slotCohere.BaseURL != "https://api.cohere.com/v2" {
+		t.Fatalf("unexpected cohere slot: %+v", slotCohere)
+	}
 }

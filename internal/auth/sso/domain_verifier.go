@@ -58,27 +58,26 @@ func (r *DefaultDNSResolver) LookupTXT(ctx context.Context, name string) ([]stri
 
 // DomainVerificationRecord stores domain verification metadata and state.
 type DomainVerificationRecord struct {
-	Domain             string     `json:"domain"`
-	WorkspaceID        uuid.UUID  `json:"workspace_id"`
-	Verified           bool       `json:"verified"`
-	VerifiedByEmail    string     `json:"verified_by_email,omitempty"`
-	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
-	Token              string     `json:"token,omitempty"`
-	TXTRecordExpected  string     `json:"txt_record_expected"`
-	TXTRecordHost      string     `json:"txt_record_host"`
-	ExpiresAt          time.Time  `json:"expires_at"`
-	IsSelfHostedBypass bool       `json:"is_self_hosted_bypass,omitempty"`
+	Domain            string     `json:"domain"`
+	WorkspaceID       uuid.UUID  `json:"workspace_id"`
+	Verified          bool       `json:"verified"`
+	VerifiedByEmail   string     `json:"verified_by_email,omitempty"`
+	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
+	Token             string     `json:"token,omitempty"`
+	TXTRecordExpected string     `json:"txt_record_expected"`
+	TXTRecordHost     string     `json:"txt_record_host"`
+	ExpiresAt         time.Time  `json:"expires_at"`
 }
 
 // DomainVerifierService manages enterprise SSO domain ownership challenges.
 type DomainVerifierService struct {
-	mu           sync.RWMutex
-	dnsResolver  DNSResolver
-	records      map[string]*DomainVerificationRecord // "wsID:domain" -> record
-	tokenIndex   map[string]string                    // token -> "wsID:domain"
-	cloudMode    bool
-	tokenTTL     time.Duration
-	verifiedTTL  time.Duration
+	mu          sync.RWMutex
+	dnsResolver DNSResolver
+	records     map[string]*DomainVerificationRecord // "wsID:domain" -> record
+	tokenIndex  map[string]string                    // token -> "wsID:domain"
+	cloudMode   bool
+	tokenTTL    time.Duration
+	verifiedTTL time.Duration
 }
 
 // NewDomainVerifierService initializes the domain verifier service.
@@ -157,24 +156,32 @@ func (s *DomainVerifierService) RequestVerification(
 
 	now := time.Now().UTC()
 	record := &DomainVerificationRecord{
-		Domain:             domain,
-		WorkspaceID:        wsID,
-		Verified:           false,
-		VerifiedByEmail:    email,
-		Token:              token,
-		TXTRecordExpected:  TXTRecordPrefix + token,
-		TXTRecordHost:      fmt.Sprintf("_scandrix-challenge.%s", domain),
-		ExpiresAt:          now.Add(s.tokenTTL),
-		IsSelfHostedBypass: false,
+		Domain:            domain,
+		WorkspaceID:       wsID,
+		Verified:          false,
+		VerifiedByEmail:   email,
+		Token:             token,
+		TXTRecordExpected: TXTRecordPrefix + token,
+		TXTRecordHost:     fmt.Sprintf("_scandrix-challenge.%s", domain),
+		ExpiresAt:         now.Add(s.tokenTTL),
 	}
 
-	// In self-hosted mode without cloud enforcement, allow instant auto-verification
-	if !s.cloudMode {
-		record.Verified = true
-		record.VerifiedAt = &now
-		record.IsSelfHostedBypass = true
-		record.ExpiresAt = now.Add(s.verifiedTTL)
-	}
+	// A domain is NEVER approved without proof of ownership.
+	//
+	// SECURITY (AUDIT_REMEDIATION.md F-11): this previously short-circuited
+	// whenever cloudMode was false, marking every domain Verified immediately
+	// with no DNS lookup, no TXT check, and no contact-email proof. Because
+	// cloudMode was hardcoded false at the single construction site, EVERY
+	// deployment had this bypass. Any workspace could claim any domain, and
+	// that claim feeds SSO domain routing and the ssoRequired enforcement flag.
+	//
+	// Ownership is now established only by VerifyDNS (a real TXT lookup) or
+	// ConfirmToken (proof that the challenge token was retrieved from the
+	// domain's DNS). Self-hosted deployments can do this for their own domain
+	// exactly as a cloud deployment can.
+	//
+	// cloudMode is retained only for the contact-email domain match below,
+	// which is an additional tightening applied in the hosted deployment.
 
 	key := s.recordKey(wsID, domain)
 
@@ -229,7 +236,7 @@ func (s *DomainVerifierService) VerifyDNS(
 			continue
 		}
 		for _, txt := range records {
-			if strings.TrimSpace(txt) == expectedVal {
+			if normalizeTXTValue(txt) == expectedVal {
 				verified = true
 				break
 			}
@@ -253,6 +260,36 @@ func (s *DomainVerifierService) VerifyDNS(
 	delete(s.tokenIndex, record.Token)
 
 	return record, nil
+}
+
+// normalizeTXTValue canonicalises a TXT record value before comparison.
+//
+// Real DNS providers return TXT values inconsistently: some include the
+// surrounding double quotes that appear in the zone file, some split long
+// values into multiple quoted strings, and some pad with whitespace. Comparing
+// the raw string therefore fails for correct configurations.
+//
+// This mattered only once the auto-approval bypass was removed: VerifyDNS used
+// to return early on an already-verified record and never perform the lookup at
+// all, so this defect was completely masked. With ownership now genuinely
+// checked, an unquoted zone entry verified while an equivalently quoted one did
+// not (AUDIT_REMEDIATION.md F-11).
+func normalizeTXTValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	// Strip a matched pair of surrounding double quotes.
+	if len(v) >= 2 && strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
+		v = v[1 : len(v)-1]
+	}
+	// A multi-string TXT value arrives concatenated; take the segment that
+	// carries our prefix so `"aaa" "scandrix-domain-verification=<tok>"` matches.
+	if idx := strings.Index(v, TXTRecordPrefix); idx >= 0 {
+		v = v[idx:]
+		// Cut at the closing quote of the embedded string, if present.
+		if end := strings.Index(v[1:], `"`); end >= 0 {
+			v = v[:end+1]
+		}
+	}
+	return strings.TrimSpace(v)
 }
 
 // ConfirmToken verifies domain ownership via direct token presentation.

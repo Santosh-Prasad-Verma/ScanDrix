@@ -267,39 +267,53 @@ func TestTraceContextAndDashboard(t *testing.T) {
 	// Dashboard store
 	dashStore := clireview.NewDashboardStore()
 	dashStore.RecordReview(clireview.CliReviewSummary{
-		ID:            "rev-1",
-		CorrelationID: "corr-1",
-		Summary:       "Zero vulnerabilities found",
-		IssuesCount:   0,
-		FilesAnalyzed: 3,
-		Duration:      150,
-		Status:        "COMPLETED",
-		CreatedAt:     time.Now().UTC(),
-		Branch:        "feature/auth",
+		ID:             "rev-1",
+		OrganizationID: "org-1",
+		CorrelationID:  "corr-1",
+		Summary:        "Zero vulnerabilities found",
+		IssuesCount:    0,
+		FilesAnalyzed:  3,
+		Duration:       150,
+		Status:         "COMPLETED",
+		CreatedAt:      time.Now().UTC(),
+		Branch:         "feature/auth",
 	})
 
 	dashStore.RecordReview(clireview.CliReviewSummary{
-		ID:            "rev-2",
-		CorrelationID: "corr-2",
-		Summary:       "Found 1 critical flaw",
-		IssuesCount:   1,
-		FilesAnalyzed: 5,
-		Duration:      300,
-		Status:        "COMPLETED",
-		CreatedAt:     time.Now().UTC(),
-		Branch:        "main",
+		ID:             "rev-2",
+		OrganizationID: "org-1",
+		CorrelationID:  "corr-2",
+		Summary:        "Found 1 critical flaw",
+		IssuesCount:    1,
+		FilesAnalyzed:  5,
+		Duration:       300,
+		Status:         "COMPLETED",
+		CreatedAt:      time.Now().UTC(),
+		Branch:         "main",
 	})
 
 	list := dashStore.GetCliReviews(clireview.CliReviewsQuery{
-		Search: "critical",
+		OrganizationID: "org-1",
+		Search:         "critical",
 	})
 	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].ID != "rev-2" {
 		t.Fatalf("expected 1 matched review with ID rev-2, got %+v", list)
 	}
 
-	r, err := dashStore.GetCliReviewByID("rev-1")
+	r, err := dashStore.GetCliReviewByID("rev-1", "org-1")
 	if err != nil || r.Summary != "Zero vulnerabilities found" {
 		t.Fatalf("expected rev-1 lookup, got %+v, err: %v", r, err)
+	}
+
+	// Another organization must not be able to read the same record by ID.
+	if _, err := dashStore.GetCliReviewByID("rev-1", "org-2"); err == nil {
+		t.Fatal("expected rev-1 lookup from another organization to be refused")
+	}
+
+	// And the list must not leak it either.
+	otherList := dashStore.GetCliReviews(clireview.CliReviewsQuery{OrganizationID: "org-2"})
+	if otherList.Total != 0 {
+		t.Fatalf("expected 0 reviews for org-2, got %d", otherList.Total)
 	}
 }
 
@@ -373,4 +387,3 @@ func TestPrepareCliFilesAndFormatting(t *testing.T) {
 		t.Fatalf("unexpected with issues response: %+v", withIssues)
 	}
 }
-

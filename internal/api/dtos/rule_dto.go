@@ -35,11 +35,55 @@ type TestRuleRequest struct {
 	FilePath    string `json:"file_path"`
 }
 
+// RuleTestFile is one file to match, identified so a match can be attributed.
+type RuleTestFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// TestRuleBatchRequest matches one pattern against many files in a single call.
+//
+// The dashboard used to POST /rules/test once per file, which for a dry run over
+// a handful of pull requests meant a few hundred sequential round trips.
+type TestRuleBatchRequest struct {
+	RegexRule string         `json:"regex_rule"`
+	Files     []RuleTestFile `json:"files"`
+}
+
+// RuleTestFileResult reports the matches within one file.
+type RuleTestFileResult struct {
+	Path          string   `json:"path"`
+	Matched       bool     `json:"matched"`
+	MatchLines    []int    `json:"match_lines"`
+	MatchSnippets []string `json:"match_snippets"`
+}
+
+// TestRuleBatchResponse reports per-file matches plus the real denominators a
+// precision verdict needs: how many files were scanned and how many fired.
+type TestRuleBatchResponse struct {
+	Files []RuleTestFileResult `json:"files"`
+	// FilesScanned is the denominator. Without it a finding count says nothing
+	// about whether a rule is precise.
+	FilesScanned int `json:"files_scanned"`
+	FilesMatched int `json:"files_matched"`
+	// MatchRate is FilesMatched / FilesScanned, the fraction of scanned files
+	// the pattern fired on. Zero files scanned yields 0, not 1.
+	MatchRate   float64 `json:"match_rate"`
+	TotalLines  int     `json:"total_lines"`
+	Truncated   bool    `json:"truncated"`
+	CompileMs   int64   `json:"compile_ms"`
+	MatchTimeMs int64   `json:"match_time_ms"`
+}
+
 // TestRuleResponse reports test match results.
 type TestRuleResponse struct {
 	Matched       bool     `json:"matched"`
 	MatchLines    []int    `json:"match_lines"`
 	MatchSnippets []string `json:"match_snippets"`
+	// ExecutionTimeMs is the time spent compiling the pattern and matching
+	// every line, measured here. The dashboard used to time its own fetch and
+	// label the round trip as the rule's runtime.
+	ExecutionTimeMs int64 `json:"execution_time_ms"`
 }
 
 // RuleResponse returns detailed rule definition.

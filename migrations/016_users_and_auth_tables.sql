@@ -55,5 +55,18 @@ CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users"(LOWER("email"));
 CREATE INDEX IF NOT EXISTS "idx_auth_refresh_token" ON "auth"("refreshToken");
 
 -- Grant permissions to scandrix_app runtime role
-GRANT SELECT, INSERT, UPDATE, DELETE ON "users" TO scandrix_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON "auth" TO scandrix_app;
+
+-- Skipped when the least-privilege runtime role has not been provisioned (CI,
+-- or provisioned out-of-band): granting to a non-existent role raises 42704 and
+-- rolls the whole migration back. With no runtime role there is nothing to
+-- grant to. See migrations/ops/002_least_privilege_runtime_role.sql.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_app') THEN
+        RAISE NOTICE 'Skipping grants to scandrix_app: the role does not exist.';
+        RETURN;
+    END IF;
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON "users" TO scandrix_app;';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON "auth" TO scandrix_app;';
+END
+$$;

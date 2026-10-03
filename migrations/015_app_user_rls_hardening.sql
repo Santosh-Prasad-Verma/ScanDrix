@@ -2,24 +2,59 @@
 -- Creates the least-privileged runtime application role 'scandrix_app' enforcing
 -- Row-Level Security (NOBYPASSRLS) and adds webhook_secret_enc columns for dynamic secret resolution.
 
+-- SECURITY (AUDIT_REMEDIATION.md F-06): this migration previously created the
+-- role with a hardcoded password committed to the repository. Because the
+-- migration runner is unprivileged, role creation usually fails anyway; the
+-- role is provisioned out-of-band by ops/002_least_privilege_runtime_role.sql.
+--
+-- The password is now read from current_setting('scandrix.app_password') when
+-- the operator supplies it at apply time, e.g.
+--
+--   psql -v ON_ERROR_STOP=1 -c "SET scandrix.app_password = '...';" -f ...
+--
+-- or via the SCANDRIX_APP_PASSWORD environment read by scripts/migrate.sh.
+-- No credential is stored in this file or anywhere else in the repository.
 DO $$
+DECLARE
+    app_password text := current_setting('scandrix.app_password', true);
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_app') THEN
+        IF app_password IS NULL OR app_password = '' THEN
+            RAISE NOTICE 'Role scandrix_app not created: no password supplied. Set scandrix.app_password or provision the role out-of-band (see migrations/ops/002_least_privilege_runtime_role.sql).';
+            RETURN;
+        END IF;
         BEGIN
-            CREATE ROLE scandrix_app WITH LOGIN PASSWORD 'scandrix_secure_pass' NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE;
+            EXECUTE format(
+                'CREATE ROLE scandrix_app WITH LOGIN PASSWORD %L NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE',
+                app_password
+            );
         EXCEPTION WHEN OTHERS THEN
             RAISE NOTICE 'Role scandrix_app could not be created or already exists: %', SQLERRM;
         END;
     END IF;
 END $$;
 
--- Grant schema and table permissions to scandrix_app
-GRANT USAGE ON SCHEMA public TO scandrix_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO scandrix_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO scandrix_app;
+-- Grant schema and table permissions to scandrix_app.
+--
+-- Guarded because the role is only created when a password is supplied. In CI,
+-- and anywhere else the role is provisioned out-of-band or not at all, the
+-- GRANTs below raised 42704 "role does not exist" and rolled the whole
+-- migration back. Skipping the grants is safe: with no runtime role there is
+-- nothing to grant to, and the RLS work that follows still applies.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'scandrix_app') THEN
+        RAISE NOTICE 'Skipping grants to scandrix_app: the role does not exist.';
+        RETURN;
+    END IF;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO scandrix_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO scandrix_app;
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO scandrix_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO scandrix_app';
+    EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO scandrix_app';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO scandrix_app';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO scandrix_app';
+END
+$$;
 
 -- Add encrypted webhook secret support to tracked_repositories and integration_connections
 ALTER TABLE tracked_repositories ADD COLUMN IF NOT EXISTS webhook_secret_enc TEXT NOT NULL DEFAULT '';

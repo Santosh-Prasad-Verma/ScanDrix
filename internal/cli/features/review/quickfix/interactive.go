@@ -7,10 +7,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/scandrix/backend/internal/pathguard"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -56,7 +56,15 @@ func (s *InteractiveFixSession) ReviewAndApply(findings []models.CodeFinding) (a
 	fmt.Fprintf(s.writer, "\nFound %d fixable suggestion(s). Reviewing interactively:\n\n", len(fixable))
 
 	for idx, f := range fixable {
-		targetFile := filepath.Join(s.workspaceRoot, f.FilePath)
+		// f.FilePath comes from a review finding, i.e. from analysed source
+		// and ultimately from a model. Joining it onto the workspace root
+		// unchecked is how a suggestion naming `../../.ssh/authorized_keys`
+		// becomes a write outside the repository, so it is confined here.
+		if _, pathErr := pathguard.Resolve(s.workspaceRoot, f.FilePath); pathErr != nil {
+			fmt.Fprintf(s.writer, "\u274c Refusing %q: %v\n", f.FilePath, pathErr)
+			skipped++
+			continue
+		}
 
 		fmt.Fprintln(s.writer, strings.Repeat("─", 65))
 		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorTitle)
@@ -95,7 +103,10 @@ func (s *InteractiveFixSession) ReviewAndApply(findings []models.CodeFinding) (a
 		}
 
 		// Apply fix
-		res, applyErr := ApplySuggestedDiff(targetFile, f.SuggestedDiff, true)
+		// The relative component is passed, not the already-joined absolute
+		// path: the applier re-resolves it against the root, which is what keeps
+		// the confinement in one place.
+		res, applyErr := ApplySuggestedDiff(s.workspaceRoot, f.FilePath, f.SuggestedDiff, true)
 		if applyErr != nil {
 			fmt.Fprintf(s.writer, "❌ Error applying fix to %s: %v\n", f.FilePath, applyErr)
 			skipped++

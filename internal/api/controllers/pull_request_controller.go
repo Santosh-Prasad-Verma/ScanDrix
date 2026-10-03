@@ -154,14 +154,7 @@ func (c *PullRequestController) handleGetExecutions(w http.ResponseWriter, r *ht
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.PaginatedEnrichedPullRequests{
-			Data:       []models.EnrichedPullRequestExecution{},
-			Total:      0,
-			Page:       1,
-			Limit:      filter.Limit,
-			TotalPages: 0,
-		})
+		http.Error(w, `{"error":"pull requests unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -190,8 +183,7 @@ func (c *PullRequestController) handleGetDailyDigest(w http.ResponseWriter, r *h
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.PullRequestsDailyDigest{})
+		http.Error(w, `{"error":"pull request digest unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -226,8 +218,7 @@ func (c *PullRequestController) handleGetFacets(w http.ResponseWriter, r *http.R
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.PullRequestsFacets{})
+		http.Error(w, `{"error":"pull request facets unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -256,8 +247,7 @@ func (c *PullRequestController) handleGetAwaiting(w http.ResponseWriter, r *http
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]models.AwaitingPullRequest{})
+		http.Error(w, `{"error":"awaiting pull requests unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -294,8 +284,7 @@ func (c *PullRequestController) handleGetAuthors(w http.ResponseWriter, r *http.
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]models.PullRequestAuthorSuggestion{})
+		http.Error(w, `{"error":"author suggestions unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -444,8 +433,7 @@ func (c *PullRequestController) handleGetFiles(w http.ResponseWriter, r *http.Re
 	}
 
 	if c.repo == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]models.PullRequestChangedFile{})
+		http.Error(w, `{"error":"changed files unavailable: no data source"}`, http.StatusServiceUnavailable)
 		return
 	}
 

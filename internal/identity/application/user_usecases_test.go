@@ -220,7 +220,7 @@ func TestUserManagementUseCases(t *testing.T) {
 	// 2. Accept Invitation
 	accepted, err := acceptInviteUC.Execute(ctx, application.AcceptUserInvitationInput{
 		UserUUID: userUUID,
-		Password: "SecurePassword987!",
+		Password: "Zq7-Kv4-Mn9-Tb2-Xc6-Rp8",
 		Name:     "Invited Developer",
 		Phone:    "+15550199",
 	})

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -56,23 +57,30 @@ func LoadEnvironmentConfig() (*EnvironmentConfig, error) {
 
 // JWTConfig holds cryptographic token generation and validation settings.
 type JWTConfig struct {
-	Secret        string
-	RefreshSecret string
-	ExpiresIn     time.Duration
+	Secret           string
+	RefreshSecret    string
+	ExpiresIn        time.Duration
 	RefreshExpiresIn time.Duration
-	Issuer        string
-	Algorithm     string
+	Issuer           string
+	Algorithm        string
 }
 
 // LoadJWTConfig loads JWT settings from environment variables.
+//
+// SECURITY: this previously fell back to a hardcoded dev secret when
+// JWT_SECRET was unset, and derived the refresh secret by appending "_refresh"
+// to the access secret — so leaking one immediately yielded the other. Both are
+// required now, and the refresh secret is never derived from the access secret
+// (AUDIT_REMEDIATION.md F-14). Matches the live behaviour in internal/config,
+// which already fails at startup.
 func LoadJWTConfig() (*JWTConfig, error) {
 	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "scandrix_default_dev_jwt_secret_must_be_overridden_in_prod"
+	if strings.TrimSpace(secret) == "" {
+		return nil, errors.New("JWT_SECRET is required and cannot be empty")
 	}
 	refreshSecret := os.Getenv("JWT_REFRESH_SECRET")
-	if refreshSecret == "" {
-		refreshSecret = secret + "_refresh"
+	if strings.TrimSpace(refreshSecret) == "" {
+		return nil, errors.New("JWT_REFRESH_SECRET is required and cannot be empty; it must not be derived from JWT_SECRET")
 	}
 
 	expiresIn := 15 * time.Minute
@@ -183,12 +191,12 @@ func (c *PostgresConfig) DSN() string {
 
 // RabbitMQConfig holds AMQP connection and queue topology configurations.
 type RabbitMQConfig struct {
-	URI            string
-	PrefetchCount  int
-	Heartbeat      time.Duration
-	ReconnectDelay time.Duration
-	ExchangeName   string
-	DLXExchange    string
+	URI             string
+	PrefetchCount   int
+	Heartbeat       time.Duration
+	ReconnectDelay  time.Duration
+	ExchangeName    string
+	DLXExchange     string
 	DelayedExchange string
 }
 

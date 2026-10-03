@@ -41,6 +41,19 @@ type IUserAccountRepository interface {
 type JoinOrganizationInput struct {
 	UserID         uuid.UUID `json:"user_id"`
 	OrganizationID uuid.UUID `json:"organization_id"`
+
+	// InvitationCode is the code from the invite link, when the join was
+	// initiated from one. It is recorded for audit but is NOT validated:
+	// there is no invitation repository in this codebase to validate it
+	// against, and inventing one would silently break every join that does
+	// not use an invite link.
+	//
+	// Until a real invitation store exists, callers MUST NOT treat the
+	// presence of this field as proof that the join was authorised. The
+	// transport-level check that the caller is authenticated and is acting
+	// on their own account is what currently protects this path.
+	// See AUDIT_REMEDIATION.md F-02.
+	InvitationCode string `json:"invitation_code,omitempty"`
 }
 
 // JoinOrganizationUseCase manages onboarding users into a target organization and cleans up orphaned personal workspaces.
@@ -88,6 +101,17 @@ func (uc *JoinOrganizationUseCase) Execute(ctx context.Context, input JoinOrgani
 	if originalWsID == input.OrganizationID {
 		return user, nil // Already in the target organization
 	}
+
+	// The invitation code is not validated (see JoinOrganizationInput); record
+	// it so an audit trail exists for joins that presented one, without
+	// logging the raw code.
+	slog.Info("organization.join",
+		"event", "organization.join",
+		"user_id", input.UserID,
+		"from_workspace_id", originalWsID,
+		"to_organization_id", input.OrganizationID,
+		"invitation_code_present", input.InvitationCode != "",
+	)
 
 	targetOrg, err := uc.orgRepo.FindByID(ctx, input.OrganizationID)
 	if err != nil || targetOrg == nil {
@@ -147,29 +171,57 @@ func (uc *JoinOrganizationUseCase) Execute(ctx context.Context, input JoinOrgani
 }
 
 // cleanUpOrphanedWorkspace removes empty teams, parameters, and workspace records for an orphaned personal tenant.
+//
+// It FAILS CLOSED. Every repository error aborts the cleanup rather than
+// continuing: the original condition was `err == nil && len(remainingUsers) > 0`,
+// which meant a transient database error skipped the early return and fell
+// straight through to the deletes below. A momentary DB blip could therefore
+// destroy a workspace that still had members in it.
 func (uc *JoinOrganizationUseCase) cleanUpOrphanedWorkspace(ctx context.Context, wsID uuid.UUID) {
 	remainingUsers, err := uc.userRepo.FindByWorkspaceID(ctx, wsID)
-	if err == nil && len(remainingUsers) > 0 {
+	if err != nil {
+		slog.Warn("Skipping orphaned-workspace cleanup: user lookup failed; refusing to delete on unknown state",
+			"workspace_id", wsID, "error", err)
+		return
+	}
+	if len(remainingUsers) > 0 {
 		slog.Info("Workspace retains active users; skipping tenant deletion", "workspace_id", wsID)
 		return
 	}
 
 	teams, err := uc.teamRepo.FindByWorkspaceID(ctx, wsID)
-	if err == nil {
-		for _, t := range teams {
-			members, mErr := uc.memberRepo.Find(ctx, memberdomain.TeamMemberFilter{TeamID: &t.UUID})
-			if mErr == nil && len(members) == 0 {
-				if uc.paramRepo != nil {
-					_ = uc.paramRepo.DeleteByTeamID(ctx, t.UUID)
-				}
-				_ = uc.teamRepo.Delete(ctx, t.UUID)
+	if err != nil {
+		slog.Warn("Skipping orphaned-workspace cleanup: team lookup failed",
+			"workspace_id", wsID, "error", err)
+		return
+	}
+	for _, t := range teams {
+		members, mErr := uc.memberRepo.Find(ctx, memberdomain.TeamMemberFilter{TeamID: &t.UUID})
+		if mErr != nil {
+			slog.Warn("Skipping team cleanup: member lookup failed", "team_id", t.UUID, "error", mErr)
+			continue
+		}
+		if len(members) == 0 {
+			if uc.paramRepo != nil {
+				_ = uc.paramRepo.DeleteByTeamID(ctx, t.UUID)
 			}
+			_ = uc.teamRepo.Delete(ctx, t.UUID)
 		}
 	}
 
-	// Verify remaining teams
-	if remainingTeams, err := uc.teamRepo.FindByWorkspaceID(ctx, wsID); err == nil && len(remainingTeams) == 0 {
-		_ = uc.orgRepo.Delete(ctx, wsID)
+	// Verify remaining teams before removing the tenant row. Fails closed: an
+	// error here must never be read as "no teams remain, safe to delete".
+	remainingTeams, err := uc.teamRepo.FindByWorkspaceID(ctx, wsID)
+	if err != nil {
+		slog.Warn("Skipping organization deletion: team re-verification failed",
+			"workspace_id", wsID, "error", err)
+		return
+	}
+	if len(remainingTeams) == 0 {
+		if delErr := uc.orgRepo.Delete(ctx, wsID); delErr != nil {
+			slog.Error("Failed to delete orphaned organization", "workspace_id", wsID, "error", delErr)
+			return
+		}
 		slog.Info("Orphaned personal workspace purged successfully", "workspace_id", wsID)
 	}
 }

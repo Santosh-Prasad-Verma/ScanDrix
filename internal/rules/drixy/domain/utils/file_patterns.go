@@ -60,7 +60,7 @@ var RuleFileDiscoveryPatterns = func() []string {
 	res := make([]string, 0, len(RuleFilePatterns)*2)
 	res = append(res, RuleFilePatterns...)
 	for _, p := range RuleFilePatterns {
-		res = append(res, "**/" + p)
+		res = append(res, "**/"+p)
 	}
 	return res
 }()

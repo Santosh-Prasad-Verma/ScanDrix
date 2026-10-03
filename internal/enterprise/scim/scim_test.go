@@ -2,18 +2,38 @@ package scim_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/enterprise/scim"
 )
 
+// newBoundService builds a SCIM service bound to a tenant with a valid,
+// unlimited-seat entitlement. Provisioning is refused when a service is unbound,
+// so tests that create users must bind one - exactly as cmd/api and cmd/server do
+// at boot.
+func newBoundService(t *testing.T) *scim.SCIMService {
+	t.Helper()
+	svc := scim.NewSCIMService()
+	svc.SetBearerToken("test-bearer-token")
+	svc.SetEntitlement(uuid.New(), license.NewResolver(nil, quotaStore{
+		tier:     "ENTERPRISE",
+		maxSeats: 0,
+		expires:  time.Now().UTC().Add(24 * time.Hour),
+	}, seatCounter{used: 0}))
+	return svc
+}
+
+var _ = context.Background
+
 func TestSCIMUserLifecycle(t *testing.T) {
-	service := scim.NewSCIMService()
-	service.SetBearerToken("test-bearer-token")
+	service := newBoundService(t)
 	router := service.Routes()
 	authHdr := "Bearer test-bearer-token"
 
@@ -89,7 +109,9 @@ func TestSCIMUserLifecycle(t *testing.T) {
 }
 
 func TestSCIMAuthentication(t *testing.T) {
-	service := scim.NewSCIMService()
+	// Bound so the valid-token case exercises provisioning rather than being
+	// refused for an unbound service; the bearer token stays this test's own.
+	service := newBoundService(t)
 	service.SetBearerToken("secret-scim-token-123")
 	router := service.Routes()
 
@@ -129,103 +151,40 @@ func TestSCIMAuthentication(t *testing.T) {
 	}
 }
 
-func TestSCIMGroupLifecycle(t *testing.T) {
-	service := scim.NewSCIMService()
-	service.SetBearerToken("test-bearer-token")
+// TestSCIMGroupsRequireStorage pins the fail-closed contract.
+//
+// Groups used to live in a map on the service, so this test could exercise the
+// full lifecycle with no database at all. That was the bug: group state did not
+// survive a restart and diverged between replicas. Groups are now stored in
+// scim_groups (migration 035), and a service with no repository must refuse
+// rather than serve in-memory state that quietly disappears.
+//
+// The persistence path itself is covered by
+// test/integration/scim_groups_persistence_test.go against a real database.
+func TestSCIMGroupsRequireStorage(t *testing.T) {
+	service := newBoundService(t)
 	router := service.Routes()
-	authHdr := "Bearer test-bearer-token"
 
-	// 1. Create Group
-	groupPayload := map[string]any{
-		"displayName": "Engineering Security Leads",
-		"members": []map[string]string{
-			{"value": "user-uuid-1", "display": "alice@example.com"},
-		},
-	}
-	body, _ := json.Marshal(groupPayload)
+	body, _ := json.Marshal(map[string]any{"displayName": "Engineering"})
 
-	req := httptest.NewRequest(http.MethodPost, "/Groups", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/scim+json")
-	req.Header.Set("Authorization", authHdr)
-	w := httptest.NewRecorder()
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/Groups"},
+		{http.MethodGet, "/Groups"},
+		{http.MethodGet, "/Groups/does-not-exist"},
+		{http.MethodDelete, "/Groups/does-not-exist"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/scim+json")
+		req.Header.Set("Authorization", "Bearer test-bearer-token")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
 
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201 Created for group, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var createdGroup scim.SCIMGroup
-	_ = json.NewDecoder(w.Body).Decode(&createdGroup)
-	if createdGroup.DisplayName != "Engineering Security Leads" || createdGroup.ID == "" {
-		t.Fatalf("unexpected group response: %+v", createdGroup)
-	}
-	if len(createdGroup.Members) != 1 {
-		t.Fatalf("expected 1 member, got %d", len(createdGroup.Members))
-	}
-
-	// 2. Get Group
-	reqGet := httptest.NewRequest(http.MethodGet, "/Groups/"+createdGroup.ID, nil)
-	reqGet.Header.Set("Authorization", authHdr)
-	wGet := httptest.NewRecorder()
-	router.ServeHTTP(wGet, reqGet)
-	if wGet.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", wGet.Code)
-	}
-
-	// 3. Patch Group (Add Member)
-	patchReq := scim.SCIMPatchRequest{
-		Schemas: []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
-		Operations: []scim.SCIMOperation{
-			{
-				Op:   "add",
-				Path: "members",
-				Value: []any{
-					map[string]any{"value": "user-uuid-2", "display": "bob@example.com"},
-				},
-			},
-		},
-	}
-	patchBody, _ := json.Marshal(patchReq)
-	reqPatch := httptest.NewRequest(http.MethodPatch, "/Groups/"+createdGroup.ID, bytes.NewReader(patchBody))
-	reqPatch.Header.Set("Content-Type", "application/scim+json")
-	reqPatch.Header.Set("Authorization", authHdr)
-	wPatch := httptest.NewRecorder()
-	router.ServeHTTP(wPatch, reqPatch)
-
-	if wPatch.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for group patch, got %d: %s", wPatch.Code, wPatch.Body.String())
-	}
-	var patchedGroup scim.SCIMGroup
-	_ = json.NewDecoder(wPatch.Body).Decode(&patchedGroup)
-	if len(patchedGroup.Members) != 2 {
-		t.Errorf("expected 2 members after patch, got %d", len(patchedGroup.Members))
-	}
-
-	// 4. List Groups
-	reqList := httptest.NewRequest(http.MethodGet, "/Groups", nil)
-	reqList.Header.Set("Authorization", authHdr)
-	wList := httptest.NewRecorder()
-	router.ServeHTTP(wList, reqList)
-	if wList.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for list groups, got %d", wList.Code)
-	}
-
-	// 5. Delete Group
-	reqDel := httptest.NewRequest(http.MethodDelete, "/Groups/"+createdGroup.ID, nil)
-	reqDel.Header.Set("Authorization", authHdr)
-	wDel := httptest.NewRecorder()
-	router.ServeHTTP(wDel, reqDel)
-	if wDel.Code != http.StatusNoContent {
-		t.Fatalf("expected 204 No Content, got %d", wDel.Code)
-	}
-
-	// 6. Verify 404
-	reqGetAfter := httptest.NewRequest(http.MethodGet, "/Groups/"+createdGroup.ID, nil)
-	reqGetAfter.Header.Set("Authorization", authHdr)
-	wGetAfter := httptest.NewRecorder()
-	router.ServeHTTP(wGetAfter, reqGetAfter)
-	if wGetAfter.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 Not Found after group deletion, got %d", wGetAfter.Code)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s %s: expected 503 when SCIM storage is unbound, got %d: %s",
+				tc.method, tc.path, w.Code, w.Body.String())
+		}
 	}
 }
-

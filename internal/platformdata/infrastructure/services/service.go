@@ -75,12 +75,15 @@ func (s *PullRequestsService) AggregateAndSaveDataStructure(
 		norm := strings.TrimPrefix(sug.RelevantFile, "./")
 		idx, ok := fileIndexMap[norm]
 		if !ok {
-			// If file not present, create stub file entry
+			// The file is absent from the PR, so "modified" claimed a change
+			// that did not occur. "added" marks the entry as new to this
+			// report (SARIF baselineState "new").
+			// AUDIT_REMEDIATION.md F-47.
 			stubFile := models.File{
 				ID:          uuid.NewString(),
 				Path:        sug.RelevantFile,
 				Filename:    sug.RelevantFile,
-				Status:      "modified",
+				Status:      "added",
 				Suggestions: []models.Suggestion{},
 			}
 			pr.Files = append(pr.Files, stubFile)

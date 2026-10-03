@@ -32,10 +32,10 @@ type BaseNativeTool struct {
 	ExecHandler func(ctx contracts.ToolContext, input any) (contracts.ToolResult, error)
 }
 
-func (b *BaseNativeTool) Name() string                        { return b.ToolName }
-func (b *BaseNativeTool) Description() string                 { return b.ToolDesc }
-func (b *BaseNativeTool) InputSchema() contracts.JSONSchema   { return b.Schema }
-func (b *BaseNativeTool) Strict() bool                        { return b.IsStrict }
+func (b *BaseNativeTool) Name() string                      { return b.ToolName }
+func (b *BaseNativeTool) Description() string               { return b.ToolDesc }
+func (b *BaseNativeTool) InputSchema() contracts.JSONSchema { return b.Schema }
+func (b *BaseNativeTool) Strict() bool                      { return b.IsStrict }
 func (b *BaseNativeTool) Execute(ctx contracts.ToolContext, input any) (contracts.ToolResult, error) {
 	return b.ExecHandler(ctx, input)
 }
@@ -302,14 +302,14 @@ func BuildListDirTool(rootDir string) contracts.AgentTool {
 func BuildExecTool(rootDir string) contracts.AgentTool {
 	return &BaseNativeTool{
 		ToolName: "exec",
-		ToolDesc: "Run a read-only shell command inside the sandbox. Use sparingly for ad-hoc read-only inspection (git log, cat, git diff).",
+		ToolDesc: "Run a read-only command inside the sandbox without a shell. Use sparingly for ad-hoc read-only inspection (git log, cat, git diff).",
 		IsStrict: true,
 		Schema: contracts.JSONSchema{
 			Type: "object",
 			Properties: map[string]contracts.JSONSchema{
 				"command": {
 					Type:        "string",
-					Description: "Shell command to run. Must be read-only (no writes, no network calls outside the sandbox).",
+					Description: "Command line to run without a shell. Must be read-only (no writes, no network calls outside the sandbox).",
 				},
 			},
 			Required: []string{"command"},
@@ -326,15 +326,22 @@ func BuildExecTool(rootDir string) contracts.AgentTool {
 				return contracts.ToolResult{Output: "command is required", IsError: true}, nil
 			}
 
-			// Security guard: forbid mutating / destructive commands
-			disallowedPrefixes := []string{"rm", "mv", "touch", "mkdir", "curl", "wget", "chmod", "chown", "dd", "mkfs"}
-			for _, dis := range disallowedPrefixes {
-				if strings.HasPrefix(cmdStr, dis+" ") || cmdStr == dis {
-					return contracts.ToolResult{
-						Output:  fmt.Sprintf("command disallowed in read-only sandbox: %s", dis),
-						IsError: true,
-					}, nil
-				}
+			// Security guard: allow only read-only commands, and execute them
+			// without a shell.
+			//
+			// This used to be a blocklist of destructive words checked with
+			// strings.HasPrefix, followed by `sh -c cmdStr`. Every shell
+			// metacharacter was therefore live and the blocklist was defeated by
+			// anything that merely started with an allowed word:
+			// `cat x; rm -rf /`, `echo hi && rm -rf /`, `$(rm -rf /)`.
+			// gosec G702. Now it is an allowlist of binaries plus a literal
+			// argument vector passed straight to exec, with no shell involved.
+			argv, err := validateReadOnlyCommand(cmdStr)
+			if err != nil {
+				return contracts.ToolResult{
+					Output:  fmt.Sprintf("command rejected in read-only sandbox: %v", err),
+					IsError: true,
+				}, nil
 			}
 
 			timeoutSec := 5
@@ -347,14 +354,24 @@ func BuildExecTool(rootDir string) contracts.AgentTool {
 			execCtx, cancel := context.WithTimeout(ctx.Context, time.Duration(timeoutSec)*time.Second)
 			defer cancel()
 
-			cmd := exec.CommandContext(execCtx, "sh", "-c", cmdStr)
+			// No shell: argv[0] is executed directly, so metacharacters in any
+			// argument are inert data rather than syntax.
+			// #nosec G702 -- the taint is neutralised before this line:
+			// validateReadOnlyCommand tokenises the input and admits it only if
+			// argv[0] is on commandAllowlist, argv[1:] contains no shell
+			// metacharacters, and any `git` subcommand is read-only. exec is
+			// given argv directly, so no shell parses the arguments and
+			// metacharacters cannot be syntax. gosec's taint analysis does not
+			// follow the allowlist, hence the annotation. See
+			// readonly_command.go and its tests for the bypasses it blocks.
+			cmd := exec.CommandContext(execCtx, argv[0], argv[1:]...)
 			cmd.Dir = rootDir
 
 			var outBuf, errBuf bytes.Buffer
 			cmd.Stdout = &outBuf
 			cmd.Stderr = &errBuf
 
-			err := cmd.Run()
+			err = cmd.Run()
 			if err != nil {
 				return contracts.ToolResult{
 					Output:  fmt.Sprintf("error executing command: %v\nstderr: %s", err, errBuf.String()),

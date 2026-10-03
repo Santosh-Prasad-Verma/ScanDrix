@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"github.com/google/uuid"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/scandrix/backend/internal/config"
 	"github.com/scandrix/backend/internal/cron"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/enterprise/scim"
 	"github.com/scandrix/backend/internal/integrations/pm"
 	"github.com/scandrix/backend/internal/llm"
@@ -98,7 +100,10 @@ func main() {
 
 	// Initialize Sandbox Subsystem & MicroVM Pool
 	sandboxProvider := sandbox.NewSandboxProviderFromConfig(cfg)
-	sandboxRepo := lease.NewPgSandboxLeaseRepository(dbClient.Pool)
+	// The repository takes the Client, not the raw Pool: sandbox lease work runs
+	// as a background job with no tenant, so every query must go through
+	// ExecAsSystem and carry the RLS system-worker flag.
+	sandboxRepo := lease.NewPgSandboxLeaseRepository(dbClient)
 	sandboxLeaseMgr := lease.NewSandboxLeaseManager(sandboxProvider, sandboxRepo, cfg)
 	sandboxReaper := lease.NewSandboxLeaseReaper(sandboxRepo, cfg)
 	orchestrator.SetSandboxLeaseManager(sandboxLeaseMgr)
@@ -106,8 +111,17 @@ func main() {
 	autoTicketMgr := pm.NewAutoTicketManager(repo, nil)
 	orchestrator.SetAutoTicketManager(autoTicketMgr)
 	scimService := scim.NewSCIMService(repo)
-	if cfg.JWTSecret != "" {
-		scimService.SetBearerToken(cfg.JWTSecret)
+	// A dedicated SCIM token, never the application's JWT signing secret. The
+	// secret signs sessions for every tenant, so using it as a provisioning
+	// credential would hand SCIM access to anyone who could read the config.
+	//
+	// This is only the single-tenant self-hosted fallback. The per-workspace
+	// token issued through IssueToken is authoritative and is what a
+	// multi-tenant deployment resolves against.
+	if cfg.SCIMBearerToken != "" {
+		scimService.SetBearerToken(cfg.SCIMBearerToken)
+	} else {
+		slog.Warn("SCIM_BEARER_TOKEN is not set; only per-workspace SCIM tokens will be accepted")
 	}
 
 	// ═══════════════════════════════════════════════════════════════
@@ -155,6 +169,31 @@ func main() {
 	// ═══════════════════════════════════════════════════════════════
 	// 7. MASTER ROUTER & HTTP SERVER BINDING (API routes & port listener)
 	// ═══════════════════════════════════════════════════════════════
+	// The monolithic server is the default container entrypoint, so it must
+	// enforce licensing exactly like cmd/api does. A malformed public key or an
+	// unverifiable token fails boot here rather than letting the default image
+	// run unlicensed behind its gates.
+	licenseManager, err := license.NewManagerFromEnv()
+	if err != nil {
+		slog.Error("Enterprise license configuration is invalid; refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if ent := licenseManager.Entitlement(); ent.Tier != license.TierCommunity {
+		slog.Info("Enterprise license loaded",
+			"tier", string(ent.Tier),
+			"seats", ent.SeatLimit(),
+			"repos", ent.RepoLimit(),
+			"expires_at", ent.ExpiresAt.UTC().Format(time.RFC3339),
+			"key_id", entKeyID(licenseManager),
+			"rotation_ring", licenseManager.VerificationKeyIDs())
+	}
+
+	// Same tenant binding as cmd/api: without it the SCIM seat-quota check is
+	// skipped and provisioning runs past the licensed seat count.
+	if scimWS := scim.BindTenant(ctx, repo, scimService, license.NewResolver(licenseManager, database.NewLicenseStore(repo), repo)); scimWS != uuid.Nil {
+		slog.Info("SCIM provisioning bound to workspace", "workspace_id", scimWS.String())
+	}
+
 	r := api.BuildRouter(api.RouterConfig{
 		Repo:                     repo,
 		AuthService:              authenticator,
@@ -163,6 +202,7 @@ func main() {
 		Evaluator:                evaluator,
 		SCIMService:              scimService,
 		DeviceFlow:               deviceFlow,
+		LicenseManager:           licenseManager,
 		OAuthService:             oauthService,
 		Mailer:                   emailSender,
 		BillingService:           billingService,
@@ -227,4 +267,18 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+}
+
+// entKeyID reports the signing key ID of the active license for the startup
+// log, so an operator can confirm which key of a rotation ring is in force
+// without inspecting the token. It never logs key material.
+func entKeyID(m *license.LicenseManager) string {
+	if m == nil {
+		return ""
+	}
+	active := m.GetActiveLicense()
+	if active == nil {
+		return ""
+	}
+	return active.KeyID
 }

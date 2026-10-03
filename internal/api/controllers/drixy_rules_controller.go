@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/rules/drixy/application/usecases"
 	"github.com/scandrix/backend/internal/rules/drixy/domain/contracts"
@@ -135,7 +136,6 @@ func (c *DrixyRulesController) getOrgAndUserInfo(r *http.Request) (string, *cont
 
 	return orgID, userInfo
 }
-
 
 func (c *DrixyRulesController) jsonResponse(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -310,7 +310,6 @@ func (c *DrixyRulesController) handleFindLibraryDrixyRules(w http.ResponseWriter
 	c.jsonResponse(w, http.StatusOK, res)
 }
 
-
 func (c *DrixyRulesController) handleFindLibraryDrixyRulesWithFeedback(w http.ResponseWriter, r *http.Request) {
 	_, userInfo := c.getOrgAndUserInfo(r)
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -325,7 +324,17 @@ func (c *DrixyRulesController) handleFindLibraryDrixyRulesWithFeedback(w http.Re
 		Severity: r.URL.Query().Get("severity"),
 	}
 
-	res, err := c.useCases.FindLibraryDrixyRulesWithFeedbackUC.Execute(r.Context(), filterDTO, userInfo.UserID)
+	// The workspace comes from the verified session, never the request, and
+	// selects the RLS tenant context for the feedback read
+	// (AUDIT_REMEDIATION.md F-37).
+	feedbackWorkspace, wsErr := auth.WorkspaceFromContext(r.Context())
+	if wsErr != nil || feedbackWorkspace == uuid.Nil {
+		c.jsonError(w, http.StatusUnauthorized, "missing workspace context")
+		return
+	}
+
+	res, err := c.useCases.FindLibraryDrixyRulesWithFeedbackUC.Execute(
+		r.Context(), feedbackWorkspace.String(), filterDTO, userInfo.UserID)
 	if err != nil {
 		c.jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -623,7 +632,7 @@ func (c *DrixyRulesController) handleUpdateGlobalSourceRepositories(w http.Respo
 	}
 
 	var body struct {
-		TeamID       string                                 `json:"teamId"`
+		TeamID       string                                   `json:"teamId"`
 		Repositories []interfaces.GlobalRulesSourceRepository `json:"repositories"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -822,4 +831,3 @@ func (c *DrixyRulesController) handleCountImportedDrixyRules(w http.ResponseWrit
 
 	c.jsonResponse(w, http.StatusOK, counts)
 }
-

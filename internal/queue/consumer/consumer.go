@@ -2,11 +2,13 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/queue/relay"
 	"github.com/scandrix/backend/pkg/models"
 )
@@ -85,7 +87,28 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 			}
 		}
 
-		// 3. Check if retries exhausted
+		// 3. A deliberate refusal is permanent: ack it and record why, instead
+		// of spending the retry budget on a decision that cannot change.
+		var skipErr *skipError
+		if errors.As(err, &skipErr) || errors.Is(err, license.ErrExecutionRefused) {
+			if c.inbox != nil {
+				_ = c.inbox.MarkCompleted(ctx, taskIDStr, c.workerID)
+			}
+			msg := err.Error()
+			if skipErr != nil {
+				msg = skipErr.Error()
+			}
+			return TaskExecutionResult{
+				TaskID:       task.TaskID,
+				Status:       TaskStatusSkipped,
+				AttemptCount: task.AttemptCount,
+				Duration:     time.Since(start),
+				ErrorMsg:     msg,
+				Timestamp:    time.Now().UTC(),
+			}
+		}
+
+		// 4. Check if retries exhausted
 		if task.AttemptCount >= c.cfg.MaxRetries {
 			c.mu.Lock()
 			c.deadLetters = append(c.deadLetters, task)
@@ -135,6 +158,24 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 }
 
 // ═══════════════════════════════════════════════════════════════
+// skipError marks an error as a deliberate refusal rather than a failure, so
+// the consumer acks instead of retrying. The license package produces these via
+// ExecutionDecision.RefusalError.
+type skipError struct{ err error }
+
+func (e *skipError) Error() string { return e.err.Error() }
+func (e *skipError) Unwrap() error { return e.err }
+
+// AsSkip reports whether err is a deliberate refusal, returning the underlying
+// error when it is.
+func AsSkip(err error) (error, bool) {
+	var se *skipError
+	if errors.As(err, &se) {
+		return se.err, true
+	}
+	return nil, false
+}
+
 // 4. DEAD-LETTER AUDIT & REDRIVE REPOSITORY (DLQ payload inspection)
 // ═══════════════════════════════════════════════════════════════
 

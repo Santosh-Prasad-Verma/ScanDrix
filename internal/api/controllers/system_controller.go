@@ -15,14 +15,34 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/scandrix/backend/internal/netguard"
 )
 
 // SystemController provides system introspection, build information, and cluster status.
-type SystemController struct{}
+// SystemStatusRepository is the subset of the repository needed to report
+// real dependency health. The previous implementation had no dependencies at
+// all and therefore could not check anything it claimed.
+type SystemStatusRepository interface {
+	Ping(ctx context.Context) error
+}
+
+type SystemController struct {
+	repo     SystemStatusRepository
+	bootTime time.Time
+	version  string
+}
 
 // NewSystemController creates the system controller.
-func NewSystemController() *SystemController {
-	return &SystemController{}
+func NewSystemController(repo SystemStatusRepository) *SystemController {
+	version := os.Getenv("RELEASE_VERSION")
+	if version == "" {
+		version = "dev"
+	}
+	return &SystemController{
+		repo:     repo,
+		bootTime: time.Now(),
+		version:  version,
+	}
 }
 
 // Routes mounts the /system endpoints.
@@ -146,16 +166,25 @@ func fetchLatestRelease(ctx context.Context) (latest, releaseURL string, err err
 		repo = "scandrix/scandrix"
 	}
 
+	// The host is fixed, but `repo` is interpolated into the path from the
+	// environment. Validating the whole URL means the request cannot be aimed
+	// elsewhere even if the format changes later, and it rejects a repo value
+	// carrying path traversal or query injection.
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=20", repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	parsed, err := netguard.Validate(apiURL, netguard.Options{AllowedHosts: []string{"api.github.com"}})
+	if err != nil {
+		return "", "", fmt.Errorf("refusing update check URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil) // #nosec G704 -- apiURL is validated by netguard.Validate with an api.github.com host allowlist
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "scandrix-self-hosted-update-check")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	client := netguard.NewClient(5, netguard.Options{AllowedHosts: []string{"api.github.com"}})
+	resp, err := client.Do(req) // #nosec G704 -- client is netguard.NewClient, which revalidates every redirect hop
 	if err != nil {
 		return "", "", err
 	}
@@ -245,22 +274,35 @@ func compareSemver(a, b *[3]int) int {
 	return a[2] - b[2]
 }
 
-func (c *SystemController) handleGetInfo(w http.ResponseWriter, r *http.Request) {
-	buildSHA := os.Getenv("SCANDRIX_BUILD_SHA")
-	if buildSHA == "" {
-		buildSHA = "dev-head"
+// resolveEnvironment reports the deployment environment, or "unknown" when it
+// is not configured. It previously defaulted to "production", so any dev,
+// staging or QA instance without SCANDRIX_ENV publicly announced itself as
+// production, which misdirects support triage and incident response
+// (AUDIT_REMEDIATION.md F-42).
+func resolveEnvironment() string {
+	for _, key := range []string{"SCANDRIX_ENV", "ENVIRONMENT", "APP_ENV"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
 	}
-	environment := os.Getenv("SCANDRIX_ENV")
-	if environment == "" {
-		environment = "production"
-	}
+	return "unknown"
+}
 
+// resolveBuildSHA reports the build commit, or "unknown" when it is not set.
+func resolveBuildSHA() string {
+	if v := strings.TrimSpace(os.Getenv("SCANDRIX_BUILD_SHA")); v != "" {
+		return v
+	}
+	return "unknown"
+}
+
+func (c *SystemController) handleGetInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"service":     "scandrix-api",
-		"version":     "2.5.0",
-		"commit":      buildSHA,
-		"environment": environment,
+		"version":     c.version,
+		"commit":      resolveBuildSHA(),
+		"environment": resolveEnvironment(),
 		"goVersion":   runtime.Version(),
 		"numCPU":      runtime.NumCPU(),
 		"arch":        runtime.GOARCH,
@@ -272,19 +314,42 @@ func (c *SystemController) handleGetInfo(w http.ResponseWriter, r *http.Request)
 func (c *SystemController) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"version": "2.5.0",
-		"build":   "2026.09.10",
-		"status":  "stable",
+		"version": c.version,
+		"commit":  resolveBuildSHA(),
 	})
 }
 
+// handleGetStatus reports observed dependency health. Every field is measured;
+// nothing here is a constant. A failed probe returns 503 so load balancers and
+// uptime monitors see the outage instead of a green dashboard.
 func (c *SystemController) handleGetStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	database := "not_configured"
+	code := http.StatusOK
+	if c.repo != nil {
+		if err := c.repo.Ping(ctx); err != nil {
+			database = "down"
+			code = http.StatusServiceUnavailable
+		} else {
+			database = "up"
+		}
+	}
+
+	overall := "healthy"
+	if code != http.StatusOK {
+		overall = "unhealthy"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    "healthy",
-		"uptime":    "99.99%",
-		"workers":   "connected",
-		"database":  "connected",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"status":        overall,
+		"service":       "scandrix-api",
+		"version":       c.version,
+		"database":      database,
+		"uptimeSeconds": int(time.Since(c.bootTime).Seconds()),
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 	})
 }

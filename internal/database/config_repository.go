@@ -18,6 +18,38 @@ import (
 )
 
 // ListTrackedRepositories lists all monitored repositories for a workspace.
+// GetTrackedRepositoryByNamespace resolves a provider + namespace to its
+// tracked repository row.
+//
+// The review pipeline needs the repository id, not just the workspace: the
+// pull_request_reviews.repository_id foreign key points at tracked_repositories,
+// so a review inserted with a nil repository id violates the constraint and no
+// review row is ever persisted.
+func (r *Repository) GetTrackedRepositoryByNamespace(ctx context.Context, provider models.SCMProvider, namespacePath string) (*models.TrackedRepository, error) {
+	if r == nil || r.client == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	query := `
+		SELECT id, workspace_id, provider, external_id, namespace_path, default_branch, is_active, created_at, updated_at
+		FROM tracked_repositories
+		WHERE provider = $1 AND namespace_path = $2 AND is_active = TRUE
+		LIMIT 1;
+	`
+	var tr models.TrackedRepository
+	// Reverse lookup with no tenant in hand: this is what supplies the tenant.
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, string(provider), namespacePath).Scan(
+			&tr.ID, &tr.WorkspaceID, &tr.Provider, &tr.ExternalID, &tr.NamespacePath,
+			&tr.DefaultBranch, &tr.IsActive, &tr.CreatedAt, &tr.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("no tracked repository for %s/%s: %w", provider, namespacePath, err)
+	}
+	return &tr, nil
+}
+
 func (r *Repository) ListTrackedRepositories(ctx context.Context, wsID uuid.UUID) ([]models.TrackedRepository, error) {
 	if r == nil || r.client == nil {
 		return []models.TrackedRepository{}, nil
@@ -56,7 +88,6 @@ func (r *Repository) ListTrackedRepositories(ctx context.Context, wsID uuid.UUID
 	}
 	return repos, nil
 }
-
 
 // TrackRepository registers or updates a monitored repository.
 func (r *Repository) TrackRepository(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, externalID, namespacePath, defaultBranch string) (*models.TrackedRepository, error) {
@@ -100,7 +131,6 @@ func (r *Repository) TrackRepository(ctx context.Context, wsID uuid.UUID, provid
 	return &res, nil
 }
 
-
 // GetWorkspaceParameters loads the review and organization parameters JSON payloads.
 func (r *Repository) GetWorkspaceParameters(ctx context.Context, wsID uuid.UUID) (reviewParams, orgParams []byte, err error) {
 	if r == nil || r.client == nil {
@@ -121,7 +151,6 @@ func (r *Repository) GetWorkspaceParameters(ctx context.Context, wsID uuid.UUID)
 	return reviewParams, orgParams, nil
 }
 
-
 // UpdateWorkspaceReviewParameters stores updated review settings.
 func (r *Repository) UpdateWorkspaceReviewParameters(ctx context.Context, wsID uuid.UUID, reviewParams []byte) error {
 	if r == nil || r.client == nil {
@@ -140,7 +169,6 @@ func (r *Repository) UpdateWorkspaceReviewParameters(ctx context.Context, wsID u
 	})
 }
 
-
 // UpdateWorkspaceOrgParameters stores updated organizational governance thresholds.
 func (r *Repository) UpdateWorkspaceOrgParameters(ctx context.Context, wsID uuid.UUID, orgParams []byte) error {
 	if r == nil || r.client == nil {
@@ -158,7 +186,6 @@ func (r *Repository) UpdateWorkspaceOrgParameters(ctx context.Context, wsID uuid
 		return err
 	})
 }
-
 
 // ListNotificationChannels retrieves configured alert destinations.
 func (r *Repository) ListNotificationChannels(ctx context.Context, wsID uuid.UUID) ([]models.NotificationChannel, error) {
@@ -195,7 +222,6 @@ func (r *Repository) ListNotificationChannels(ctx context.Context, wsID uuid.UUI
 	return channels, nil
 }
 
-
 // CreateNotificationChannel creates a new alert destination.
 func (r *Repository) CreateNotificationChannel(ctx context.Context, wsID uuid.UUID, chType, target string, severity models.FindingSeverity) (*models.NotificationChannel, error) {
 	if r == nil || r.client == nil {
@@ -228,7 +254,6 @@ func (r *Repository) CreateNotificationChannel(ctx context.Context, wsID uuid.UU
 	}
 	return &res, nil
 }
-
 
 // ListIntegrationConnections retrieves external SCM connections for the workspace.
 func (r *Repository) ListIntegrationConnections(ctx context.Context, wsID uuid.UUID) ([]models.IntegrationConnection, error) {
@@ -272,7 +297,6 @@ func (r *Repository) ListIntegrationConnections(ctx context.Context, wsID uuid.U
 	return conns, nil
 }
 
-
 // GetIntegrationConnection returns an active SCM connection by provider with decrypted token.
 func (r *Repository) GetIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) (*models.IntegrationConnection, error) {
 	if r == nil || r.client == nil {
@@ -302,7 +326,6 @@ func (r *Repository) GetIntegrationConnection(ctx context.Context, wsID uuid.UUI
 	return &c, nil
 }
 
-
 // DeleteIntegrationConnection removes an SCM connection for a workspace.
 func (r *Repository) DeleteIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) error {
 	if r == nil || r.client == nil {
@@ -315,7 +338,6 @@ func (r *Repository) DeleteIntegrationConnection(ctx context.Context, wsID uuid.
 		return err
 	})
 }
-
 
 // UntrackAllRepositories removes tracked repositories for a provider in a workspace.
 func (r *Repository) UntrackAllRepositories(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) error {
@@ -330,7 +352,6 @@ func (r *Repository) UntrackAllRepositories(ctx context.Context, wsID uuid.UUID,
 	})
 }
 
-
 // UpdateIntegrationRepoCount updates the tracked repository count on the active integration.
 func (r *Repository) UpdateIntegrationRepoCount(ctx context.Context, wsID uuid.UUID, count int) error {
 	if r == nil || r.client == nil {
@@ -344,12 +365,10 @@ func (r *Repository) UpdateIntegrationRepoCount(ctx context.Context, wsID uuid.U
 	})
 }
 
-
 // UpsertIntegrationConnection stores or updates an SCM connection with encrypted credentials.
 func (r *Repository) UpsertIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenPlain string, isConnected bool, repoCount int) error {
 	return r.UpsertIntegrationConnectionWithSecret(ctx, wsID, provider, accountName, tokenPlain, "", isConnected, repoCount)
 }
-
 
 // UpsertIntegrationConnectionWithSecret stores or updates an SCM connection with encrypted credentials and optional webhook secret.
 func (r *Repository) UpsertIntegrationConnectionWithSecret(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenPlain, secretPlain string, isConnected bool, repoCount int) error {
@@ -410,7 +429,6 @@ func (r *Repository) UpsertIntegrationConnectionWithSecret(ctx context.Context, 
 		return err
 	})
 }
-
 
 // GetDecryptedIntegrationToken retrieves and decrypts the stored integration token for a provider.
 func (r *Repository) GetDecryptedIntegrationToken(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) (string, error) {
@@ -579,5 +597,3 @@ func (r *Repository) SetGlobalParameter(ctx context.Context, key string, val []b
 		return err
 	})
 }
-
-

@@ -6,10 +6,10 @@ package engine
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/scandrix/backend/internal/pathguard"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -25,12 +25,14 @@ func CanApplyFix(targetDir string, finding models.CodeFinding) bool {
 	if finding.FilePath == "" || strings.TrimSpace(finding.SuggestedDiff) == "" {
 		return false
 	}
-	fullPath := finding.FilePath
-	if !filepath.IsAbs(fullPath) {
-		if targetDir == "" {
-			targetDir = "."
-		}
-		fullPath = filepath.Join(targetDir, fullPath)
+	if targetDir == "" {
+		targetDir = "."
+	}
+	// finding.FilePath comes from review output, i.e. ultimately from a model,
+	// so it is confined to the repository before being stat'd.
+	fullPath, pathErr := pathguard.ResolvePath(targetDir, finding.FilePath)
+	if pathErr != nil {
+		return false
 	}
 	info, err := os.Stat(fullPath)
 	return err == nil && !info.IsDir()
@@ -95,9 +97,11 @@ func ApplyBatchFixes(targetDir string, findings []models.CodeFinding) (*BatchFix
 
 	// 2. Process each file independently
 	for relPath, list := range fileMap {
-		fullPath := relPath
-		if !filepath.IsAbs(fullPath) {
-			fullPath = filepath.Join(targetDir, relPath)
+		fullPath, pathErr := pathguard.ResolvePath(targetDir, relPath)
+		if pathErr != nil {
+			res.Failed += len(list)
+			res.Details = append(res.Details, fmt.Sprintf("Refusing %s: %v", relPath, pathErr))
+			continue
 		}
 
 		data, err := os.ReadFile(fullPath)
@@ -152,7 +156,7 @@ func ApplyBatchFixes(targetDir string, findings []models.CodeFinding) (*BatchFix
 		}
 
 		output := strings.Join(lines, "\n")
-		if err := os.WriteFile(fullPath, []byte(output), mode); err != nil {
+		if err := os.WriteFile(fullPath, []byte(output), mode); err != nil { // #nosec G703 -- fullPath comes from pathguard.ResolvePath against targetDir
 			res.Failed += len(list)
 			res.Details = append(res.Details, fmt.Sprintf("Failed writing %s: %v", relPath, err))
 			continue

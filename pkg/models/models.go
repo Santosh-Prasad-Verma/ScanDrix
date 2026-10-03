@@ -356,34 +356,41 @@ type BillingTransaction struct {
 
 // PlanConfiguration defines database-driven pricing, quotas, models and features.
 type PlanConfiguration struct {
-	Tier                 string    `json:"tier" db:"tier"`
-	DisplayName          string    `json:"display_name" db:"display_name"`
-	AmountINR            int64     `json:"amount_inr" db:"amount_inr"`
-	AmountUSD            int64     `json:"amount_usd" db:"amount_usd"`
-	MonthlyTokens        int64     `json:"monthly_tokens" db:"monthly_tokens"`
-	BurstLimitPerMin     int64     `json:"burst_limit_per_min" db:"burst_limit_per_min"`
-	MaxSeats             int       `json:"max_seats" db:"max_seats"`
-	MaxRepositories      int       `json:"max_repositories" db:"max_repositories"`
-	MaxConcurrentReviews int       `json:"max_concurrent_reviews" db:"max_concurrent_reviews"`
-	BYOKAllowed          bool      `json:"byok_allowed" db:"byok_allowed"`
-	AllocatedModels      []string  `json:"allocated_models"`
-	FeaturesEnabled      []string  `json:"features_enabled"`
-	CreatedAt            time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at" db:"updated_at"`
+	Tier                 string `json:"tier" db:"tier"`
+	DisplayName          string `json:"display_name" db:"display_name"`
+	AmountINR            int64  `json:"amount_inr" db:"amount_inr"`
+	AmountUSD            int64  `json:"amount_usd" db:"amount_usd"`
+	MonthlyTokens        int64  `json:"monthly_tokens" db:"monthly_tokens"`
+	BurstLimitPerMin     int64  `json:"burst_limit_per_min" db:"burst_limit_per_min"`
+	MaxSeats             int    `json:"max_seats" db:"max_seats"`
+	MaxRepositories      int    `json:"max_repositories" db:"max_repositories"`
+	MaxConcurrentReviews int    `json:"max_concurrent_reviews" db:"max_concurrent_reviews"`
+	BYOKAllowed          bool   `json:"byok_allowed" db:"byok_allowed"`
+	// SortOrder is the explicit ascending display order for public pricing
+	// surfaces. It is NOT derived from AmountINR: a discount or a currency
+	// re-denomination must never reorder the pricing table.
+	SortOrder int `json:"sort_order" db:"sort_order"`
+	// SelfServe is false for tiers that cannot be bought through checkout and
+	// must be quoted instead (Enterprise).
+	SelfServe       bool      `json:"self_serve" db:"self_serve"`
+	AllocatedModels []string  `json:"allocated_models"`
+	FeaturesEnabled []string  `json:"features_enabled"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // WorkspacePlanDetails holds real-time plan status and database-aggregated token usage.
 type WorkspacePlanDetails struct {
-	WorkspaceID        uuid.UUID            `json:"workspace_id"`
-	PlanTier           string               `json:"plan_tier"`
-	OrganizationName   string               `json:"organization_name"`
-	TotalSeats         int                  `json:"total_seats"`
-	AllocatedSeats     int                  `json:"allocated_seats"`
-	ExpiresAt          time.Time            `json:"expires_at"`
-	MonthlyTokenLimit  int64                `json:"monthly_token_limit"`
-	MonthlyTokensUsed  int64                `json:"monthly_tokens_used"`
-	BurstLimitPerMin   int64                `json:"burst_limit_per_min"`
-	BurstTokensUsed    int64                `json:"burst_tokens_used"`
+	WorkspaceID          uuid.UUID            `json:"workspace_id"`
+	PlanTier             string               `json:"plan_tier"`
+	OrganizationName     string               `json:"organization_name"`
+	TotalSeats           int                  `json:"total_seats"`
+	AllocatedSeats       int                  `json:"allocated_seats"`
+	ExpiresAt            time.Time            `json:"expires_at"`
+	MonthlyTokenLimit    int64                `json:"monthly_token_limit"`
+	MonthlyTokensUsed    int64                `json:"monthly_tokens_used"`
+	BurstLimitPerMin     int64                `json:"burst_limit_per_min"`
+	BurstTokensUsed      int64                `json:"burst_tokens_used"`
 	AllocatedModels      []string             `json:"allocated_models"`
 	FeaturesEnabled      []string             `json:"features_enabled"`
 	MaxConcurrentReviews int                  `json:"max_concurrent_reviews"`
@@ -398,14 +405,26 @@ type WorkspacePlanDetails struct {
 // ═══════════════════════════════════════════════════════════════
 
 // CockpitMetrics provides real aggregated executive security and engineering KPIs.
+// CockpitMetrics represents executive security dashboard stats.
+//
+// In compliance with AGENTS.md Rule 2.7, a metric is either computed from real
+// data or absent. PassRatePercentage is a *float64 precisely so a consumer
+// cannot mistake "no reviews yet" for "a perfect score" — the previous value
+// type defaulted to 100.0 for an empty workspace and on database errors
+// (AUDIT_REMEDIATION.md F-07). Unavailable carries the reason, using the
+// documented codes: no_data_source, no_defined_formula, insufficient_data.
 type CockpitMetrics struct {
-	TotalReviews       int     `json:"total_reviews"`
-	TotalFindings      int     `json:"total_findings"`
-	CriticalFindings   int     `json:"critical_findings"`
-	HighFindings       int     `json:"high_findings"`
-	PassRatePercentage float64 `json:"pass_rate_percentage"`
-	ActiveRepositories int     `json:"active_repositories"`
-	TotalDevelopers    int     `json:"total_developers"`
+	TotalReviews       int      `json:"total_reviews"`
+	TotalFindings      int      `json:"total_findings"`
+	CriticalFindings   int      `json:"critical_findings"`
+	HighFindings       int      `json:"high_findings"`
+	PassRatePercentage *float64 `json:"pass_rate_percentage"`
+	ActiveRepositories int      `json:"active_repositories"`
+	TotalDevelopers    int      `json:"total_developers"`
+
+	// Unavailable lists, by field name, the metrics that could not be computed
+	// and why. Empty means every metric is real.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 // TeamCLIKey represents an active or revoked CLI API key in PostgreSQL.
@@ -472,26 +491,29 @@ type PullRequestExecutionFilter struct {
 
 // EnrichedPullRequestExecution represents an enriched PR review run.
 type EnrichedPullRequestExecution struct {
-	UUID               uuid.UUID      `json:"uuid"`
-	RepositoryID       string         `json:"repository_id"`
-	RepositoryName     string         `json:"repository_name"`
-	PullRequestNumber  int            `json:"pull_request_number"`
-	PullRequestTitle   string         `json:"pull_request_title"`
-	Author             string         `json:"author"`
-	Status             string         `json:"status"` // "success", "error", "in_progress", etc.
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-	ExecutionTimeMs    int64          `json:"execution_time_ms"`
-	SuggestionsCount   int            `json:"suggestions_count"`
-	CriticalCount      int            `json:"critical_count"`
-	HighCount          int            `json:"high_count"`
-	MediumCount        int            `json:"medium_count"`
-	LowCount           int            `json:"low_count"`
-	NeedsAttention     bool           `json:"needs_attention"`
-	HasSentSuggestions bool           `json:"has_sent_suggestions"`
-	HeadSHA            string         `json:"head_sha,omitempty"`
-	BaseSHA            string         `json:"base_sha,omitempty"`
-	Findings           []CodeFinding  `json:"findings,omitempty"`
+	UUID              uuid.UUID `json:"uuid"`
+	RepositoryID      string    `json:"repository_id"`
+	RepositoryName    string    `json:"repository_name"`
+	PullRequestNumber int       `json:"pull_request_number"`
+	PullRequestTitle  string    `json:"pull_request_title"`
+	Author            string    `json:"author"`
+	Status            string    `json:"status"` // "success", "error", "in_progress", etc.
+	CreatedAt         time.Time `json:"created_at"`
+	// CompletedAt is null while a review is still in flight. The table has no
+	// updated_at column, and completed_at was previously being scanned into this
+	// slot, which made every unfinished review fail to load.
+	CompletedAt        *time.Time    `json:"completed_at,omitempty"`
+	ExecutionTimeMs    int64         `json:"execution_time_ms"`
+	SuggestionsCount   int           `json:"suggestions_count"`
+	CriticalCount      int           `json:"critical_count"`
+	HighCount          int           `json:"high_count"`
+	MediumCount        int           `json:"medium_count"`
+	LowCount           int           `json:"low_count"`
+	NeedsAttention     bool          `json:"needs_attention"`
+	HasSentSuggestions bool          `json:"has_sent_suggestions"`
+	HeadSHA            string        `json:"head_sha,omitempty"`
+	BaseSHA            string        `json:"base_sha,omitempty"`
+	Findings           []CodeFinding `json:"findings,omitempty"`
 }
 
 // PaginatedEnrichedPullRequests represents the paginated API response.
@@ -591,11 +613,9 @@ type SpendLimitEvaluation struct {
 
 // ModelPriceInfo represents per-token price resolution.
 type ModelPriceInfo struct {
-	Provider       string  `json:"provider"`
-	Model          string  `json:"model"`
-	InputPrice1M   float64 `json:"input_price_1m"`
-	OutputPrice1M  float64 `json:"output_price_1m"`
-	CachedInput1M  float64 `json:"cached_input_1m"`
+	Provider      string  `json:"provider"`
+	Model         string  `json:"model"`
+	InputPrice1M  float64 `json:"input_price_1m"`
+	OutputPrice1M float64 `json:"output_price_1m"`
+	CachedInput1M float64 `json:"cached_input_1m"`
 }
-
-

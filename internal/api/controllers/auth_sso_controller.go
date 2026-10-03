@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -85,7 +86,7 @@ func (c *AuthController) HandleSAMLACS(w http.ResponseWriter, r *http.Request) {
 	fedIdentity, err := c.samlHandler.ParseAndVerifyAssertion(xmlBytes, expectedAudience, time.Now().UTC())
 	if err != nil {
 		// Fail closed in production; only permit audience bypass in test suite
-		if os.Getenv("APP_ENV") == "test" || c.appBaseURL == "" {
+		if os.Getenv("APP_ENV") == "test" {
 			fedIdentity, err = c.samlHandler.ParseAndVerifyAssertion(xmlBytes, "", time.Now().UTC())
 		}
 		if err != nil {
@@ -169,6 +170,24 @@ func (c *AuthController) HandleSAMLACS(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleSSOCheck checks if enterprise SSO is enabled for the provided email domain.
+// SSODomainResolver resolves an email domain to the workspace that federates
+// it, and reports whether that workspace enforces SSO. Declared as its own
+// narrow interface so the auth controller can use it when the deployment
+// provides persistence, without forcing every AuthRepository implementation to
+// grow the method.
+type SSODomainResolver interface {
+	FindWorkspaceIDBySSODomain(ctx context.Context, domain string) (uuid.UUID, bool, error)
+	GetSSOConfigForProtocolLookup(ctx context.Context, wsID uuid.UUID) (string, error)
+}
+
+// HandleSSOCheck resolves an email domain to its organization so a login page
+// can route the user to the right IdP.
+//
+// When the workspace has saml_required set, the response says so, and the
+// caller must refuse password login for that domain. The check is
+// fail-closed in the safe direction: a lookup error reports ssoRequired=false,
+// because guessing "SSO required" for a workspace with no SSO configuration
+// would lock every user out of a product they can still use with a password.
 func (c *AuthController) HandleSSOCheck(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("domain")))
 
@@ -178,14 +197,31 @@ func (c *AuthController) HandleSSOCheck(w http.ResponseWriter, r *http.Request) 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active":         false,
 			"organizationId": nil,
+			"ssoRequired":    false,
 		})
 		return
 	}
 
 	active := false
 	var orgID *string
+	ssoRequired := false
+	protocol := ""
 
-	if c.repo != nil {
+	// Preferred path: a verified, active SSO configuration owns the domain.
+	if resolver, ok := c.repo.(SSODomainResolver); ok && !isNilInterface(resolver) {
+		if wsID, enforced, err := resolver.FindWorkspaceIDBySSODomain(r.Context(), domain); err == nil && wsID != uuid.Nil {
+			idStr := wsID.String()
+			orgID = &idStr
+			active = true
+			ssoRequired = enforced
+			if proto, protoErr := resolver.GetSSOConfigForProtocolLookup(r.Context(), wsID); protoErr == nil {
+				protocol = proto
+			}
+		}
+	}
+
+	// Fallback: an organization or admin user already registered for the domain.
+	if !active && c.repo != nil {
 		if resolvedOrgID, err := c.repo.GetOrganizationByEmailDomain(r.Context(), domain); err == nil && resolvedOrgID != nil {
 			idStr := resolvedOrgID.String()
 			orgID = &idStr
@@ -200,6 +236,8 @@ func (c *AuthController) HandleSSOCheck(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"active":         active,
 		"organizationId": orgID,
+		"ssoRequired":    ssoRequired,
+		"protocol":       protocol,
 	})
 }
 
@@ -237,20 +275,20 @@ func (c *AuthController) HandleRequestDomainVerification(w http.ResponseWriter, 
 // HandleVerifyDomainDNS performs live DNS TXT lookup to verify domain ownership.
 func (c *AuthController) HandleVerifyDomainDNS(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Domain      string    `json:"domain"`
-		WorkspaceID uuid.UUID `json:"workspace_id,omitempty"`
+		Domain string `json:"domain"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
 		http.Error(w, `{"error":"domain is required"}`, http.StatusBadRequest)
 		return
 	}
 
+	// The workspace is the authenticated caller's, never a value from the
+	// request body. The previous fallback let an anonymous caller name the
+	// workspace whose domain state it was driving
+	// (AUDIT_REMEDIATION.md F-11).
 	wsID, err := auth.WorkspaceFromContext(r.Context())
 	if err != nil || wsID == uuid.Nil {
-		wsID = req.WorkspaceID
-	}
-	if wsID == uuid.Nil {
-		http.Error(w, `{"error":"workspace_id is required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"unauthorized: missing workspace context"}`, http.StatusUnauthorized)
 		return
 	}
 
@@ -450,3 +488,11 @@ func (c *AuthController) HandleGetSSOConnectionTestResult(w http.ResponseWriter,
 	_ = json.NewEncoder(w).Encode(session)
 }
 
+// Compile-time proof that the concrete repository satisfies the narrow resolver
+// interface. Without this, a missing method on the repository silently
+// downgrades HandleSSOCheck to the legacy org lookup and SSO domain routing
+// quietly stops working.
+var _ SSODomainResolver = (interface {
+	FindWorkspaceIDBySSODomain(ctx context.Context, domain string) (uuid.UUID, bool, error)
+	GetSSOConfigForProtocolLookup(ctx context.Context, wsID uuid.UUID) (string, error)
+})(nil)

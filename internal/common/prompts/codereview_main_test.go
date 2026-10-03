@@ -302,7 +302,7 @@ func TestDrixyMemoryResolutionAndSimplicity(t *testing.T) {
 	}
 
 	simpSys := PromptCheckSuggestionSimplicitySystem()
-	if !strings.Contains(simpSys, "determine if it is \"simple\" and safe to apply") {
+	if !strings.Contains(simpSys, "safe to apply as an isolated, atomic patch") {
 		t.Errorf("Expected simplicity check system prompt")
 	}
 

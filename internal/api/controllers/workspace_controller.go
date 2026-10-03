@@ -109,14 +109,24 @@ func (c *WorkspaceController) handleGetCockpitMetrics(w http.ResponseWriter, r *
 		return
 	}
 
-	metrics := &models.CockpitMetrics{
-		PassRatePercentage: 100.0,
+	// Fail closed. This handler previously pre-seeded a 100.0 pass rate and
+	// then ignored both a nil repository and a query error, so a database
+	// outage was reported to the customer as a flawless security posture
+	// (AUDIT_REMEDIATION.md F-07).
+	if c.repo == nil {
+		http.Error(w, `{"error":"cockpit metrics unavailable: no data source"}`, http.StatusServiceUnavailable)
+		return
 	}
-	if c.repo != nil {
-		m, err := c.repo.GetCockpitMetrics(r.Context(), wsID)
-		if err == nil && m != nil {
-			metrics = m
-		}
+
+	metrics, err := c.repo.GetCockpitMetrics(r.Context(), wsID)
+	if err != nil {
+		slog.Error("cockpit.metrics.query_failed", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"cockpit metrics unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if metrics == nil {
+		http.Error(w, `{"error":"cockpit metrics unavailable"}`, http.StatusServiceUnavailable)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -128,6 +138,7 @@ func (c *WorkspaceController) handleGetCockpitMetrics(w http.ResponseWriter, r *
 		PassRatePercentage: metrics.PassRatePercentage,
 		ActiveRepositories: metrics.ActiveRepositories,
 		TotalDevelopers:    metrics.TotalDevelopers,
+		Unavailable:        metrics.Unavailable,
 	})
 }
 

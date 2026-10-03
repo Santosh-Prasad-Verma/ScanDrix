@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/scandrix/backend/internal/pathguard"
 )
 
 const (
@@ -228,7 +230,7 @@ func removeHook(hooksDir string, hookName string) (bool, error) {
 	if trimmed == "#!/bin/sh" || trimmed == "" {
 		_ = os.Remove(hookPath)
 	} else {
-		if err := os.WriteFile(hookPath, []byte(remaining), 0755); err != nil {
+		if err := os.WriteFile(hookPath, []byte(remaining), 0755); err != nil { // #nosec G703 -- hookPath is confined by pathguard.Resolve at the top of removeLegacyHook
 			return false, err
 		}
 	}
@@ -237,7 +239,11 @@ func removeHook(hooksDir string, hookName string) (bool, error) {
 }
 
 func removeLegacyHook(hooksDir string, hookName string) error {
-	hookPath := filepath.Join(hooksDir, hookName)
+	// hookName is a parameter, so it is confined to hooksDir before use.
+	hookPath, pathErr := pathguard.Resolve(hooksDir, hookName)
+	if pathErr != nil {
+		return fmt.Errorf("refusing hook path %q: %w", hookName, pathErr)
+	}
 	data, err := os.ReadFile(hookPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -257,7 +263,7 @@ func removeLegacyHook(hooksDir string, hookName string) error {
 		return os.Remove(hookPath)
 	}
 
-	return os.WriteFile(hookPath, []byte(remaining), 0755)
+	return os.WriteFile(hookPath, []byte(remaining), 0755) // #nosec G703 -- hookPath is confined by pathguard.Resolve at the top of removeHookFile
 }
 
 // StripBlocks removes marked blocks from hook scripts while preserving user modifications.

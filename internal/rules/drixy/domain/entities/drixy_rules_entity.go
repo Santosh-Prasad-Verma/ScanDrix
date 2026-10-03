@@ -135,4 +135,3 @@ func (e *DrixyRulesEntity) ToObject() interfaces.DrixyRules {
 		UpdatedAt:      e.updatedAt,
 	}
 }
-

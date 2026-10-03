@@ -19,7 +19,7 @@ import (
 // OrganizationRepository defines the data access contract for organization metadata (Clean Architecture).
 type OrganizationRepository interface {
 	GetWorkspaceByID(ctx context.Context, id uuid.UUID) (*models.Workspace, error)
-	ListWorkspaces(ctx context.Context) ([]models.Workspace, error)
+	ListWorkspacesForUser(ctx context.Context, email string) ([]models.Workspace, error)
 }
 
 // WorkspaceUpdater optionally updates workspace names if supported by repository.
@@ -50,7 +50,15 @@ func newOrgRepoAdapter(repo OrganizationRepository) orgdomain.IOrganizationRepos
 
 func (a *orgRepoAdapter) Find(ctx context.Context, filter orgdomain.OrganizationFilter) ([]*orgdomain.OrganizationEntity, error) {
 	if a.repo != nil {
-		wsList, err := a.repo.ListWorkspaces(ctx)
+		// Scoped to the caller. If there is no authenticated caller in the
+		// context, return nothing: this adapter previously listed every
+		// workspace in the deployment, which handed any authenticated user an
+		// arbitrary tenant.
+		email, cerr := auth.CallerEmail(ctx)
+		if cerr != nil {
+			return nil, nil
+		}
+		wsList, err := a.repo.ListWorkspacesForUser(ctx, email)
 		if err == nil && len(wsList) > 0 {
 			var entities []*orgdomain.OrganizationEntity
 			for _, w := range wsList {
@@ -199,8 +207,11 @@ func (c *OrganizationController) handleGetName(w http.ResponseWriter, r *http.Re
 			name = fetchedName
 		}
 	} else if c.repo != nil {
-		if wsList, err := c.repo.ListWorkspaces(r.Context()); err == nil && len(wsList) > 0 {
-			name = wsList[0].Name
+		// Scoped to the caller: an unscoped list would leak another tenant name.
+		if email, e := auth.CallerEmail(r.Context()); e == nil {
+			if wsList, err := c.repo.ListWorkspacesForUser(r.Context(), email); err == nil && len(wsList) > 0 {
+				name = wsList[0].Name
+			}
 		}
 	}
 

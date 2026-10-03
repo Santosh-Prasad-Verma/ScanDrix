@@ -1,0 +1,116 @@
+name: "Terraform Infrastructure Plan"
+
+# Security model (AUDIT_REMEDIATION.md F-05):
+#
+# `plan` evaluates Terraform configuration, and a `data "external"` block runs
+# an arbitrary local executable during evaluation. Running it on a
+# `pull_request` trigger means a fork PR adding such a block gets its code
+# executed inside a process holding AWS credentials via OIDC — even though
+# `secrets.*` are withheld from forks, the OIDC token is not.
+#
+# Therefore:
+#   * `pull_request` (fork-controllable) runs fmt + validate ONLY. It has no
+#     `id-token: write` permission and never contacts AWS.
+#   * `plan`, which needs cloud credentials, runs only from `workflow_dispatch`
+#     or `pull_request_target` on a branch in this repository, and it checks out
+#     the BASE ref rather than the PR head, so PR-controlled .tf files are never
+#     evaluated in a credentialed process.
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to plan (defaults to the repository default branch)"
+        required: false
+        type: string
+  pull_request_target:
+    paths:
+      - 'infra/terraform/**'
+
+# Least privilege for the whole workflow. Individual jobs narrow this further.
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  TF_ROOT: infra/terraform
+
+jobs:
+  # Untrusted-input gate. No OIDC, no AWS credentials, no cloud access.
+  terraform-validate:
+    name: "Format & Validate (untrusted PRs)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      - name: Terraform Format Check
+        run: terraform -chdir=${{ env.TF_ROOT }} fmt -check
+
+      - name: Terraform Init
+        run: terraform -chdir=${{ env.TF_ROOT }} init -backend=false
+
+      - name: Terraform Validate
+        run: terraform -chdir=${{ env.TF_ROOT }} validate -no-color
+
+  # Credentialed plan. Never evaluates fork-controlled configuration.
+  terraform-plan:
+    name: "Plan Infrastructure (trusted ref)"
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    needs: terraform-validate
+    permissions:
+      contents: read
+      id-token: write   # required for the AWS OIDC role
+      pull-requests: write
+    steps:
+      - name: Resolve trusted ref
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_REF" ]; then
+            echo "value=$INPUT_REF" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "pull_request_target" ]; then
+            # Base ref, never the PR head: the PR's .tf files must not be
+            # evaluated in a process that holds AWS credentials.
+            echo "value=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$EVENT_REF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout trusted ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.value }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      - name: Terraform Init
+        run: terraform -chdir=${{ env.TF_ROOT }} init
+
+      - name: Terraform Plan
+        run: terraform -chdir=${{ env.TF_ROOT }} plan -no-color -out=tfplan
+
+      - name: Terraform Plan Summary
+        run: terraform -chdir=${{ env.TF_ROOT }} show -no-color tfplan || true

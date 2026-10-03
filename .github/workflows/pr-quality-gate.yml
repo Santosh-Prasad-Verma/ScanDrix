@@ -10,10 +10,41 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege. These workflows check out the repo and run linters,
+# tests and image scans; none of them needs write access. Without this the
+# workflow inherits the repository default, which is often write-all.
+# AUDIT_REMEDIATION.md F-70.
+permissions:
+  contents: read
+
 jobs:
   backend-gate:
     name: "Go Engine: Verify, Test & Build"
     runs-on: ubuntu-latest
+
+    # Same rationale as ci.yml: the database-backed security tests skip without
+    # a database, so this gate previously reported green without running the
+    # RLS, tenant-isolation, or drift checks.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: scandrix_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: scandrix_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MIGRATION_DATABASE_URL: postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable
+      SCANDRIX_TEST_DATABASE_URL: postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable
+      SCANDRIX_E2E_RUNTIME_DSN: postgres://scandrix_runtime:test_password@localhost:5432/scandrix_test_db?sslmode=disable
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -31,7 +62,21 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
+        run: go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Apply Database Migrations
+        run: go run ./cmd/migrate migrations
+
+      # The RLS tests refuse to run against a superuser, because a superuser
+      # bypasses RLS and would make them vacuous. See ci.yml for the rationale.
+      - name: Provision Least-Privilege Runtime Role
+        env:
+          PGPASSWORD: test_password
+        run: |
+          psql -h localhost -U scandrix_test -d scandrix_test_db -v ON_ERROR_STOP=1 \
+            -f migrations/ops/002_least_privilege_runtime_role.sql
+          psql -h localhost -U scandrix_test -d scandrix_test_db -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE scandrix_runtime WITH LOGIN PASSWORD 'test_password'"
 
       - name: Run Test Suite with Race Detector & Coverage
         run: |

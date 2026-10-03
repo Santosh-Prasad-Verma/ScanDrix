@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -28,9 +29,11 @@ func TestLoadEnvironmentConfig(t *testing.T) {
 
 func TestLoadJWTConfig(t *testing.T) {
 	os.Setenv("JWT_SECRET", "super-secret-key-12345")
+	os.Setenv("JWT_REFRESH_SECRET", "super-refresh-secret-123456")
 	os.Setenv("JWT_ISSUER", "scandrix-test")
 	defer func() {
 		os.Unsetenv("JWT_SECRET")
+		os.Unsetenv("JWT_REFRESH_SECRET")
 		os.Unsetenv("JWT_ISSUER")
 	}()
 
@@ -44,6 +47,36 @@ func TestLoadJWTConfig(t *testing.T) {
 	if cfg.Issuer != "scandrix-test" {
 		t.Fatalf("expected issuer, got %s", cfg.Issuer)
 	}
+	// The refresh secret must be its own value, never derived from the access
+	// secret: deriving it means leaking one immediately leaks the other
+	// (AUDIT_REMEDIATION.md F-14).
+	if cfg.RefreshSecret != "super-refresh-secret-123456" {
+		t.Fatalf("expected the supplied refresh secret, got %s", cfg.RefreshSecret)
+	}
+	if cfg.RefreshSecret == cfg.Secret || strings.HasPrefix(cfg.RefreshSecret, cfg.Secret) {
+		t.Fatalf("refresh secret must not be derived from the access secret")
+	}
+}
+
+// TestLoadJWTConfigRequiresSecrets pins the removal of the hardcoded dev
+// fallback. Setting only JWT_SECRET must fail rather than silently signing with
+// a committed string.
+func TestLoadJWTConfigRequiresSecrets(t *testing.T) {
+	t.Run("missing JWT_SECRET", func(t *testing.T) {
+		t.Setenv("JWT_SECRET", "")
+		t.Setenv("JWT_REFRESH_SECRET", "refresh-value-123456")
+		if _, err := LoadJWTConfig(); err == nil {
+			t.Fatalf("expected an error when JWT_SECRET is empty")
+		}
+	})
+
+	t.Run("missing JWT_REFRESH_SECRET", func(t *testing.T) {
+		t.Setenv("JWT_SECRET", "access-value-12345678")
+		t.Setenv("JWT_REFRESH_SECRET", "")
+		if _, err := LoadJWTConfig(); err == nil {
+			t.Fatalf("expected an error when JWT_REFRESH_SECRET is empty")
+		}
+	})
 }
 
 func TestLoadPostgresConfig(t *testing.T) {

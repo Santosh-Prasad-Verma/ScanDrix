@@ -2,10 +2,12 @@ package infrastructure
 
 import (
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -55,25 +57,61 @@ type EmailVerificationClaims struct {
 	jwt.RegisteredClaims
 }
 
+// Token purposes (AUDIT_REMEDIATION.md F-22).
+//
+// Email-verification and password-reset tokens used to be byte-identical: same
+// claim struct, same 24h TTL, same issuer, and VerifyForgotPassToken simply
+// delegated to VerifyEmailToken. A token delivered in a "reset your password"
+// email therefore verified an email address, and vice versa -- a reset link was
+// usable as an account-takeover confirmation and an address-verification token
+// could be redeemed at the reset endpoint.
+//
+// Each purpose is bound into both the audience and a dedicated claim, and each
+// verifier requires its own. Values are compared with a constant-time helper
+// because the check is part of deciding whether a token may be redeemed.
+const (
+	tokenPurposeEmailVerification = "email_verification"
+	tokenPurposePasswordReset     = "password_reset"
+
+	audienceEmailVerification = "scandrix-email-verification"
+	audiencePasswordReset     = "scandrix-password-reset"
+)
+
+// purposeClaims extends EmailVerificationClaims with an explicit purpose so the
+// audience alone is not the only thing binding a token to a single use case.
+type purposeClaims struct {
+	Email   string `json:"email"`
+	Purpose string `json:"purpose"`
+	jwt.RegisteredClaims
+}
+
 // JwtTokenService implements domain.TokenService using HMAC-SHA256 and RSA-256 JWTs.
 type JwtTokenService struct {
 	config domain.JWTConfig
 }
 
-func NewJwtTokenService(config domain.JWTConfig) *JwtTokenService {
+// NewJwtTokenService builds the token service.
+//
+// SECURITY: this previously fell back to a hardcoded signing secret
+// ("scandrix-default-jwt-secret-do-not-use-in-production") when config.Secret
+// was empty. That string is in the git history, so anyone who can read the
+// repository can mint a token with Role "owner" for any organization
+// (AUDIT_REMEDIATION.md F-14). There is no safe default: a missing secret is a
+// configuration error and is now returned as one.
+func NewJwtTokenService(config domain.JWTConfig) (*JwtTokenService, error) {
+	if strings.TrimSpace(config.Secret) == "" {
+		return nil, errors.New("JWT secret is required and cannot be empty; set JWT_SECRET (Master Rule 1.1)")
+	}
+	if strings.TrimSpace(config.RefreshSecret) == "" {
+		return nil, errors.New("JWT refresh secret is required and cannot be empty; set JWT_REFRESH_SECRET")
+	}
 	if config.ExpiresIn == 0 {
 		config.ExpiresIn = 15 * time.Minute
 	}
 	if config.RefreshExpiresIn == 0 {
 		config.RefreshExpiresIn = 30 * 24 * time.Hour
 	}
-	if config.Secret == "" {
-		config.Secret = "scandrix-default-jwt-secret-do-not-use-in-production"
-	}
-	if config.RefreshSecret == "" {
-		config.RefreshSecret = "scandrix-default-jwt-refresh-secret-do-not-use"
-	}
-	return &JwtTokenService{config: config}
+	return &JwtTokenService{config: config}, nil
 }
 
 func (s *JwtTokenService) CreateTokens(user domain.User, teamRole *domain.TeamMemberRole) (*domain.TokenResponse, error) {
@@ -158,11 +196,13 @@ func (s *JwtTokenService) VerifyRefreshToken(token string) (uuid.UUID, error) {
 
 func (s *JwtTokenService) CreateEmailToken(userUUID uuid.UUID, email string) (string, error) {
 	now := time.Now().UTC()
-	claims := EmailVerificationClaims{
-		Email: email,
+	claims := purposeClaims{
+		Email:   email,
+		Purpose: tokenPurposeEmailVerification,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userUUID.String(),
 			Issuer:    "scandrix",
+			Audience:  jwt.ClaimStrings{audienceEmailVerification},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
 		},
@@ -171,17 +211,42 @@ func (s *JwtTokenService) CreateEmailToken(userUUID uuid.UUID, email string) (st
 	return token.SignedString([]byte(s.config.Secret))
 }
 
-func (s *JwtTokenService) VerifyEmailToken(token string) (uuid.UUID, string, error) {
-	parsed, err := jwt.ParseWithClaims(token, &EmailVerificationClaims{}, func(t *jwt.Token) (any, error) {
+// verifyPurposeToken parses token and requires it to carry exactly wantPurpose and
+// the matching audience. Both are checked: the audience stops a token minted for
+// another flow from being replayed here, and the explicit purpose stops a token
+// that merely shares an issuer from being accepted.
+func (s *JwtTokenService) verifyPurposeToken(token, wantPurpose, wantAudience string) (uuid.UUID, string, error) {
+	parsed, err := jwt.ParseWithClaims(token, &purposeClaims{}, func(t *jwt.Token) (any, error) {
+		// Pin the algorithm. Without this, a token whose header says "none" or
+		// names an asymmetric algorithm would be verified against the HMAC key.
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
 		return []byte(s.config.Secret), nil
 	})
 	if err != nil || !parsed.Valid {
-		return uuid.Nil, "", errors.New("invalid email verification token")
+		return uuid.Nil, "", fmt.Errorf("invalid %s token", wantPurpose)
 	}
 
-	claims, ok := parsed.Claims.(*EmailVerificationClaims)
+	claims, ok := parsed.Claims.(*purposeClaims)
 	if !ok || claims.Subject == "" {
-		return uuid.Nil, "", errors.New("invalid claims payload")
+		return uuid.Nil, "", fmt.Errorf("invalid claims payload for %s token", wantPurpose)
+	}
+
+	audienceOK := false
+	for _, aud := range claims.Audience {
+		if subtle.ConstantTimeCompare([]byte(aud), []byte(wantAudience)) == 1 {
+			audienceOK = true
+			break
+		}
+	}
+	if !audienceOK {
+		return uuid.Nil, "", fmt.Errorf("token audience does not permit %s", wantPurpose)
+	}
+	if subtle.ConstantTimeCompare([]byte(claims.Purpose), []byte(wantPurpose)) != 1 {
+		// A password-reset token arriving here (or the reverse) is the exact
+		// replay F-22 describes.
+		return uuid.Nil, "", fmt.Errorf("token purpose %q cannot be used as %s", claims.Purpose, wantPurpose)
 	}
 
 	userUUID, err := uuid.Parse(claims.Subject)
@@ -192,23 +257,34 @@ func (s *JwtTokenService) VerifyEmailToken(token string) (uuid.UUID, string, err
 	return userUUID, claims.Email, nil
 }
 
+func (s *JwtTokenService) VerifyEmailToken(token string) (uuid.UUID, string, error) {
+	return s.verifyPurposeToken(token, tokenPurposeEmailVerification, audienceEmailVerification)
+}
+
 func (s *JwtTokenService) CreateForgotPassToken(userUUID uuid.UUID, email string) (string, error) {
 	now := time.Now().UTC()
-	claims := EmailVerificationClaims{
-		Email: email,
+	claims := purposeClaims{
+		Email:   email,
+		Purpose: tokenPurposePasswordReset,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userUUID.String(),
-			Issuer:    "scandrix",
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
+			Subject:  userUUID.String(),
+			Issuer:   "scandrix",
+			Audience: jwt.ClaimStrings{audiencePasswordReset},
+			IssuedAt: jwt.NewNumericDate(now),
+			// Shorter than the verification token's 24h: a reset link is a far
+			// more powerful capability than confirming an address.
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(s.config.Secret))
 }
 
+// VerifyForgotPassToken no longer delegates to VerifyEmailToken: a reset token
+// and a verification token are different capabilities and must not be
+// interchangeable (AUDIT_REMEDIATION.md F-22).
 func (s *JwtTokenService) VerifyForgotPassToken(token string) (uuid.UUID, string, error) {
-	return s.VerifyEmailToken(token)
+	return s.verifyPurposeToken(token, tokenPurposePasswordReset, audiencePasswordReset)
 }
 
 func (s *JwtTokenService) CreateHelpdeskToken(userUUID uuid.UUID) (string, error) {

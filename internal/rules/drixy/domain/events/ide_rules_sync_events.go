@@ -9,10 +9,10 @@ import "time"
 
 // EventName constants for rule events.
 const (
-	EventIDERulesSynced              = "drixy_rules.ide_synced"
-	EventGlobalRulesSynced           = "drixy_rules.global_synced"
-	EventRulesGenerated              = "drixy_rules.generated"
-	EventFileReferencesInvalidated   = "drixy_rules.file_references_invalid"
+	EventIDERulesSynced            = "drixy_rules.ide_synced"
+	EventGlobalRulesSynced         = "drixy_rules.global_synced"
+	EventRulesGenerated            = "drixy_rules.generated"
+	EventFileReferencesInvalidated = "drixy_rules.file_references_invalid"
 )
 
 // IDERulesSyncEventPayload carries telemetry for IDE rules synchronization.

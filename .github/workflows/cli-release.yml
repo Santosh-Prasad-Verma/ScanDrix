@@ -45,9 +45,26 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          # Passed via env, not interpolated into run:. A tag containing shell
+          # metacharacters would otherwise be substituted into the command
+          # line before the shell parsed it. AUDIT_REMEDIATION.md F-69.
+          REF_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           mkdir -p dist
-          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o dist/${{ matrix.output_name }} ./cmd/cli
+          # `case`, not `grep -E`: grep is line-oriented and would accept a
+          # value whose first line matches.
+          case "$REF_NAME" in
+            ""|*[!A-Za-z0-9._-]*)
+              echo "::error::ref failed validation"
+              exit 1
+              ;;
+          esac
+          if [ "${#REF_NAME}" -gt 128 ]; then
+            echo "::error::ref too long"
+            exit 1
+          fi
+          go build -ldflags="-s -w -X main.version=$REF_NAME" -o dist/"${{ matrix.output_name }}" ./cmd/cli
 
       - name: Upload Binary Artifact
         uses: actions/upload-artifact@v4

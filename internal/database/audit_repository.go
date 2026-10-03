@@ -50,7 +50,6 @@ func (r *Repository) CreateTeam(ctx context.Context, wsID uuid.UUID, name, descr
 	return &res, nil
 }
 
-
 // ListTeams retrieves all teams belonging to the workspace.
 func (r *Repository) ListTeams(ctx context.Context, wsID uuid.UUID) ([]models.Team, error) {
 	if r == nil || r.client == nil {
@@ -87,9 +86,8 @@ func (r *Repository) ListTeams(ctx context.Context, wsID uuid.UUID) ([]models.Te
 	return teams, nil
 }
 
-
 // GetTeamByID retrieves a team by its unique ID.
-func (r *Repository) GetTeamByID(ctx context.Context, teamID uuid.UUID) (*models.Team, error) {
+func (r *Repository) GetTeamByID(ctx context.Context, wsID, teamID uuid.UUID) (*models.Team, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
 		return nil, errors.New("database unavailable")
 	}
@@ -97,22 +95,25 @@ func (r *Repository) GetTeamByID(ctx context.Context, teamID uuid.UUID) (*models
 	query := `
 		SELECT id, workspace_id, name, description, created_at, updated_at
 		FROM teams
-		WHERE id = $1
+		WHERE id = $1 AND workspace_id = $2
 		LIMIT 1;
 	`
+	// Tenant-scoped: teams has RLS. The wsID is also matched in the predicate so
+	// a caller cannot read another tenant's team by guessing an id.
 	var t models.Team
-	err := r.client.Pool.QueryRow(ctx, query, teamID).Scan(
-		&t.ID, &t.WorkspaceID, &t.Name, &t.Description, &t.CreatedAt, &t.UpdatedAt,
-	)
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, teamID, wsID).Scan(
+			&t.ID, &t.WorkspaceID, &t.Name, &t.Description, &t.CreatedAt, &t.UpdatedAt,
+		)
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &t, nil
 }
 
-
 // AddTeamMember adds a user to a team.
-func (r *Repository) AddTeamMember(ctx context.Context, teamID, userID uuid.UUID, email, role string) error {
+func (r *Repository) AddTeamMember(ctx context.Context, wsID, teamID, userID uuid.UUID, email, role string) error {
 	if r == nil || r.client == nil {
 		return fmt.Errorf("database unavailable")
 	}
@@ -123,52 +124,64 @@ func (r *Repository) AddTeamMember(ctx context.Context, teamID, userID uuid.UUID
 		ON CONFLICT (team_id, user_id) DO UPDATE
 		SET role = EXCLUDED.role, email = EXCLUDED.email;
 	`
-	_, err := r.client.Pool.Exec(ctx, query, uuid.New(), teamID, userID, email, role, time.Now().UTC())
-	return err
+	// Tenant-scoped: team_members has RLS.
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, query, uuid.New(), teamID, userID, email, role, time.Now().UTC())
+		return execErr
+	})
 }
 
-
 // ListTeamMembers lists all members of a team.
-func (r *Repository) ListTeamMembers(ctx context.Context, teamID uuid.UUID) ([]models.TeamMember, error) {
+func (r *Repository) ListTeamMembers(ctx context.Context, wsID, teamID uuid.UUID) ([]models.TeamMember, error) {
 	if r == nil || r.client == nil {
 		return []models.TeamMember{}, nil
 	}
 
 	query := `
 		SELECT id, team_id, user_id, email, role, created_at
-		FROM team_members
-		WHERE team_id = $1
-		ORDER BY created_at ASC;
+		FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
+		WHERE tm.team_id = $1 AND t.workspace_id = $2
+		ORDER BY tm.created_at ASC;
 	`
-	rows, err := r.client.Pool.Query(ctx, query, teamID)
+	// Tenant-scoped: team_members has RLS, and the join keeps a caller from
+	// reading the roster of a team in another workspace.
+	var members []models.TeamMember
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, teamID, wsID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var m models.TeamMember
+			if err := rows.Scan(&m.ID, &m.TeamID, &m.UserID, &m.Email, &m.Role, &m.CreatedAt); err != nil {
+				return err
+			}
+			members = append(members, m)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var members []models.TeamMember
-	for rows.Next() {
-		var m models.TeamMember
-		if err := rows.Scan(&m.ID, &m.TeamID, &m.UserID, &m.Email, &m.Role, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		members = append(members, m)
-	}
-	return members, rows.Err()
+	return members, nil
 }
 
-
 // RemoveTeamMember removes a user from a team.
-func (r *Repository) RemoveTeamMember(ctx context.Context, teamID, userID uuid.UUID) error {
+func (r *Repository) RemoveTeamMember(ctx context.Context, wsID, teamID, userID uuid.UUID) error {
 	if r == nil || r.client == nil {
 		return fmt.Errorf("database unavailable")
 	}
 
 	query := `DELETE FROM team_members WHERE team_id = $1 AND user_id = $2;`
-	_, err := r.client.Pool.Exec(ctx, query, teamID, userID)
+	// Tenant-scoped: team_members has RLS.
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, query, teamID, userID)
+		return execErr
+	})
 	return err
 }
-
 
 // InsertAuditLog records an immutable security event into PostgreSQL.
 func (r *Repository) InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID, actorEmail, ipAddress, action, targetType, targetID string, metadata []byte) error {
@@ -189,7 +202,6 @@ func (r *Repository) InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID
 		return err
 	})
 }
-
 
 // ListAuditLogs retrieves the latest audit log records for the workspace.
 func (r *Repository) ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit int) ([]models.AuditLogRecord, error) {
@@ -234,23 +246,29 @@ func (r *Repository) ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit in
 	return logs, nil
 }
 
-
 // GetCockpitMetrics aggregates real review, finding, repository, and developer stats for a workspace.
+//
+// In compliance with AGENTS.md Rule 2.7 an absent metric is reported as absent.
+// A workspace with no reviews has NO pass rate; it previously reported 100.0,
+// which told a new customer their security posture was flawless
+// (AUDIT_REMEDIATION.md F-07).
 func (r *Repository) GetCockpitMetrics(ctx context.Context, wsID uuid.UUID) (*models.CockpitMetrics, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
+		// No data source at all. Say so rather than inventing a score.
 		return &models.CockpitMetrics{
-			PassRatePercentage: 100.0,
+			Unavailable: []string{"pass_rate_percentage:no_data_source"},
 		}, nil
 	}
 
 	query := `
-		SELECT 
+		SELECT
 			COUNT(DISTINCT r.id) AS total_reviews,
 			COALESCE(COUNT(DISTINCT f.id), 0) AS total_findings,
 			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'CRITICAL' THEN f.id END), 0) AS critical_findings,
 			COALESCE(COUNT(DISTINCT CASE WHEN UPPER(f.severity) = 'HIGH' THEN f.id END), 0) AS high_findings,
-			CASE 
-				WHEN COUNT(DISTINCT r.id) = 0 THEN 100.0
+			-- NULL, not 100.0: a pass rate is undefined without reviews.
+			CASE
+				WHEN COUNT(DISTINCT r.id) = 0 THEN NULL
 				ELSE (COUNT(DISTINCT CASE WHEN r.findings_count = 0 THEN r.id END)::FLOAT / COUNT(DISTINCT r.id)::FLOAT) * 100.0
 			END AS pass_rate,
 			(SELECT COUNT(*) FROM tracked_repositories WHERE workspace_id = $1 AND is_active = TRUE) AS active_repos,
@@ -260,23 +278,31 @@ func (r *Repository) GetCockpitMetrics(ctx context.Context, wsID uuid.UUID) (*mo
 		WHERE r.workspace_id = $1;
 	`
 
-	var m models.CockpitMetrics
-	err := r.client.Pool.QueryRow(ctx, query, wsID).Scan(
-		&m.TotalReviews,
-		&m.TotalFindings,
-		&m.CriticalFindings,
-		&m.HighFindings,
-		&m.PassRatePercentage,
-		&m.ActiveRepositories,
-		&m.TotalDevelopers,
-	)
+	m := &models.CockpitMetrics{}
+	// Tenant-scoped: this reads RLS-protected review/finding tables.
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, wsID).Scan(
+			&m.TotalReviews,
+			&m.TotalFindings,
+			&m.CriticalFindings,
+			&m.HighFindings,
+			&m.PassRatePercentage,
+			&m.ActiveRepositories,
+			&m.TotalDevelopers,
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed querying cockpit metrics: %w", err)
 	}
 
-	return &m, nil
-}
+	// A NULL pass rate means the denominator was zero: report the reason so a
+	// consumer can distinguish "nothing reviewed yet" from "everything passed".
+	if m.PassRatePercentage == nil {
+		m.Unavailable = append(m.Unavailable, "pass_rate_percentage:no_data_source")
+	}
 
+	return m, nil
+}
 
 // AggregateDORARollup calculates rolling aggregate metrics across all active workspace repositories.
 func (r *Repository) AggregateDORARollup(ctx context.Context) error {
@@ -300,10 +326,14 @@ func (r *Repository) AggregateDORARollup(ctx context.Context) error {
 		WHERE w.status = 'ACTIVE'
 		ON CONFLICT DO NOTHING;
 	`
-	_, err := r.client.Pool.Exec(ctx, query)
+	// Cross-tenant by design: this rolls up metrics for every active workspace,
+	// so it runs as a system worker rather than a single tenant.
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(ctx, query)
+		return execErr
+	})
 	return err
 }
-
 
 // RepoReportData contains aggregated performance and quality metrics for a repository digest.
 type RepoReportData struct {
@@ -318,7 +348,6 @@ type RepoReportData struct {
 	HighFindings       int       `json:"high_findings"`
 	ActiveContributors int       `json:"active_contributors"`
 }
-
 
 // GetRepositoryReportsData compiles performance metrics for active repositories over a time window.
 func (r *Repository) GetRepositoryReportsData(ctx context.Context, since time.Time) ([]RepoReportData, error) {
@@ -345,30 +374,37 @@ func (r *Repository) GetRepositoryReportsData(ctx context.Context, since time.Ti
 		HAVING COUNT(DISTINCT rev.id) > 0;
 	`
 
-	rows, err := r.client.Pool.Query(ctx, query, since)
+	// Cross-tenant by design: a report over every repository since a date.
+	// Rows are consumed inside the transaction: returning pgx.Rows from the
+	// closure and iterating after commit fails with "conn busy".
+	var reports []RepoReportData
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rd RepoReportData
+			if err := rows.Scan(
+				&rd.WorkspaceID, &rd.RepositoryID, &rd.NamespacePath,
+				&rd.TotalReviews, &rd.CleanReviewsCount,
+				&rd.TotalFindings, &rd.CriticalFindings, &rd.HighFindings,
+				&rd.ActiveContributors,
+			); err != nil {
+				return err
+			}
+			if rd.TotalReviews > 0 {
+				rd.PassRate = (float64(rd.CleanReviewsCount) / float64(rd.TotalReviews)) * 100.0
+			} else {
+				rd.PassRate = 100.0
+			}
+			reports = append(reports, rd)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed compiling repository reports data: %w", err)
 	}
-	defer rows.Close()
-
-	var reports []RepoReportData
-	for rows.Next() {
-		var rd RepoReportData
-		if err := rows.Scan(
-			&rd.WorkspaceID, &rd.RepositoryID, &rd.NamespacePath,
-			&rd.TotalReviews, &rd.CleanReviewsCount,
-			&rd.TotalFindings, &rd.CriticalFindings, &rd.HighFindings,
-			&rd.ActiveContributors,
-		); err != nil {
-			return nil, err
-		}
-		if rd.TotalReviews > 0 {
-			rd.PassRate = (float64(rd.CleanReviewsCount) / float64(rd.TotalReviews)) * 100.0
-		} else {
-			rd.PassRate = 100.0
-		}
-		reports = append(reports, rd)
-	}
 	return reports, nil
 }
-

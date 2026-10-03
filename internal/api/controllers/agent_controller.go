@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/agents/businessrules"
 	"github.com/scandrix/backend/internal/agents/conversation"
 	"github.com/scandrix/backend/internal/auth"
@@ -75,22 +76,25 @@ func (c *AgentController) handleConversation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	orgID := body.OrganizationAndTeamData.OrganizationID
-	var userID string
-
-	// Extract workspace/tenant from auth context if present
-	if wsID, err := auth.WorkspaceFromContext(r.Context()); err == nil && wsID.String() != "" {
-		if orgID == "" {
-			orgID = wsID.String()
-		}
+	// Tenant scope comes from the authenticated session, never from the request
+	// body. The body value was used as-is unless empty, so a member of one
+	// workspace could write agent conversation state into another tenant and
+	// spend that tenant's LLM budget (AUDIT_REMEDIATION.md F-15b).
+	wsID, wsErr := auth.WorkspaceFromContext(r.Context())
+	if wsErr != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
 	}
+	orgID := wsID.String()
+
+	if bodyOrg := strings.TrimSpace(body.OrganizationAndTeamData.OrganizationID); bodyOrg != "" && bodyOrg != orgID {
+		http.Error(w, `{"error":"organizationId does not match the authenticated workspace"}`, http.StatusForbidden)
+		return
+	}
+
+	var userID string
 	if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil {
 		userID = profile.ID.String()
-	}
-
-	if orgID == "" {
-		http.Error(w, `{"error":"organization ID missing in user request"}`, http.StatusBadRequest)
-		return
 	}
 
 	teamID := body.OrganizationAndTeamData.TeamID
@@ -132,11 +136,17 @@ func (c *AgentController) handleBusinessRulesValidation(w http.ResponseWriter, r
 		return
 	}
 
-	orgID := body.OrganizationAndTeamData.OrganizationID
-	if wsID, err := auth.WorkspaceFromContext(r.Context()); err == nil && wsID.String() != "" {
-		if orgID == "" {
-			orgID = wsID.String()
-		}
+	// Tenant scope from the session only, matching handleAgentThread
+	// (AUDIT_REMEDIATION.md F-15b).
+	wsID, wsErr := auth.WorkspaceFromContext(r.Context())
+	if wsErr != nil || wsID == uuid.Nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+	orgID := wsID.String()
+	if bodyOrg := strings.TrimSpace(body.OrganizationAndTeamData.OrganizationID); bodyOrg != "" && bodyOrg != orgID {
+		http.Error(w, `{"error":"organizationId does not match the authenticated workspace"}`, http.StatusForbidden)
+		return
 	}
 
 	teamID := body.OrganizationAndTeamData.TeamID

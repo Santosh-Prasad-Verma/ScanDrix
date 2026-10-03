@@ -16,6 +16,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege. These workflows check out the repo and run linters,
+# tests and image scans; none of them needs write access. Without this the
+# workflow inherits the repository default, which is often write-all.
+# AUDIT_REMEDIATION.md F-70.
+permissions:
+  contents: read
+
 jobs:
   build-and-scan:
     name: "Build Container & Scan with Trivy"
@@ -41,7 +48,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan Image with Aqua Trivy
-        uses: aquasecurity/trivy-action@master
+        # Pinned to an immutable commit SHA, with the release tag in a trailing
+        # comment. The previous ref was `@master`, a mutable branch: whoever
+        # controls that branch controls what this workflow runs
+        # (AUDIT_REMEDIATION.md F-68).
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: scandrix/backend:scan-test
           format: 'table'

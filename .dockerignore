@@ -1,0 +1,125 @@
+# AUDIT_REMEDIATION.md F-51 — build-context exclusion.
+#
+# All three Dockerfiles use `COPY . .`. Without this file the build context
+# carried ~2GB of material that must never enter an image layer, a build cache
+# export, or a `--target builder` build:
+#
+#   .env                      48KB  live secrets (JWT, DB password, API keys)
+#   .git                      1.5GB full history, including the committed DB
+#                                  password from F-06 that still needs rotating
+#   bin/                      452MB stale local binaries
+#   infra/terraform/*.tfstate         AWS account state, often with plaintext
+#                                  resource attributes and connection strings
+#
+# The runtime stage only ever copies /build/bin/ and /build/migrations/, so
+# excluding everything not needed to compile the Go binaries is safe.
+# Run `docker build` after changing this and confirm the build still succeeds.
+
+# ---- Secrets and credentials: never in any layer or cache ----
+# Recursive (`**/`) because a nested copy of any of these leaks just as badly
+# as one at the context root.
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cer
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_ed25519
+**/.netrc
+**/.npmrc
+**/.htpasswd
+**/.aws/
+**/.ssh/
+secrets/
+**/secrets/
+
+# ---- Version control and CI ----
+.git
+.gitattributes
+.github/
+.gitlab-ci.yml
+
+# ---- Build output and caches ----
+bin/
+dist/
+build/
+out/
+vendor/
+**/bin/
+**/dist/
+**/build/
+**/out/
+**/node_modules/
+.next/
+.turbo/
+.cache/
+**/*.test
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.a
+**/*.o
+coverage.html
+coverage.xml
+coverage.txt
+junit.xml
+*.out
+*.prof
+*.pprof
+cpu.pprof
+mem.pprof
+trace.out
+tmp/
+
+# ---- Infrastructure state (may contain resource attributes and credentials) ----
+# NOTE: in .dockerignore, `*` does NOT cross a directory separator, so
+# `*.tfstate` only ever matched the context root and infra/terraform/*.tfstate
+# was still being copied in. The `**/` form is required for recursive matching.
+**/.terraform/
+**/.terraform.lock.hcl
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
+**/*.auto.tfvars
+crash.log
+crash.*.log
+
+# ---- Test, eval and scratch output ----
+test-results/
+playwright-report/
+blob-report/
+e2b-sandbox/
+evals/results/
+scratch/
+
+# ---- Docs, agent config and local tooling (not needed to compile) ----
+docs/
+site/
+.agents/
+.claude/
+.vscode/
+.idea/
+**/*.md
+!go.mod
+!go.sum
+**/Dockerfile*
+**/docker-compose*.yml
+.dockerignore
+
+# ---- Editor and OS noise ----
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*~
+
+# ---- Local secret/credential tooling output ----
+**/*.gpg
+**/*.kdbx

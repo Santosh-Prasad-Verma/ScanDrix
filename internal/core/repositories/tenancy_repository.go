@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,6 +138,24 @@ func (r *PgWorkspaceRepository) List(ctx context.Context, pq domain.PaginationQu
 	}
 
 	offset := (pq.Page - 1) * pq.PageSize
+
+	allowedWorkspaceSortColumns := map[string]string{
+		"created_at": "created_at",
+		"updated_at": "updated_at",
+		"name":       "name",
+		"slug":       "slug",
+		"status":     "status",
+		"tier":       "tier",
+	}
+	sortCol, ok := allowedWorkspaceSortColumns[strings.ToLower(pq.OrderBy)]
+	if !ok {
+		sortCol = "created_at"
+	}
+	sortDir := "DESC"
+	if strings.ToUpper(pq.OrderDir) == "ASC" {
+		sortDir = "ASC"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT id, created_at, updated_at, slug, name, status, tier,
 		       spend_limit_usd, current_month_spend_usd, enforce_spend_limit,
@@ -144,7 +163,7 @@ func (r *PgWorkspaceRepository) List(ctx context.Context, pq domain.PaginationQu
 		FROM workspaces
 		ORDER BY %s %s
 		LIMIT $1 OFFSET $2
-	`, pq.OrderBy, pq.OrderDir)
+	`, sortCol, sortDir)
 
 	rows, err := r.pool.Query(ctx, query, pq.PageSize, offset)
 	if err != nil {

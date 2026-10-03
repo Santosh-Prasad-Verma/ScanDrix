@@ -16,7 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/scandrix/backend/internal/database"
 )
 
 // IHeartbeatCollectorService defines the contract for compiling non-PII operational metrics.
@@ -37,17 +38,22 @@ type DBQuerier interface {
 
 // HeartbeatCollectorService gathers system runtime, database, and aggregated usage metrics.
 type HeartbeatCollectorService struct {
-	pool   *pgxpool.Pool
+	// client, not a bare pool. Several collector queries are deliberately
+	// cross-tenant aggregates (e.g. "does any workspace have rules enabled?")
+	// and must run with app.is_system_worker set, otherwise row-level security
+	// silently filters every row and the metric reports a confident false
+	// forever (AUDIT_REMEDIATION.md F-37, AGENTS.md 2.7).
+	client *database.Client
 	logger *slog.Logger
 }
 
 // NewHeartbeatCollectorService initializes a telemetry metrics collector.
-func NewHeartbeatCollectorService(pool *pgxpool.Pool, logger *slog.Logger) *HeartbeatCollectorService {
+func NewHeartbeatCollectorService(client *database.Client, logger *slog.Logger) *HeartbeatCollectorService {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &HeartbeatCollectorService{
-		pool:   pool,
+		client: client,
 		logger: logger.With("component", "heartbeat_collector"),
 	}
 }
@@ -141,11 +147,11 @@ func (c *HeartbeatCollectorService) computeUptimeHours(firstSeenAtStr string) in
 }
 
 func (c *HeartbeatCollectorService) queryDBVersion(ctx context.Context) (string, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return "unknown", nil
 	}
 	var raw string
-	err := c.pool.QueryRow(ctx, "SELECT version() AS version").Scan(&raw)
+	err := c.client.Pool.QueryRow(ctx, "SELECT version() AS version").Scan(&raw)
 	if err != nil {
 		return "unknown", err
 	}
@@ -160,12 +166,12 @@ func (c *HeartbeatCollectorService) queryDBVersion(ctx context.Context) (string,
 }
 
 func (c *HeartbeatCollectorService) countTable(ctx context.Context, table string) (int64, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return 0, nil
 	}
 	query := fmt.Sprintf(`SELECT COUNT(*)::bigint FROM "%s"`, table)
 	var count int64
-	err := c.pool.QueryRow(ctx, query).Scan(&count)
+	err := c.client.Pool.QueryRow(ctx, query).Scan(&count)
 	if err != nil {
 		return 0, err
 	}
@@ -173,31 +179,31 @@ func (c *HeartbeatCollectorService) countTable(ctx context.Context, table string
 }
 
 func (c *HeartbeatCollectorService) queryActiveUsers7d(ctx context.Context) (int64, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return 0, nil
 	}
 	var count int64
 	// 1. Try account_profiles updated in last 7 days
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT email)::bigint FROM account_profiles WHERE updated_at > now() - interval '7 days'`).Scan(&count); err == nil && count > 0 {
+	if err := c.client.Pool.QueryRow(ctx, `SELECT COUNT(DISTINCT email)::bigint FROM account_profiles WHERE updated_at > now() - interval '7 days'`).Scan(&count); err == nil && count > 0 {
 		return count, nil
 	}
 	// 2. Try user_sessions created/active in last 7 days
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT user_id)::bigint FROM user_sessions WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil && count > 0 {
+	if err := c.client.Pool.QueryRow(ctx, `SELECT COUNT(DISTINCT user_id)::bigint FROM user_sessions WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil && count > 0 {
 		return count, nil
 	}
 	// 3. Fallback: total account_profiles count
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM account_profiles`).Scan(&count); err == nil {
+	if err := c.client.Pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM account_profiles`).Scan(&count); err == nil {
 		return count, nil
 	}
 	return 0, nil
 }
 
 func (c *HeartbeatCollectorService) queryIntegrations(ctx context.Context) ([]string, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return []string{}, nil
 	}
 	query := `SELECT DISTINCT lower(provider::text) FROM integration_connections WHERE is_connected = true`
-	rows, err := c.pool.Query(ctx, query)
+	rows, err := c.client.Pool.Query(ctx, query)
 	if err != nil {
 		return []string{}, err
 	}
@@ -229,32 +235,41 @@ func (c *HeartbeatCollectorService) queryIntegrations(ctx context.Context) ([]st
 }
 
 func (c *HeartbeatCollectorService) queryPrsReviewed7d(ctx context.Context) (int64, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return 0, nil
 	}
 	var count int64
 	// 1. Try pull_request_reviews
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM pull_request_reviews WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil {
+	if err := c.client.Pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM pull_request_reviews WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil {
 		return count, nil
 	}
 	// 2. Fallback to code_reviews
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM code_reviews WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil {
+	if err := c.client.Pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM code_reviews WHERE created_at > now() - interval '7 days'`).Scan(&count); err == nil {
 		return count, nil
 	}
 	return 0, nil
 }
 
 func (c *HeartbeatCollectorService) queryDrixyRulesEnabled(ctx context.Context) (bool, error) {
-	if c.pool == nil {
+	if c.client == nil || c.client.Pool == nil {
 		return false, nil
 	}
-	var count int64
+	// Cross-tenant, so it runs as a system worker: drixy_rules is RLS-FORCEd
+	// and this aggregate is exactly the query that would otherwise see nothing.
+	asSystem := func(query string) (int64, error) {
+		var n int64
+		err := c.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, query).Scan(&n)
+		})
+		return n, err
+	}
+
 	// 1. Try drixy_rules JSON array
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM drixy_rules WHERE jsonb_array_length(rules) > 0`).Scan(&count); err == nil && count > 0 {
+	if n, err := asSystem(`SELECT COUNT(*)::bigint FROM drixy_rules WHERE jsonb_array_length(rules) > 0`); err == nil && n > 0 {
 		return true, nil
 	}
 	// 2. Try review_rules table
-	if err := c.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM review_rules WHERE is_enabled = true`).Scan(&count); err == nil && count > 0 {
+	if n, err := asSystem(`SELECT COUNT(*)::bigint FROM review_rules WHERE is_enabled = true`); err == nil && n > 0 {
 		return true, nil
 	}
 	return false, nil
