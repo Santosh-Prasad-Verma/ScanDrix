@@ -32,7 +32,7 @@ RUN go build -ldflags="-s -w" -o /build/bin/scandrix-api ./cmd/api && \
     go build -ldflags="-s -w" -o /build/bin/scandrix-try ./cmd/try
 
 # Stage 2: Minimal Production Image
-FROM alpine:3.21 AS runner
+FROM alpine:3.24 AS runner
 
 RUN apk add --no-cache ca-certificates tzdata git wget && \
     addgroup -g 10001 -S scandrix && \
