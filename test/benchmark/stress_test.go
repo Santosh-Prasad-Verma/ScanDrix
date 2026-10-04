@@ -117,6 +117,12 @@ func TestConcurrentWorkerPoolExecutionStress(t *testing.T) {
 	}
 	reviewConsumer := consumer.NewReviewConsumer(cfg, inbox, mockExecutor)
 	pool := consumer.NewWorkerPool(8, reviewConsumer)
+
+	// Subscribe to results BEFORE starting the workers. The pool only delivers
+	// results to the results channel while a reader is registered and discards
+	// the rest, so registering from a goroutine after Start would silently drop
+	// every result produced before that goroutine was scheduled.
+	resultsCh := pool.ResultsChannel()
 	pool.Start(ctx)
 
 	const totalTasks = 200
@@ -129,7 +135,7 @@ func TestConcurrentWorkerPoolExecutionStress(t *testing.T) {
 	resultsDone := make(chan struct{})
 	go func() {
 		defer close(resultsDone)
-		for res := range pool.ResultsChannel() {
+		for res := range resultsCh {
 			n := atomic.AddInt64(&resultsReceived, 1)
 			if res.Status == consumer.TaskStatusSuccess {
 				atomic.AddInt64(&successCount, 1)
@@ -137,7 +143,6 @@ func TestConcurrentWorkerPoolExecutionStress(t *testing.T) {
 			if n >= totalTasks {
 				return
 			}
-			_ = res // consume all statuses to prevent blocking workers
 		}
 	}()
 
@@ -169,12 +174,21 @@ func TestConcurrentWorkerPoolExecutionStress(t *testing.T) {
 
 	pool.Stop()
 
+	rr := atomic.LoadInt64(&resultsReceived)
 	sc := atomic.LoadInt64(&successCount)
 	pc := atomic.LoadInt64(&processedCount)
-	t.Logf("Worker Pool Stress: %d submitted, %d results received, %d successes, %d processed by executor", totalTasks, atomic.LoadInt64(&resultsReceived), sc, pc)
+	t.Logf("Worker Pool Stress: %d submitted, %d results received, %d successes, %d processed by executor", totalTasks, rr, sc, pc)
 
-	if sc == 0 {
-		t.Fatalf("expected at least some successful tasks, got 0 successes out of %d results", atomic.LoadInt64(&resultsReceived))
+	// Every submitted task must produce exactly one result. A shortfall means
+	// results were discarded, which previously showed up only as a 30s timeout.
+	if rr != totalTasks {
+		t.Fatalf("expected %d results delivered, got %d (%d lost)", totalTasks, rr, totalTasks-rr)
+	}
+	if sc != totalTasks {
+		t.Fatalf("expected %d successful tasks, got %d", totalTasks, sc)
+	}
+	if pc != totalTasks {
+		t.Fatalf("expected executor to run %d tasks, got %d", totalTasks, pc)
 	}
 }
 

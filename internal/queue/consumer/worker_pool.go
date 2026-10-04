@@ -32,6 +32,14 @@ func NewWorkerPool(concurrency int, consumer *ReviewConsumer) *WorkerPool {
 }
 
 // Start launches worker goroutines.
+//
+// Callers that consume ResultsChannel MUST obtain the channel via
+// ResultsChannel BEFORE calling Start. Results produced for jobs submitted with
+// no OnComplete callback are delivered to the results channel only while a
+// reader is registered; anything produced before registration is discarded so
+// that a pool with no result consumer can never deadlock its own workers.
+// Registering after Start therefore silently loses the results produced in
+// between, so the subscription must be established up front.
 func (p *WorkerPool) Start(ctx context.Context) {
 	for i := 0; i < p.concurrency; i++ {
 		p.wg.Add(1)
@@ -84,12 +92,16 @@ func (p *WorkerPool) worker(ctx context.Context) {
 		if job.OnComplete != nil {
 			job.OnComplete(res)
 		} else if p.hasResultsReader.Load() {
+			// A reader is registered: block until the result is delivered (or the
+			// pool's context is cancelled) so delivery is never lossy.
 			select {
 			case p.results <- res:
 			case <-ctx.Done():
 				return
 			}
 		} else {
+			// No reader: deliver if there is room, otherwise discard. Blocking here
+			// would deadlock the workers once the buffer fills and nothing drains it.
 			select {
 			case p.results <- res:
 			default:
@@ -98,7 +110,9 @@ func (p *WorkerPool) worker(ctx context.Context) {
 	}
 }
 
-// ResultsChannel returns the stream of execution results.
+// ResultsChannel returns the stream of execution results and registers this
+// pool as having a result reader, which switches workers from discarding
+// results to delivering them. Call it before Start to avoid losing results.
 func (p *WorkerPool) ResultsChannel() <-chan TaskExecutionResult {
 	p.hasResultsReader.Store(true)
 	return p.results
