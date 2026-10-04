@@ -99,6 +99,10 @@ func TestReviewConsumerAndWorkerPool(t *testing.T) {
 
 	// 4. Concurrent WorkerPool Execution
 	pool := consumer.NewWorkerPool(4, reviewConsumer)
+
+	// Subscribe before starting: results produced with no registered reader are
+	// discarded, so reading only after submission can silently lose them.
+	resultsCh := pool.ResultsChannel()
 	pool.Start(ctx)
 
 	for i := 0; i < 8; i++ {
@@ -113,7 +117,7 @@ func TestReviewConsumerAndWorkerPool(t *testing.T) {
 
 	// Read 8 results
 	processed := 0
-	for res := range pool.ResultsChannel() {
+	for res := range resultsCh {
 		if res.Status != consumer.TaskStatusSuccess {
 			t.Fatalf("worker pool execution failed on task: %+v", res)
 		}
@@ -284,3 +288,76 @@ func TestWorkerPoolUnconsumedResultsChannelNoDeadlock(t *testing.T) {
 	}
 }
 
+// TestWorkerPoolResultsDeliveredBeforeStartRegression guards the result-delivery
+// contract: a caller that registers a reader before Start must receive exactly one
+// result per submitted job, even when the job count exceeds the results buffer and
+// depends on the drain goroutine being scheduled first.
+//
+// This regressed as a flaky 30s timeout in CI: registering the reader from a
+// goroutine after Start let the pool discard results produced in the gap, so the
+// number lost varied with machine load.
+func TestWorkerPoolResultsDeliveredBeforeStartRegression(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	inbox := relay.NewInboxDeduplicator()
+	var processed int64
+	exec := func(ctx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
+		atomic.AddInt64(&processed, 1)
+		return nil, nil
+	}
+
+	pool := consumer.NewWorkerPool(8, consumer.NewReviewConsumer(
+		consumer.ConsumerConfig{MaxRetries: 3, Concurrency: 8}, inbox, exec))
+
+	// Subscribe BEFORE Start: this is the ordering the pool documents.
+	resultsCh := pool.ResultsChannel()
+	pool.Start(ctx)
+
+	// Deliberately larger than the 100-slot results buffer, so delivery depends on
+	// the drain goroutine running concurrently with submission.
+	const totalJobs = 200
+	var received int64
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range resultsCh {
+			if atomic.AddInt64(&received, 1) >= totalJobs {
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < totalJobs; i++ {
+		task := consumer.ReviewTaskPayload{
+			TaskID:            uuid.New(),
+			WorkspaceID:       uuid.New(),
+			Provider:          models.ProviderGitHub,
+			RepoNamespace:     "acme/delivery-regression",
+			PullRequestNumber: i + 1,
+		}
+		for !pool.Submit(task) {
+			select {
+			case <-ctx.Done():
+				t.Fatalf("timed out submitting job %d", i)
+			default:
+				time.Sleep(100 * time.Microsecond)
+			}
+		}
+	}
+
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for results: received %d/%d", atomic.LoadInt64(&received), totalJobs)
+	}
+
+	pool.Stop()
+
+	if got := atomic.LoadInt64(&received); got != totalJobs {
+		t.Fatalf("expected %d results delivered, got %d (%d discarded)", totalJobs, got, totalJobs-got)
+	}
+	if got := atomic.LoadInt64(&processed); got != totalJobs {
+		t.Fatalf("expected executor to run %d jobs, got %d", totalJobs, got)
+	}
+}
