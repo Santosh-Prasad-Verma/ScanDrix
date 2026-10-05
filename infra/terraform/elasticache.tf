@@ -21,6 +21,7 @@ resource "aws_elasticache_parameter_group" "redis" {
 }
 
 resource "aws_elasticache_replication_group" "redis" {
+  count                      = var.enable_elasticache ? 1 : 0
   replication_group_id       = "${var.project_name}-${var.environment}-redis"
   description                = "Managed Redis cluster for ScanDrix rate-limiting and session cache"
   node_type                  = var.redis_node_type

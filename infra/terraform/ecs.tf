@@ -119,6 +119,12 @@ resource "aws_ecs_task_definition" "api" {
   execution_role_arn       = aws_iam_role.ecs_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
+  # Graviton ARM64: ~20% cheaper than x86. Go binaries are multi-arch.
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
   container_definitions = jsonencode([
     {
       name      = "api"
@@ -169,6 +175,27 @@ resource "aws_ecs_task_definition" "api" {
           "awslogs-group"         = aws_cloudwatch_log_group.api.name
           "awslogs-region"        = var.aws_region
           "awslogs-stream-prefix" = "api"
+        }
+      }
+    },
+    {
+      # Cloudflare Tunnel sidecar: outbound-only, no public ALB needed.
+      # TUNNEL_TOKEN lives in SecretsManager (local .env only, never committed).
+      name      = "cloudflared"
+      image     = "cloudflare/cloudflared:latest"
+      essential = false
+      command   = ["tunnel", "--no-autoupdate", "run"]
+
+      secrets = [
+        { name = "TUNNEL_TOKEN", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:TUNNEL_TOKEN::" }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.api.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "cloudflared"
         }
       }
     }
@@ -239,6 +266,13 @@ resource "aws_ecs_task_definition" "worker" {
   execution_role_arn       = aws_iam_role.ecs_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
+  # Graviton ARM64: worker is interrupt-tolerant (DLQ + delayed retry in
+  # cmd/worker runConsumer), so Spot + ARM is safe and ~70% + ~20% cheaper.
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
   container_definitions = jsonencode([
     {
       name      = "worker"
@@ -303,10 +337,12 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
+  # NAT-less $100 path: public subnets + public IP, outbound direct to
+  # Supabase/CloudAMQP. NAT path: private subnets, no public IP.
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = !var.enable_nat_gateway
   }
 
   load_balancer {
@@ -326,13 +362,13 @@ resource "aws_ecs_service" "webhooks" {
   name            = "${var.project_name}-${var.environment}-webhooks"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.webhooks.arn
-  desired_count   = var.webhooks_desired_count
+  desired_count   = var.enable_webhooks_service ? var.webhooks_desired_count : 0
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = !var.enable_nat_gateway
   }
 
   load_balancer {
@@ -353,12 +389,19 @@ resource "aws_ecs_service" "worker" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.worker.arn
   desired_count   = var.worker_desired_count
-  launch_type     = "FARGATE"
+
+  # Fargate Spot: worker tolerates interruption (DLQ + PublishDelayed retry).
+  # ~70% cheaper. Cannot combine launch_type + capacity_provider_strategy.
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+    base              = 0
+  }
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
-    assign_public_ip = false
+    assign_public_ip = !var.enable_nat_gateway
   }
 
   deployment_controller {

@@ -28,7 +28,8 @@ resource "aws_secretsmanager_secret_version" "app_secrets_initial" {
   secret_string = jsonencode({
     DATABASE_URL           = "postgresql://postgres:REPLACE_IN_AWS_SECRETS@db.scandrix.internal:5432/scandrix"
     RABBITMQ_URL           = "amqps://REPLACE_IN_AWS_SECRETS@puffin.rmq2.cloudamqp.com/vhost"
-    REDIS_URL              = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+    REDIS_URL              = "redis://:REPLACE_IN_AWS_SECRETS@cache.scandrix.internal:6379/0"
+    TUNNEL_TOKEN           = "REPLACE_IN_AWS_SECRETS"
     JWT_SECRET             = var.jwt_secret
     SENTRY_DSN             = ""
     RESEND_API_KEY         = ""

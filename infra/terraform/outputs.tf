@@ -14,8 +14,8 @@ output "alb_zone_id" {
 }
 
 output "cloudfront_domain_name" {
-  description = "Domain name of the CloudFront distribution"
-  value       = aws_cloudfront_distribution.main.domain_name
+  description = "Domain name of the CloudFront distribution (empty when enable_cloudfront=false, Cloudflare CDN is used instead)"
+  value       = var.enable_cloudfront ? aws_cloudfront_distribution.main[0].domain_name : ""
 }
 
 output "ecs_cluster_name" {
@@ -39,8 +39,8 @@ output "ecr_webhooks_repository_url" {
 }
 
 output "redis_endpoint" {
-  description = "Primary endpoint address for ElastiCache Redis"
-  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
+  description = "Primary endpoint address for ElastiCache Redis (empty when enable_elasticache=false, external REDIS_URL is used)"
+  value       = var.enable_elasticache ? aws_elasticache_replication_group.redis[0].primary_endpoint_address : ""
 }
 
 output "secrets_manager_arn" {

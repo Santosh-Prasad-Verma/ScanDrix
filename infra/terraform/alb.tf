@@ -108,8 +108,10 @@ resource "aws_lb_listener_rule" "webhooks" {
   priority     = 10
 
   action {
+    # Merged path: api router already handles /webhooks* (RouterConfig secrets),
+    # so when the standalone service is off (default) send to api.
     type             = "forward"
-    target_group_arn = aws_lb_target_group.webhooks.arn
+    target_group_arn = var.enable_webhooks_service ? aws_lb_target_group.webhooks.arn : aws_lb_target_group.api.arn
   }
 
   condition {

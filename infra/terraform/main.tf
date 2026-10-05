@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.5"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
   }
 
   # Uncomment and configure with your S3 bucket & DynamoDB table for remote state locking:
@@ -97,4 +101,10 @@ provider "aws" {
       ManagedBy   = "Terraform"
     }
   }
+}
+
+# Cloudflare Free (DNS + CDN + WAF + Tunnel, no R2).
+# Token comes from TF_VAR_cloudflare_api_token (local .env only, never committed).
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }

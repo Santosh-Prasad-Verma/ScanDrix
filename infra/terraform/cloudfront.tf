@@ -2,6 +2,7 @@
 # CloudFront CDN Distribution
 # ─────────────────────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "main" {
+  count               = var.enable_cloudfront ? 1 : 0
   enabled             = true
   is_ipv6_enabled     = true
   comment             = "ScanDrix CloudFront Edge CDN"

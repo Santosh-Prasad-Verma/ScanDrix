@@ -168,7 +168,7 @@ variable "api_memory" {
 variable "api_desired_count" {
   type        = number
   description = "Number of API task instances to run in ECS"
-  default     = 2
+  default     = 1
 
   validation {
     condition     = var.api_desired_count >= 1 && var.api_desired_count <= 50
@@ -180,7 +180,7 @@ variable "api_desired_count" {
 variable "worker_cpu" {
   type        = number
   description = "CPU units for the background worker container"
-  default     = 512
+  default     = 256
 
   validation {
     condition     = var.worker_cpu >= 256 && var.worker_cpu <= 8192
@@ -192,7 +192,7 @@ variable "worker_cpu" {
 variable "worker_memory" {
   type        = number
   description = "Memory for the background worker container in MB"
-  default     = 1024
+  default     = 512
 
   validation {
     condition     = var.worker_memory >= 512 && var.worker_memory <= 32768
@@ -263,7 +263,7 @@ variable "webhooks_memory" {
 variable "webhooks_desired_count" {
   type        = number
   description = "Number of webhooks receiver task instances to run in ECS"
-  default     = 1
+  default     = 0
 
   validation {
     condition     = var.webhooks_desired_count >= 1 && var.webhooks_desired_count <= 50
@@ -334,5 +334,54 @@ variable "log_retention_days" {
 variable "alb_deletion_protection" {
   type        = bool
   description = "Block deletion of the ALB. Was hardcoded to false, so a stray apply could remove the load balancer in front of production."
+  default     = true
+}
+
+variable "cloudflare_api_token" {
+  type        = string
+  description = "Cloudflare API token (DNS:Edit, SSL:Edit, Cache Rules:Edit, Firewall:Edit, Tunnel:Edit scoped to scandrix.dev). Export TF_VAR_cloudflare_api_token from local .env. Empty disables Cloudflare resources."
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "Cloudflare Zone ID for scandrix.dev (Domain Overview, right sidebar)."
+  default     = ""
+}
+
+variable "cloudflare_account_id" {
+  type        = string
+  description = "Cloudflare Account ID for Tunnel + WAF."
+  default     = ""
+}
+
+variable "enable_nat_gateway" {
+  type        = bool
+  description = "Create NAT Gateway ($33/mo). False = public subnets + VPC endpoints, for $100-credit path with Supabase/CloudAMQP external."
+  default     = false
+}
+
+variable "enable_elasticache" {
+  type        = bool
+  description = "Create ElastiCache Redis ($14.6/mo). False = use external REDIS_URL (Upstash free / self-host)."
+  default     = false
+}
+
+variable "enable_cloudfront" {
+  type        = bool
+  description = "Create CloudFront distribution. False = Cloudflare CDN free instead."
+  default     = false
+}
+
+variable "enable_webhooks_service" {
+  type        = bool
+  description = "Run standalone webhooks Fargate service. False = merged into api (api handles /webhooks*), saves ~$11/mo."
+  default     = false
+}
+
+variable "enable_cloudflare_tunnel" {
+  type        = bool
+  description = "Create Cloudflare Tunnel + DNS + WAF. Requires cloudflare_api_token/zone/account IDs."
   default     = true
 }
