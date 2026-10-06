@@ -25,6 +25,8 @@ trace.out
 # 3. Environment Variables & Secret Credentials (Master Rule 1.5)
 .env
 .env.*
+.env.prod
+.env.production
 .env.extra
 .env.local
 !.env.example
