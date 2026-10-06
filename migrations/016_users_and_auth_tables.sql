@@ -52,7 +52,16 @@ CREATE TABLE IF NOT EXISTS "auth" (
 );
 
 CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users"(LOWER("email"));
-CREATE INDEX IF NOT EXISTS "idx_auth_refresh_token" ON "auth"("refreshToken");
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'auth' AND column_name = 'refreshToken'
+    ) THEN
+        CREATE INDEX IF NOT EXISTS "idx_auth_refresh_token" ON "auth"("refreshToken");
+    END IF;
+END $$;
 
 -- Grant permissions to scandrix_app runtime role
 
