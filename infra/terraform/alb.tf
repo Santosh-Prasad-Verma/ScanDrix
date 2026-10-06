@@ -1,11 +1,13 @@
 # ─────────────────────────────────────────────────────────────
-# Application Load Balancer (ALB)
+# Application Load Balancer (ALB) - Optional ($22/mo)
+# Disabled by default in favor of free Cloudflare Tunnel
 # ─────────────────────────────────────────────────────────────
 resource "aws_lb" "main" {
+  count              = var.enable_alb ? 1 : 0
   name               = "${var.project_name}-${var.environment}-alb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
+  security_groups    = [aws_security_group.alb[0].id]
   subnets            = aws_subnet.public[*].id
 
   # Was hardcoded to false, so a stray apply could delete the load balancer in
@@ -14,7 +16,7 @@ resource "aws_lb" "main" {
 
   # Without this the ALB kept no record of inbound requests.
   access_logs {
-    bucket  = aws_s3_bucket.alb_logs.bucket
+    bucket  = aws_s3_bucket.alb_logs[0].bucket
     prefix  = "alb"
     enabled = true
   }
@@ -28,6 +30,7 @@ resource "aws_lb" "main" {
 # Target Groups (target_type = ip for Fargate awsvpc)
 # ─────────────────────────────────────────────────────────────
 resource "aws_lb_target_group" "api" {
+  count       = var.enable_alb ? 1 : 0
   name        = "${var.project_name}-${var.environment}-api-tg"
   port        = 8080
   protocol    = "HTTP"
@@ -50,6 +53,7 @@ resource "aws_lb_target_group" "api" {
 }
 
 resource "aws_lb_target_group" "webhooks" {
+  count       = var.enable_alb && var.enable_webhooks_service ? 1 : 0
   name        = "${var.project_name}-${var.environment}-wh-tg"
   port        = 8081
   protocol    = "HTTP"
@@ -75,7 +79,8 @@ resource "aws_lb_target_group" "webhooks" {
 # Listeners & Routing Rules
 # ─────────────────────────────────────────────────────────────
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
+  count             = var.enable_alb ? 1 : 0
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 80
   protocol          = "HTTP"
 
@@ -91,27 +96,29 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.main.arn
+  count             = var.enable_alb ? 1 : 0
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.regional.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.regional[0].certificate_arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    target_group_arn = aws_lb_target_group.api[0].arn
   }
 }
 
 resource "aws_lb_listener_rule" "webhooks" {
-  listener_arn = aws_lb_listener.https.arn
+  count        = var.enable_alb ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
   priority     = 10
 
   action {
     # Merged path: api router already handles /webhooks* (RouterConfig secrets),
     # so when the standalone service is off (default) send to api.
     type             = "forward"
-    target_group_arn = var.enable_webhooks_service ? aws_lb_target_group.webhooks.arn : aws_lb_target_group.api.arn
+    target_group_arn = var.enable_webhooks_service ? aws_lb_target_group.webhooks[0].arn : aws_lb_target_group.api[0].arn
   }
 
   condition {

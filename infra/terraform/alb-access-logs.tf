@@ -28,6 +28,7 @@ variable "alb_log_retention_days" {
 }
 
 resource "aws_s3_bucket" "alb_logs" {
+  count         = var.enable_alb ? 1 : 0
   bucket        = "${var.project_name}-${var.environment}-alb-logs"
   force_destroy = false
 
@@ -37,7 +38,8 @@ resource "aws_s3_bucket" "alb_logs" {
 }
 
 resource "aws_s3_bucket_public_access_block" "alb_logs" {
-  bucket                  = aws_s3_bucket.alb_logs.id
+  count                   = var.enable_alb ? 1 : 0
+  bucket                  = aws_s3_bucket.alb_logs[0].id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -45,7 +47,8 @@ resource "aws_s3_bucket_public_access_block" "alb_logs" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
-  bucket = aws_s3_bucket.alb_logs.id
+  count  = var.enable_alb ? 1 : 0
+  bucket = aws_s3_bucket.alb_logs[0].id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -56,7 +59,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "alb_logs" {
-  bucket = aws_s3_bucket.alb_logs.id
+  count  = var.enable_alb ? 1 : 0
+  bucket = aws_s3_bucket.alb_logs[0].id
 
   rule {
     object_ownership = "BucketOwnerPreferred"
@@ -65,7 +69,8 @@ resource "aws_s3_bucket_ownership_controls" "alb_logs" {
 
 # Access logs are high-volume and low-value after a few weeks.
 resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
-  bucket = aws_s3_bucket.alb_logs.id
+  count  = var.enable_alb ? 1 : 0
+  bucket = aws_s3_bucket.alb_logs[0].id
 
   rule {
     id     = "expire-alb-access-logs"
@@ -84,6 +89,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
 }
 
 data "aws_iam_policy_document" "alb_logs" {
+  count = var.enable_alb ? 1 : 0
+
   statement {
     sid     = "AllowELBAccountWrite"
     effect  = "Allow"
@@ -94,14 +101,14 @@ data "aws_iam_policy_document" "alb_logs" {
       identifiers = [var.elb_log_delivery_account_id]
     }
 
-    resources = ["${aws_s3_bucket.alb_logs.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"]
+    resources = ["${aws_s3_bucket.alb_logs[0].arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"]
   }
 
   statement {
     sid       = "DenyUnencryptedTransport"
     effect    = "Deny"
     actions   = ["s3:*"]
-    resources = [aws_s3_bucket.alb_logs.arn, "${aws_s3_bucket.alb_logs.arn}/*"]
+    resources = [aws_s3_bucket.alb_logs[0].arn, "${aws_s3_bucket.alb_logs[0].arn}/*"]
 
     principals {
       type        = "*"
@@ -117,8 +124,9 @@ data "aws_iam_policy_document" "alb_logs" {
 }
 
 resource "aws_s3_bucket_policy" "alb_logs" {
-  bucket = aws_s3_bucket.alb_logs.id
-  policy = data.aws_iam_policy_document.alb_logs.json
+  count  = var.enable_alb ? 1 : 0
+  bucket = aws_s3_bucket.alb_logs[0].id
+  policy = data.aws_iam_policy_document.alb_logs[0].json
 
   depends_on = [aws_s3_bucket_public_access_block.alb_logs]
 }

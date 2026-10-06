@@ -5,12 +5,12 @@ output "vpc_id" {
 
 output "alb_dns_name" {
   description = "Public DNS name of the Application Load Balancer"
-  value       = aws_lb.main.dns_name
+  value       = var.enable_alb ? aws_lb.main[0].dns_name : ""
 }
 
 output "alb_zone_id" {
   description = "Canonical hosted zone ID of the Application Load Balancer"
-  value       = aws_lb.main.zone_id
+  value       = var.enable_alb ? aws_lb.main[0].zone_id : ""
 }
 
 output "cloudfront_domain_name" {
@@ -47,3 +47,35 @@ output "secrets_manager_arn" {
   description = "ARN of the AWS Secrets Manager secret"
   value       = aws_secretsmanager_secret.app_secrets.arn
 }
+
+output "cloudflare_tunnel_id" {
+  description = "ID of the Cloudflare Zero Trust Tunnel"
+  value       = local.cloudflare_enabled ? cloudflare_zero_trust_tunnel_cloudflared.main[0].id : ""
+}
+
+output "cloudflare_tunnel_name" {
+  description = "Name of the Cloudflare Zero Trust Tunnel"
+  value       = local.cloudflare_enabled ? cloudflare_zero_trust_tunnel_cloudflared.main[0].name : ""
+}
+
+output "cloudflare_tunnel_cname" {
+  description = "CNAME target for Cloudflare Tunnel DNS records"
+  value       = local.cloudflare_enabled ? "${cloudflare_zero_trust_tunnel_cloudflared.main[0].id}.cfargotunnel.com" : ""
+}
+
+output "cloudflare_tunnel_token" {
+  description = "Authentication token for cloudflared tunnel runner"
+  value       = local.cloudflare_enabled ? cloudflare_zero_trust_tunnel_cloudflared.main[0].tunnel_token : ""
+  sensitive   = true
+}
+
+output "api_url" {
+  description = "Public URL for ScanDrix API"
+  value       = local.cloudflare_enabled ? "https://api.${var.domain_name}" : (var.enable_alb ? "https://${aws_lb.main[0].dns_name}" : "")
+}
+
+output "webhooks_url" {
+  description = "Public URL for ScanDrix Webhooks"
+  value       = local.cloudflare_enabled ? "https://webhooks.${var.domain_name}" : (var.enable_alb ? "https://${aws_lb.main[0].dns_name}/webhooks" : "")
+}
+

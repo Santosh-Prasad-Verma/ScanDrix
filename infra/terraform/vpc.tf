@@ -124,6 +124,7 @@ resource "aws_route_table_association" "private" {
 # Security Groups
 # ─────────────────────────────────────────────────────────────
 resource "aws_security_group" "alb" {
+  count       = var.enable_alb ? 1 : 0
   name        = "${var.project_name}-${var.environment}-alb-sg"
   description = "Controls inbound traffic to Application Load Balancer"
   vpc_id      = aws_vpc.main.id
@@ -162,20 +163,26 @@ resource "aws_security_group" "ecs" {
   description = "Controls access to ECS tasks from ALB"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description     = "Inbound traffic from ALB to API container"
-    from_port       = 8080
-    to_port         = 8080
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+  dynamic "ingress" {
+    for_each = var.enable_alb ? [1] : []
+    content {
+      description     = "Inbound traffic from ALB to API container"
+      from_port       = 8080
+      to_port         = 8080
+      protocol        = "tcp"
+      security_groups = [aws_security_group.alb[0].id]
+    }
   }
 
-  ingress {
-    description     = "Inbound traffic from ALB to Webhooks container"
-    from_port       = 8081
-    to_port         = 8081
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+  dynamic "ingress" {
+    for_each = var.enable_alb && var.enable_webhooks_service ? [1] : []
+    content {
+      description     = "Inbound traffic from ALB to Webhooks container"
+      from_port       = 8081
+      to_port         = 8081
+      protocol        = "tcp"
+      security_groups = [aws_security_group.alb[0].id]
+    }
   }
 
   egress {

@@ -121,6 +121,7 @@ resource "aws_cloudwatch_metric_alarm" "api_memory_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  count               = var.enable_alb ? 1 : 0
   alarm_name          = "${var.project_name}-${var.environment}-alb-5xx-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
@@ -134,6 +135,39 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
   ok_actions          = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    LoadBalancer = aws_lb.main.arn_suffix
+    LoadBalancer = aws_lb.main[0].arn_suffix
   }
 }
+
+# ─────────────────────────────────────────────────────────────
+# Cloudflare Tunnel Sidecar Monitoring
+# ─────────────────────────────────────────────────────────────
+resource "aws_cloudwatch_log_metric_filter" "cloudflared_errors" {
+  count          = local.cloudflare_enabled ? 1 : 0
+  name           = "${var.project_name}-${var.environment}-cloudflared-errors"
+  log_group_name = aws_cloudwatch_log_group.api.name
+  pattern        = "?ERR ?\"ERR \" ?\"error\" ?\"failed to connect\""
+
+  metric_transformation {
+    name          = "CloudflaredErrorCount"
+    namespace     = "${var.project_name}/CloudflareTunnel"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cloudflared_errors" {
+  count               = local.cloudflare_enabled ? 1 : 0
+  alarm_name          = "${var.project_name}-${var.environment}-cloudflared-errors-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "CloudflaredErrorCount"
+  namespace           = "${var.project_name}/CloudflareTunnel"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 5
+  alarm_description   = "Triggered when cloudflared tunnel logs 5+ connection/tunnel errors within 5 minutes"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+}
+

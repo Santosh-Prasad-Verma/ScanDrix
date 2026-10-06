@@ -2,7 +2,7 @@
 # CloudFront CDN Distribution
 # ─────────────────────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "main" {
-  count               = var.enable_cloudfront ? 1 : 0
+  count               = var.enable_cloudfront && var.enable_alb ? 1 : 0
   enabled             = true
   is_ipv6_enabled     = true
   comment             = "ScanDrix CloudFront Edge CDN"
@@ -10,8 +10,8 @@ resource "aws_cloudfront_distribution" "main" {
   aliases             = [var.domain_name, "www.${var.domain_name}"]
 
   origin {
-    domain_name = aws_lb.main.dns_name
-    origin_id   = "ALB-${aws_lb.main.name}"
+    domain_name = aws_lb.main[0].dns_name
+    origin_id   = "ALB-${aws_lb.main[0].name}"
 
     custom_origin_config {
       http_port              = 80
@@ -22,7 +22,7 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   default_cache_behavior {
-    target_origin_id       = "ALB-${aws_lb.main.name}"
+    target_origin_id       = "ALB-${aws_lb.main[0].name}"
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
 
@@ -38,7 +38,7 @@ resource "aws_cloudfront_distribution" "main" {
   # Static assets cache behavior (can cache for 1 day)
   ordered_cache_behavior {
     path_pattern           = "/static/*"
-    target_origin_id       = "ALB-${aws_lb.main.name}"
+    target_origin_id       = "ALB-${aws_lb.main[0].name}"
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
 
@@ -56,7 +56,7 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.cloudfront.certificate_arn
+    acm_certificate_arn      = aws_acm_certificate_validation.cloudfront[0].certificate_arn
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }

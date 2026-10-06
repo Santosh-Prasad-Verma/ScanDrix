@@ -106,5 +106,6 @@ provider "aws" {
 # Cloudflare Free (DNS + CDN + WAF + Tunnel, no R2).
 # Token comes from TF_VAR_cloudflare_api_token (local .env only, never committed).
 provider "cloudflare" {
-  api_token = var.cloudflare_api_token
+  api_token = var.cloudflare_api_token != "" ? var.cloudflare_api_token : "0000000000000000000000000000000000000000"
 }
+

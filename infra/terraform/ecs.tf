@@ -125,7 +125,7 @@ resource "aws_ecs_task_definition" "api" {
     cpu_architecture        = "ARM64"
   }
 
-  container_definitions = jsonencode([
+  container_definitions = jsonencode(concat([
     {
       name      = "api"
       image     = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
@@ -177,10 +177,11 @@ resource "aws_ecs_task_definition" "api" {
           "awslogs-stream-prefix" = "api"
         }
       }
-    },
+    }
+    ], local.cloudflare_enabled ? [
     {
       # Cloudflare Tunnel sidecar: outbound-only, no public ALB needed.
-      # TUNNEL_TOKEN lives in SecretsManager (local .env only, never committed).
+      # TUNNEL_TOKEN is automatically provisioned and managed via SecretsManager.
       name      = "cloudflared"
       image     = "cloudflare/cloudflared:latest"
       essential = false
@@ -199,7 +200,7 @@ resource "aws_ecs_task_definition" "api" {
         }
       }
     }
-  ])
+  ] : []))
 }
 
 resource "aws_ecs_task_definition" "webhooks" {
@@ -345,17 +346,20 @@ resource "aws_ecs_service" "api" {
     assign_public_ip = !var.enable_nat_gateway
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.api.arn
-    container_name   = "api"
-    container_port   = 8080
+  dynamic "load_balancer" {
+    for_each = var.enable_alb ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.api[0].arn
+      container_name   = "api"
+      container_port   = 8080
+    }
   }
 
   deployment_controller {
     type = "ECS"
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [aws_iam_role.ecs_execution_role]
 }
 
 resource "aws_ecs_service" "webhooks" {
@@ -371,17 +375,20 @@ resource "aws_ecs_service" "webhooks" {
     assign_public_ip = !var.enable_nat_gateway
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.webhooks.arn
-    container_name   = "webhooks"
-    container_port   = 8081
+  dynamic "load_balancer" {
+    for_each = var.enable_alb && var.enable_webhooks_service ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.webhooks[0].arn
+      container_name   = "webhooks"
+      container_port   = 8081
+    }
   }
 
   deployment_controller {
     type = "ECS"
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [aws_iam_role.ecs_execution_role]
 }
 
 resource "aws_ecs_service" "worker" {

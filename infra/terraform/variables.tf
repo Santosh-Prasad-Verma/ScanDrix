@@ -171,8 +171,8 @@ variable "api_desired_count" {
   default     = 1
 
   validation {
-    condition     = var.api_desired_count >= 1 && var.api_desired_count <= 50
-    error_message = "api_desired_count must be between 1 and 50 (current default 2)."
+    condition     = var.api_desired_count >= 0 && var.api_desired_count <= 50
+    error_message = "api_desired_count must be between 0 and 50 (current default 1)."
   }
 
 }
@@ -207,8 +207,8 @@ variable "worker_desired_count" {
   default     = 1
 
   validation {
-    condition     = var.worker_desired_count >= 1 && var.worker_desired_count <= 50
-    error_message = "worker_desired_count must be between 1 and 50 (current default 1)."
+    condition     = var.worker_desired_count >= 0 && var.worker_desired_count <= 50
+    error_message = "worker_desired_count must be between 0 and 50 (current default 1)."
   }
 
 }
@@ -266,8 +266,8 @@ variable "webhooks_desired_count" {
   default     = 0
 
   validation {
-    condition     = var.webhooks_desired_count >= 1 && var.webhooks_desired_count <= 50
-    error_message = "webhooks_desired_count must be between 1 and 50 (current default 2)."
+    condition     = var.webhooks_desired_count >= 0 && var.webhooks_desired_count <= 50
+    error_message = "webhooks_desired_count must be between 0 and 50 (current default 0)."
   }
 
 }
@@ -335,6 +335,12 @@ variable "alb_deletion_protection" {
   type        = bool
   description = "Block deletion of the ALB. Was hardcoded to false, so a stray apply could remove the load balancer in front of production."
   default     = true
+}
+
+variable "enable_alb" {
+  type        = bool
+  description = "Create Application Load Balancer ($22/mo). False = use Cloudflare Tunnel (cloudflared sidecar) for 100% free ingress with zero open ports."
+  default     = false
 }
 
 variable "cloudflare_api_token" {

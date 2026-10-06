@@ -29,7 +29,7 @@ resource "aws_secretsmanager_secret_version" "app_secrets_initial" {
     DATABASE_URL           = "postgresql://postgres:REPLACE_IN_AWS_SECRETS@db.scandrix.internal:5432/scandrix"
     RABBITMQ_URL           = "amqps://REPLACE_IN_AWS_SECRETS@puffin.rmq2.cloudamqp.com/vhost"
     REDIS_URL              = "redis://:REPLACE_IN_AWS_SECRETS@cache.scandrix.internal:6379/0"
-    TUNNEL_TOKEN           = "REPLACE_IN_AWS_SECRETS"
+    TUNNEL_TOKEN           = local.cloudflare_enabled ? cloudflare_zero_trust_tunnel_cloudflared.main[0].tunnel_token : "REPLACE_IN_AWS_SECRETS"
     JWT_SECRET             = var.jwt_secret
     SENTRY_DSN             = ""
     RESEND_API_KEY         = ""
