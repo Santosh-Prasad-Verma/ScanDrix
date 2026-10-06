@@ -39,7 +39,7 @@ services:
     restart: "no"
     entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
     environment:
-      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be provided in .env}
+      - DATABASE_URL=${DIRECT_URL:-${DATABASE_URL}}
     networks:
       - scandrix-network
 
