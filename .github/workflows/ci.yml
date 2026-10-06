@@ -54,6 +54,11 @@ jobs:
       #                     superuser bypasses RLS and would make them vacuous.
       MIGRATION_DATABASE_URL: postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable
       SCANDRIX_TEST_DATABASE_URL: postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable
+      # The billing, auth-session, repository-settings and review-analytics suites
+      # read SCANDRIX_ANALYTICS_TEST_DATABASE_URL and skip without it. Those skips
+      # hid payment-integrity, entitlement and RLS defects that only a real
+      # PostgreSQL exposes, so the name has to be provided here too.
+      SCANDRIX_ANALYTICS_TEST_DATABASE_URL: postgres://scandrix_test:test_password@localhost:5432/scandrix_test_db?sslmode=disable
       SCANDRIX_E2E_RUNTIME_DSN: postgres://scandrix_runtime:test_password@localhost:5432/scandrix_test_db?sslmode=disable
 
     steps:

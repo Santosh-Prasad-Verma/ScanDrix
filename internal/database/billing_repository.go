@@ -296,14 +296,22 @@ func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.U
 // unique or exclusion constraint), and migration before code fails on the very
 // duplicate it introduces. These two statements behave identically whether or
 // not the index is present, so either can ship first.
+//
+// byok_enabled is read from plan_configurations rather than hardcoded true.
+// LiveQuotaStatus.BYOKEnabled is sourced from this column, and
+// usage_controller computes isExhausted as
+// !quota.BYOKEnabled && limit > 0 && used >= limit -- a literal true made
+// isExhausted permanently false, so a workspace past its token ceiling was
+// never reported as exhausted. COALESCE(..., false) fails closed when a tier
+// has no configuration row.
 const (
 	updateSeats = `
 		UPDATE organization_billing_seats
-		SET tier = $2,
+		SET tier = $2::varchar,
 		    max_seats = $3,
 		    allocated_seats = GREATEST(allocated_seats, 1),
-		    byok_enabled = true,
-		    dora_enabled = true,
+		    byok_enabled = COALESCE((SELECT byok_allowed FROM plan_configurations WHERE tier = $2::varchar), false),
+		    dora_enabled = COALESCE((SELECT byok_allowed FROM plan_configurations WHERE tier = $2::varchar), false),
 		    active_until = $4,
 		    updated_at = now()
 		WHERE workspace_id = $1;
@@ -312,7 +320,12 @@ const (
 	insertSeats = `
 		INSERT INTO organization_billing_seats (
 			id, workspace_id, tier, max_seats, allocated_seats, byok_enabled, dora_enabled, active_until, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 1, true, true, $5, now(), now());
+		) VALUES (
+			$1, $2, $3, $4, 1,
+			COALESCE((SELECT byok_allowed FROM plan_configurations WHERE tier = $3::varchar), false),
+			COALESCE((SELECT byok_allowed FROM plan_configurations WHERE tier = $3::varchar), false),
+			$5, now(), now()
+		);
 	`
 )
 

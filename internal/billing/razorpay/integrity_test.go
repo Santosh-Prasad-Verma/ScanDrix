@@ -150,6 +150,27 @@ func TestBillingUsesStoredQuotasAndIsIdempotentAcrossServices(t *testing.T) {
 	require.EqualValues(t, 12345, details.MonthlyTokenLimit)
 	require.False(t, details.BYOKAllowed)
 	require.Equal(t, []string{"configured-model"}, details.AllocatedModels)
+
+	// The seat row is the source LiveQuotaStatus reads, and usage_controller
+	// derives isExhausted from it as !BYOKEnabled && used >= limit. A literal
+	// true here made isExhausted permanently false, so an over-quota workspace
+	// was never reported as exhausted.
+	require.NoError(t, repo.Client().ExecWithTenant(ctx, workspace, func(tx pgx.Tx) error {
+		var byok bool
+		if err := tx.QueryRow(ctx, `SELECT byok_enabled FROM organization_billing_seats WHERE workspace_id=$1`, workspace).Scan(&byok); err != nil {
+			return err
+		}
+		require.False(t, byok, "seat row must carry the plan configuration's BYOK entitlement")
+		return nil
+	}))
+	quota, err := repo.GetLiveTokenQuota(ctx, workspace)
+	require.NoError(t, err)
+	require.False(t, quota.BYOKEnabled, "quota status must not grant BYOK the plan configuration withholds")
+	// Mirrors usage_controller: isExhausted := !BYOKEnabled && limit > 0 && used >= limit.
+	// With BYOKEnabled hardcoded true this was permanently false, so an
+	// over-quota workspace was never reported as exhausted.
+	isExhausted := !quota.BYOKEnabled && quota.MonthlyTokenLimit > 0 && quota.TokensUsedThisMonth >= quota.MonthlyTokenLimit
+	require.False(t, isExhausted, "a workspace under its ceiling must not be reported exhausted")
 	_, monthly, _, burst, exists := limiter.GetUsage(workspace)
 	require.True(t, exists)
 	require.EqualValues(t, 12345, monthly)
