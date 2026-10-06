@@ -199,13 +199,21 @@ func TestSQLReferencesExistingTables(t *testing.T) {
 	client := connectLiveDB(t)
 	tables, _ := loadSchema(t, client)
 
+	files := goSQLFiles(t)
+
+	// Collect CTE aliases defined in WITH ... AS ( across all Go SQL sources,
+	// since a CTE clause may be defined as a package/file constant and prepended
+	// to query fragments dynamically (e.g. scopedReviewsSQL in review_analytics_repository.go).
+	ctes := map[string]bool{}
+	for _, f := range files {
+		for _, m := range cteAliasRe.FindAllStringSubmatch(readSource(t, f), -1) {
+			ctes[strings.ToLower(m[1])] = true
+		}
+	}
+
 	missing := map[string][]string{}
-	for _, f := range goSQLFiles(t) {
+	for _, f := range files {
 		for _, lit := range rawSQLLiterals(readSource(t, f)) {
-			ctes := map[string]bool{}
-			for _, m := range cteAliasRe.FindAllStringSubmatch(lit, -1) {
-				ctes[strings.ToLower(m[1])] = true
-			}
 			for _, m := range sqlTableRefRe.FindAllStringSubmatch(lit, -1) {
 				name := strings.ToLower(m[1])
 				if catalogTables[name] || tables[name] || ctes[name] || nonTableWords[name] {
