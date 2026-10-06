@@ -235,7 +235,7 @@ services:
     environment:
       # dynamodb is required for Terraform state locking on Terraform 1.9.x.
       # AUDIT_REMEDIATION.md F-59.
-      - SERVICES=kms,s3,sqs,secretsmanager,dynamodb
+      - SERVICES=kms,s3,sqs,secretsmanager,dynamodb,ec2,ecs,iam,logs,sns
       - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
     volumes:

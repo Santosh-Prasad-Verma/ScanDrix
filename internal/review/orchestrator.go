@@ -54,6 +54,7 @@ type Orchestrator struct {
 	streamHub       *StreamHub
 	feedbackService *feedback.SemanticFeedbackService
 	sandboxLeaseMgr contracts.ISandboxLeaseManager
+	settingsReader  repositorySettingsReader
 }
 
 // 2. DEPENDENCY INJECTION BINDINGS (Streaming hub, adapters & attestors)
@@ -69,12 +70,17 @@ func NewOrchestrator(
 	if repo != nil {
 		fbService = feedback.NewSemanticFeedbackService(repo, embedding.NewDeterministicSemanticEmbedder())
 	}
+	var sr repositorySettingsReader
+	if repo != nil {
+		sr = repo
+	}
 	return &Orchestrator{
 		repo:            repo,
 		llmGateway:      llmGateway,
 		artifactClient:  artifactClient,
 		rulesEvaluator:  rulesEvaluator,
 		feedbackService: fbService,
+		settingsReader:  sr,
 	}
 }
 
@@ -167,10 +173,12 @@ type ExecutionTask struct {
 	Title         string
 	HeadSHA       string
 	BaseSHA       string
+	BaseBranch    string
 	Author        string
 	RawDiff       string
 	CustomRules   string
 	CheckRunID    int64
+	Manual        bool
 	Provider      models.SCMProvider
 	SCMAdapter    platform.SCMAdapter
 }
@@ -179,6 +187,43 @@ type ExecutionTask struct {
 
 // ProcessReview executes all analysis stages, records findings, and uploads scan artifacts.
 func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) error {
+	var settings models.RepositoryReviewSettings
+	if o.settingsReader != nil {
+		s, err := o.settingsReader.GetRepositoryReviewSettings(ctx, task.WorkspaceID, task.RepositoryID)
+		if err != nil {
+			return err
+		}
+		settings = s
+		reason, err := repositoryPolicyReason(settings, task)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			slog.Info("Review skipped per repository policy", "reason", reason, "review_id", task.ReviewID)
+			if o.repo != nil {
+				now := time.Now().UTC()
+				_ = o.repo.CreateReview(ctx, &models.PullRequestReview{
+					ID:             task.ReviewID,
+					WorkspaceID:    task.WorkspaceID,
+					RepositoryID:   task.RepositoryID,
+					PullNumber:     task.PullNumber,
+					Title:          task.Title,
+					HeadSHA:        task.HeadSHA,
+					BaseSHA:        task.BaseSHA,
+					AuthorUsername: task.Author,
+					State:          models.ReviewStateSkipped,
+					CompletedAt:    &now,
+				})
+			}
+			return nil
+		}
+		task.RawDiff = filterRepositoryDiff(task.RawDiff, settings.IgnoredPaths)
+		if len(strings.TrimSpace(task.RawDiff)) == 0 {
+			slog.Info("Review skipped: all diff content filtered by repository policy", "review_id", task.ReviewID)
+			return nil
+		}
+	}
+
 	slog.Info("Starting pull request review execution",
 		"review_id", task.ReviewID,
 		"repo", task.RepoNamespace,
@@ -429,6 +474,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 			PullTitle:     task.Title,
 			DiffContent:   diffForLLM,
 			CustomRules:   task.CustomRules,
+			Model:         settings.ModelOverride,
 		}
 
 		if o.repo != nil {
@@ -649,7 +695,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		summaryText += "\n\n> ℹ️ **Notice:** PR diff size exceeded the 250KB context threshold; high blast-radius files and critical call-graph paths were prioritized."
 	}
 
-	if adapter != nil && task.RepoNamespace != "" && task.PullNumber > 0 {
+	if !settings.DryRunEnabled && adapter != nil && task.RepoNamespace != "" && task.PullNumber > 0 {
 		var inlineSpecs []platform.InlineCommentSpec
 		for _, f := range allFindings {
 			inlineSpecs = append(inlineSpecs, platform.InlineCommentSpec{
@@ -670,7 +716,7 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		if task.HeadSHA != "" {
 			_ = adapter.SetCommitStatus(ctx, task.RepoNamespace, task.HeadSHA, "scandrix/review", commitStatusState, "https://scandrix.dev", summaryText)
 		}
-	} else if o.scmPublisher != nil && task.RepoNamespace != "" && task.PullNumber > 0 {
+	} else if !settings.DryRunEnabled && o.scmPublisher != nil && task.RepoNamespace != "" && task.PullNumber > 0 {
 		parts := strings.Split(task.RepoNamespace, "/")
 		if len(parts) == 2 {
 			owner, repoName := parts[0], parts[1]

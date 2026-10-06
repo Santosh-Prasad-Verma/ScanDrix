@@ -94,6 +94,7 @@ const (
 	ReviewStateProcessing ReviewState = "PROCESSING"
 	ReviewStateCompleted  ReviewState = "COMPLETED"
 	ReviewStateFailed     ReviewState = "FAILED"
+	ReviewStateSkipped    ReviewState = "SKIPPED"
 )
 
 // PullRequestReview holds metadata and execution state for a PR review run.
@@ -347,8 +348,9 @@ type BillingTransaction struct {
 	Signature   string    `json:"signature" db:"signature"`
 	Amount      int64     `json:"amount" db:"amount"`
 	Currency    string    `json:"currency" db:"currency"`
-	PlanTier    string    `json:"plan_tier" db:"plan_tier"`
-	Status      string    `json:"status" db:"status"`
+	PlanTier        string    `json:"plan_tier" db:"plan_tier"`
+	BillingInterval string    `json:"billing_interval,omitempty" db:"billing_interval"`
+	Status          string    `json:"status" db:"status"`
 	Receipt     string    `json:"receipt" db:"receipt"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`

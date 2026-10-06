@@ -2,6 +2,7 @@ package clireview
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -57,6 +58,13 @@ func (ds *DashboardStore) GetCliReviews(q CliReviewsQuery) CliReviewsListRespons
 
 		matched = append(matched, r)
 	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].ID < matched[j].ID
+		}
+		return matched[i].CreatedAt.After(matched[j].CreatedAt)
+	})
 
 	total := len(matched)
 	if q.Offset >= total {

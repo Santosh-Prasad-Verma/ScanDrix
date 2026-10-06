@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -79,12 +80,32 @@ type CreateOrderResponse struct {
 
 // VerifyPaymentRequest contains client-side cryptographic proof of payment.
 type VerifyPaymentRequest struct {
-	OrderID        string `json:"razorpay_order_id"`
-	PaymentID      string `json:"razorpay_payment_id"`
-	Signature      string `json:"razorpay_signature"`
-	PlanTier       string `json:"plan_tier"`
-	RecipientEmail string `json:"recipient_email,omitempty"`
-	RecipientName  string `json:"recipient_name,omitempty"`
+	OrderID         string `json:"razorpay_order_id"`
+	PaymentID       string `json:"razorpay_payment_id"`
+	Signature       string `json:"razorpay_signature"`
+	PlanTier        string `json:"plan_tier"`
+	BillingInterval string `json:"billing_interval,omitempty"`
+	RecipientEmail  string `json:"recipient_email,omitempty"`
+	RecipientName   string `json:"recipient_name,omitempty"`
+}
+
+// SubscriptionAmount computes the total charged amount based on base amount and billing interval.
+// Annual subscriptions apply a 10x multiplier (2 months free discount).
+func SubscriptionAmount(baseAmount int64, interval string) (int64, error) {
+	if baseAmount < 0 {
+		return 0, errors.New("negative base amount")
+	}
+	switch strings.ToLower(strings.TrimSpace(interval)) {
+	case "annual", "yearly":
+		if baseAmount > math.MaxInt64/10 {
+			return 0, errors.New("subscription amount overflow")
+		}
+		return baseAmount * 10, nil
+	case "monthly", "":
+		return baseAmount, nil
+	default:
+		return 0, fmt.Errorf("unsupported billing interval: %s", interval)
+	}
 }
 
 // CreateSubscriptionOrder generates a Razorpay order and saves a pending transaction record.
@@ -267,14 +288,6 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 	planTier := license.NormalizeTier(license.LicenseTier(planTierStr))
 	quota := license.GetPlanQuota(planTier)
 
-	// Expiry: 30 days active subscription
-	expiresAt := time.Now().UTC().AddDate(0, 1, 0)
-	maxSeats := quota.MaxSeats
-	features := []string{
-		"saml_sso", "scim_provisioning", "custom_rules", "priority_ai_router",
-		"audit_log_cef", "unlimited_repos", "dora_metrics", "byok_encryption",
-	}
-
 	var chargedTx *models.BillingTransaction
 	if s.repo != nil {
 		// Idempotency check: if transaction is already captured, do not re-run side effects
@@ -284,11 +297,32 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 				return activeLic, nil
 			}
 		}
+	}
 
+	// Expiry: default 30 days, or 1 year if annual
+	expiresAt := time.Now().UTC().AddDate(0, 1, 0)
+	if chargedTx != nil {
+		if strings.EqualFold(chargedTx.BillingInterval, "annual") || strings.EqualFold(chargedTx.BillingInterval, "yearly") {
+			expiresAt = time.Now().UTC().AddDate(1, 0, 0)
+		}
+	}
+	maxSeats := quota.MaxSeats
+	features := []string{
+		"saml_sso", "scim_provisioning", "custom_rules", "priority_ai_router",
+		"audit_log_cef", "unlimited_repos", "dora_metrics", "byok_encryption",
+	}
+
+	if s.repo != nil {
 		// Read dynamic entitlements and seats from DB Single Source of Truth
 		dbPlan, _ := s.repo.GetPlanConfiguration(ctx, string(planTier))
 		if dbPlan != nil {
 			maxSeats = dbPlan.MaxSeats
+			if dbPlan.MonthlyTokens > 0 {
+				quota.MonthlyTokens = dbPlan.MonthlyTokens
+			}
+			if dbPlan.BurstLimitPerMin > 0 {
+				quota.BurstLimitPerMin = dbPlan.BurstLimitPerMin
+			}
 			if len(dbPlan.FeaturesEnabled) > 0 {
 				features = dbPlan.FeaturesEnabled
 			}
@@ -376,11 +410,15 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 				NextBillingDate:  expiresAt,
 				BillingPortalURL: billingPortalURL,
 			}
-			_ = s.mailer.SendPaymentInvoiceEmail(ctx, recipientEmail, inv)
+			if mailErr := s.mailer.SendPaymentInvoiceEmail(ctx, recipientEmail, inv); mailErr != nil {
+				slog.Error("billing.email.payment_invoice_failed", "recipient", recipientEmail, "error", mailErr)
+			}
 
 			// 5b. Send Subscription Welcome Email with unlocked frontier models
 			allocatedModels := license.GetAllocatedModelsList(planTier)
-			_ = s.mailer.SendSubscriptionWelcomeEmail(ctx, recipientEmail, recipientName, orgName, string(planTier), quota.MonthlyTokens, allocatedModels, dashboardURL)
+			if mailErr := s.mailer.SendSubscriptionWelcomeEmail(ctx, recipientEmail, recipientName, orgName, string(planTier), quota.MonthlyTokens, allocatedModels, dashboardURL); mailErr != nil {
+				slog.Error("billing.email.subscription_welcome_failed", "recipient", recipientEmail, "error", mailErr)
+			}
 		}
 	}
 
@@ -434,6 +472,60 @@ func (s *BillingService) VerifyWebhookSignature(payload []byte, signature string
 	return VerifyWebhookSignature(payload, signature, s.webhookSecret)
 }
 
+// PrepareVerifiedWebhook verifies tenant identity from the stored transaction, scrubs sensitive customer PII,
+// and returns the resolved workspace ID along with the sanitized payload.
+func (s *BillingService) PrepareVerifiedWebhook(ctx context.Context, payload []byte) (uuid.UUID, []byte, error) {
+	var event WebhookEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return uuid.Nil, nil, fmt.Errorf("failed parsing webhook event payload: %w", err)
+	}
+
+	orderID := event.Payload.Payment.Entity.OrderID
+	if orderID == "" {
+		orderID = event.Payload.Order.Entity.ID
+	}
+	if orderID == "" {
+		return uuid.Nil, nil, errors.New("webhook payload missing order_id")
+	}
+
+	if s.repo == nil {
+		return uuid.Nil, nil, errors.New("repository unavailable for webhook resolution")
+	}
+
+	tx, err := s.repo.LookupBillingTransactionByOrderID(ctx, orderID)
+	if err != nil || tx == nil {
+		return uuid.Nil, nil, fmt.Errorf("unrecognized order_id '%s': transaction not found in database", orderID)
+	}
+
+	// Sanitize payload: strip PII (email, customer info) and untrusted notes from payload
+	var rawMap map[string]any
+	if err := json.Unmarshal(payload, &rawMap); err != nil {
+		return tx.WorkspaceID, payload, nil
+	}
+
+	if p, ok := rawMap["payload"].(map[string]any); ok {
+		if payment, ok := p["payment"].(map[string]any); ok {
+			if entity, ok := payment["entity"].(map[string]any); ok {
+				delete(entity, "email")
+				delete(entity, "contact")
+				delete(entity, "notes")
+			}
+		}
+		if order, ok := p["order"].(map[string]any); ok {
+			if entity, ok := order["entity"].(map[string]any); ok {
+				delete(entity, "notes")
+			}
+		}
+	}
+
+	filteredBytes, err := json.Marshal(rawMap)
+	if err != nil {
+		filteredBytes = payload
+	}
+
+	return tx.WorkspaceID, filteredBytes, nil
+}
+
 // ProcessVerifiedWebhook processes an unmarshaled or already signature-verified webhook payload asynchronously.
 func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []byte) error {
 	var event WebhookEvent
@@ -449,19 +541,36 @@ func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []b
 		}
 		paymentID := event.Payload.Payment.Entity.ID
 
-		wsIDStr := event.Payload.Payment.Entity.Notes["workspace_id"]
-		if wsIDStr == "" {
-			wsIDStr = event.Payload.Order.Entity.Notes["workspace_id"]
-		}
-		wsID, err := uuid.Parse(wsIDStr)
-		if err != nil {
-			return nil // No workspace associated; skip
+		if orderID == "" || paymentID == "" {
+			return errors.New("missing order_id or payment_id in webhook")
 		}
 
-		planTierStr := event.Payload.Payment.Entity.Notes["plan_tier"]
-		if planTierStr == "" {
-			planTierStr = event.Payload.Order.Entity.Notes["plan_tier"]
+		// Server-side provider verification: provider payment must be captured
+		if s.client != nil {
+			payment, err := s.client.FetchPayment(ctx, paymentID)
+			if err != nil {
+				return fmt.Errorf("failed fetching payment from razorpay API: %w", err)
+			}
+			if payment.Status != "captured" {
+				return fmt.Errorf("signed event claims cannot replace provider capture: razorpay status is %s", payment.Status)
+			}
 		}
+
+		// Look up stored transaction to get the genuine tenant workspace ID and plan tier
+		var tx *models.BillingTransaction
+		if s.repo != nil {
+			var err error
+			tx, err = s.repo.LookupBillingTransactionByOrderID(ctx, orderID)
+			if err != nil || tx == nil {
+				return fmt.Errorf("transaction not found for order: %s", orderID)
+			}
+		}
+		if tx == nil {
+			return errors.New("cannot verify payment without database transaction")
+		}
+
+		wsID := tx.WorkspaceID
+		planTierStr := tx.PlanTier
 		if planTierStr == "" {
 			planTierStr = "TEAM"
 		}
@@ -477,8 +586,13 @@ func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []b
 	case "payment.failed":
 		orderID := event.Payload.Payment.Entity.OrderID
 		paymentID := event.Payload.Payment.Entity.ID
-		wsIDStr := event.Payload.Payment.Entity.Notes["workspace_id"]
-		if wsID, err := uuid.Parse(wsIDStr); err == nil {
+		var wsID uuid.UUID
+		if s.repo != nil && orderID != "" {
+			if tx, err := s.repo.LookupBillingTransactionByOrderID(ctx, orderID); err == nil && tx != nil {
+				wsID = tx.WorkspaceID
+			}
+		}
+		if wsID != uuid.Nil {
 			if s.repo != nil {
 				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, "", "failed")
 			}
@@ -490,17 +604,23 @@ func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []b
 				}
 				if recipientEmail != "" {
 					retryURL := s.appBaseURL + "/billing"
-					_ = s.mailer.SendPaymentFailedEmail(ctx, recipientEmail, recipientName, "Workspace", "Pro Team", orderID, "Transaction declined by issuing bank", retryURL)
+					if mailErr := s.mailer.SendPaymentFailedEmail(ctx, recipientEmail, recipientName, "Workspace", "Pro Team", orderID, "Transaction declined by issuing bank", retryURL); mailErr != nil {
+						slog.Error("billing.email.payment_failed_notification_failed", "recipient", recipientEmail, "error", mailErr)
+					}
 				}
 			}
 		}
 
 	case "refund.processed", "refund.created":
-		// Record refund status in billing_transactions for ledger reconciliation (§12 Razorpay Security Audit).
 		paymentID := event.Payload.Payment.Entity.ID
 		orderID := event.Payload.Payment.Entity.OrderID
-		wsIDStr := event.Payload.Payment.Entity.Notes["workspace_id"]
-		if wsID, err := uuid.Parse(wsIDStr); err == nil {
+		var wsID uuid.UUID
+		if s.repo != nil && orderID != "" {
+			if tx, err := s.repo.LookupBillingTransactionByOrderID(ctx, orderID); err == nil && tx != nil {
+				wsID = tx.WorkspaceID
+			}
+		}
+		if wsID != uuid.Nil {
 			if s.repo != nil {
 				_ = s.repo.UpdateBillingTransactionStatus(ctx, wsID, orderID, paymentID, "", "refunded")
 			}
@@ -512,7 +632,6 @@ func (s *BillingService) ProcessVerifiedWebhook(ctx context.Context, payload []b
 			)
 		}
 	}
-
 	return nil
 }
 

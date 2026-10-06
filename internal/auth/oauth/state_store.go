@@ -32,14 +32,14 @@ type StateStore struct {
 }
 
 type stateEntry struct {
-	provider  OAuthProvider
-	createdAt time.Time
+	Provider  OAuthProvider `json:"provider"`
+	CreatedAt time.Time     `json:"created_at"`
 	// CodeVerifier is the PKCE verifier (RFC 7636) for this flow. It stays
 	// server-side and is only handed to the token endpoint at exchange, so a
 	// stolen authorization code is useless without it.
-	CodeVerifier string
+	CodeVerifier string `json:"code_verifier"`
 	// Nonce is echoed into the ID token and checked on return.
-	Nonce string
+	Nonce string `json:"nonce"`
 }
 
 // NewStateStore creates an in-memory store with the given TTL for state tokens.
@@ -129,7 +129,7 @@ func (s *StateStore) GeneratePKCE(provider OAuthProvider) (state, verifier, nonc
 	}
 	nonce = base64.RawURLEncoding.EncodeToString(nb)
 
-	entry := stateEntry{provider: provider, createdAt: time.Now(), CodeVerifier: verifier, Nonce: nonce}
+	entry := stateEntry{Provider: provider, CreatedAt: time.Now(), CodeVerifier: verifier, Nonce: nonce}
 
 	if s.redisClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -174,7 +174,7 @@ func (s *StateStore) Consume(state string, expectedProvider OAuthProvider) (veri
 		`)
 		if res, err := luaScript.Run(ctx, s.redisClient, []string{key}).Text(); err == nil && res != "" {
 			var entry stateEntry
-			if json.Unmarshal([]byte(res), &entry) == nil && entry.provider == expectedProvider {
+			if json.Unmarshal([]byte(res), &entry) == nil && entry.Provider == expectedProvider && time.Since(entry.CreatedAt) <= s.ttl {
 				return entry.CodeVerifier, entry.Nonce, true
 			}
 			return "", "", false
@@ -184,10 +184,13 @@ func (s *StateStore) Consume(state string, expectedProvider OAuthProvider) (veri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, exists := s.states[state]
-	if !exists || entry.provider != expectedProvider {
+	if !exists {
 		return "", "", false
 	}
 	delete(s.states, state)
+	if time.Since(entry.CreatedAt) > s.ttl || entry.Provider != expectedProvider {
+		return "", "", false
+	}
 	return entry.CodeVerifier, entry.Nonce, true
 }
 
@@ -216,7 +219,7 @@ func (s *StateStore) Generate(provider OAuthProvider) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		key := "scandrix:oauth:state:" + state
-		if payload, mErr := json.Marshal(stateEntry{provider: provider, createdAt: time.Now()}); mErr == nil {
+		if payload, mErr := json.Marshal(stateEntry{Provider: provider, CreatedAt: time.Now()}); mErr == nil {
 			if err := s.redisClient.Set(ctx, key, string(payload), s.ttl).Err(); err == nil {
 				return state, nil
 			}
@@ -233,8 +236,8 @@ func (s *StateStore) Generate(provider OAuthProvider) (string, error) {
 	}
 
 	s.states[state] = stateEntry{
-		provider:  provider,
-		createdAt: time.Now(),
+		Provider:  provider,
+		CreatedAt: time.Now(),
 	}
 
 	return state, nil
@@ -265,7 +268,7 @@ func (s *StateStore) Validate(state string, expectedProvider OAuthProvider) bool
 			var entry stateEntry
 			if json.Unmarshal([]byte(res), &entry) == nil {
 				delete(s.states, state)
-				return entry.provider == expectedProvider
+				return entry.Provider == expectedProvider
 			}
 			return false
 		}
@@ -284,12 +287,12 @@ func (s *StateStore) Validate(state string, expectedProvider OAuthProvider) bool
 	delete(s.states, state)
 
 	// Check expiration
-	if time.Since(entry.createdAt) > s.ttl {
+	if time.Since(entry.CreatedAt) > s.ttl {
 		return false
 	}
 
 	// Check provider matches
-	if entry.provider != expectedProvider {
+	if entry.Provider != expectedProvider {
 		return false
 	}
 
@@ -300,7 +303,7 @@ func (s *StateStore) Validate(state string, expectedProvider OAuthProvider) bool
 func (s *StateStore) evictExpiredLocked() {
 	now := time.Now()
 	for k, v := range s.states {
-		if now.Sub(v.createdAt) > s.ttl {
+		if now.Sub(v.CreatedAt) > s.ttl {
 			delete(s.states, k)
 		}
 	}

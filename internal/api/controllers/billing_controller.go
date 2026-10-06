@@ -283,42 +283,54 @@ func (c *BillingController) handleWebhook(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 2. Extract tenant workspace_id from payload notes if present
-	var rawEvent struct {
-		Payload struct {
-			Payment struct {
-				Entity struct {
-					Notes map[string]string `json:"notes"`
-				} `json:"entity"`
-			} `json:"payment"`
-			Order struct {
-				Entity struct {
-					Notes map[string]string `json:"notes"`
-				} `json:"entity"`
-			} `json:"order"`
-		} `json:"payload"`
-	}
-	_ = json.Unmarshal(body, &rawEvent)
-
+	// 2. Prepare verified webhook: resolve true workspace from stored order and sanitize PII
 	var wsID uuid.UUID
-	wsIDStr := rawEvent.Payload.Payment.Entity.Notes["workspace_id"]
-	if wsIDStr == "" {
-		wsIDStr = rawEvent.Payload.Order.Entity.Notes["workspace_id"]
+	sanitizedBody := body
+	if c.billingSvc != nil {
+		var prepErr error
+		wsID, sanitizedBody, prepErr = c.billingSvc.PrepareVerifiedWebhook(r.Context(), body)
+		if prepErr != nil {
+			slog.Warn("Failed to resolve webhook order from database; falling back to payload notes", "error", prepErr)
+		}
 	}
-	if parsed, err := uuid.Parse(wsIDStr); err == nil {
-		wsID = parsed
+	if wsID == uuid.Nil {
+		var rawEvent struct {
+			Payload struct {
+				Payment struct {
+					Entity struct {
+						Notes map[string]string `json:"notes"`
+					} `json:"entity"`
+				} `json:"payment"`
+				Order struct {
+					Entity struct {
+						Notes map[string]string `json:"notes"`
+					} `json:"entity"`
+				} `json:"order"`
+			} `json:"payload"`
+		}
+		_ = json.Unmarshal(body, &rawEvent)
+		wsIDStr := rawEvent.Payload.Payment.Entity.Notes["workspace_id"]
+		if wsIDStr == "" {
+			wsIDStr = rawEvent.Payload.Order.Entity.Notes["workspace_id"]
+		}
+		if parsed, err := uuid.Parse(wsIDStr); err == nil {
+			wsID = parsed
+		}
 	}
 
 	// 3. Persist billing event into outbox for guaranteed transactional delivery
 	if c.repo != nil && wsID != uuid.Nil {
+		outboxID := uuid.NewSHA1(uuid.NameSpaceOID, sanitizedBody)
 		outboxRecord := &models.OutboxRecord{
-			ID:          uuid.New(),
+			ID:          outboxID,
 			WorkspaceID: wsID,
 			EventType:   "billing.razorpay.webhook",
-			Payload:     body,
+			Payload:     sanitizedBody,
 		}
 		if err := c.repo.InsertOutboxEvent(r.Context(), outboxRecord); err != nil {
 			slog.Error("Failed to record billing webhook in outbox", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"storage service unavailable"}`, http.StatusServiceUnavailable)
+			return
 		}
 	}
 

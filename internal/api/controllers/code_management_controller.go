@@ -120,8 +120,9 @@ func (c *CodeManagementController) CLIRepositoriesConfigRoutes(paramCtrl *Parame
 	r.Get("/selected", c.handleListSelectedRepositories)
 	r.Post("/", c.handleSaveRepositories)
 	if paramCtrl != nil {
-		r.Get("/{id}/settings", paramCtrl.handleGetCodeReviewParameter)
-		r.Patch("/{id}/settings", paramCtrl.handleCreateOrUpdateCodeReview)
+		r.Get("/{id}/settings", paramCtrl.handleRepositorySettings)
+		r.Patch("/{id}/settings", paramCtrl.handleRepositorySettings)
+		r.Delete("/{id}", paramCtrl.handleRepositorySettings)
 	}
 	return r
 }

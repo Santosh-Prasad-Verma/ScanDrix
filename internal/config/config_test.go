@@ -101,3 +101,26 @@ func TestProductionStillRequiresJWTAndDatabaseAndSMTP(t *testing.T) {
 		})
 	}
 }
+
+func TestResendAPIKeyFallbackForSMTP(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/db")
+	t.Setenv("JWT_SECRET", "a-sufficiently-long-test-secret-value")
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv("RESEND_API_KEY", "re_test_key_12345")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected config to load with RESEND_API_KEY fallback, got error: %v", err)
+	}
+	if cfg.SMTPHost != "smtp.resend.com" {
+		t.Fatalf("expected SMTPHost to be smtp.resend.com, got %s", cfg.SMTPHost)
+	}
+	if cfg.SMTPUsername != "resend" {
+		t.Fatalf("expected SMTPUsername to be resend, got %s", cfg.SMTPUsername)
+	}
+	if cfg.SMTPPassword != "re_test_key_12345" {
+		t.Fatalf("expected SMTPPassword to be re_test_key_12345, got %s", cfg.SMTPPassword)
+	}
+}

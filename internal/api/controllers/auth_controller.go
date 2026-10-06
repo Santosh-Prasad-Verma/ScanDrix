@@ -948,7 +948,13 @@ func (c *AuthController) handleForgotPassword(w http.ResponseWriter, r *http.Req
 	// Dispatch transactional email with reset link (Master Rule 1.7 — token never returned in API response)
 	if c.mailer != nil {
 		resetURL := fmt.Sprintf("%s/reset-password?token=%s", c.appBaseURL, token)
-		_ = c.mailer.SendPasswordResetEmail(r.Context(), user.Email, resetURL)
+		if mailErr := c.mailer.SendPasswordResetEmail(r.Context(), user.Email, resetURL); mailErr != nil {
+			slog.Error("auth.email.password_reset_send_failed",
+				"event", "auth.email.password_reset_send_failed",
+				"recipient", user.Email,
+				"error", mailErr,
+			)
+		}
 	}
 
 	_, _ = w.Write([]byte(successMsg))

@@ -47,6 +47,7 @@ type TokenClaims struct {
 	Email       string          `json:"email,omitempty"`
 	IssuedAt    int64           `json:"iat"`
 	ExpiresAt   int64           `json:"exp"`
+	NotBefore   int64           `json:"nbf,omitempty"`
 }
 
 // WithAccountContext stores the account profile in request context.
@@ -222,9 +223,40 @@ func (a *Authenticator) VerifyToken(tokenString string) (*TokenClaims, error) {
 		return nil, ErrInvalidToken
 	}
 
-	// 5. Enforce expiration verification
-	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
+	// 5. Enforce claims validation (Master Rule 5.1 & Token Security Audits)
+	now := time.Now().Unix()
+
+	// Expiration claim is strictly mandatory
+	if claims.ExpiresAt <= 0 || now >= claims.ExpiresAt {
 		return nil, ErrTokenExpired
+	}
+
+	// IssuedAt claim is strictly mandatory and cannot be in future
+	if claims.IssuedAt <= 0 || claims.IssuedAt > now {
+		return nil, ErrInvalidToken
+	}
+
+	// NotBefore claim if present cannot be in the future
+	if claims.NotBefore > 0 && claims.NotBefore > now {
+		return nil, ErrInvalidToken
+	}
+
+	// Subject (user ID) cannot be nil
+	if claims.UserID == uuid.Nil {
+		return nil, ErrInvalidToken
+	}
+
+	// Workspace ID cannot be nil
+	if claims.WorkspaceID == uuid.Nil {
+		return nil, ErrInvalidToken
+	}
+
+	// Role must be an authorized enum value
+	switch strings.ToUpper(string(claims.Role)) {
+	case string(models.RoleOwner), string(models.RoleAdmin), string(models.RoleMember), string(models.RoleViewer):
+		// valid
+	default:
+		return nil, ErrInvalidToken
 	}
 
 	return &claims, nil

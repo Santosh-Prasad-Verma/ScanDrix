@@ -152,11 +152,16 @@ func (r *Repository) RecordBillingTransaction(ctx context.Context, tx *models.Bi
 		tx.ID = uuid.New()
 	}
 
+	interval := tx.BillingInterval
+	if interval == "" {
+		interval = "monthly"
+	}
+
 	query := `
 		INSERT INTO billing_transactions (
 			id, workspace_id, provider, order_id, payment_id, signature,
-			amount, currency, plan_tier, status, receipt, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())
+			amount, currency, plan_tier, billing_interval, status, receipt, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now())
 		ON CONFLICT (id) DO UPDATE SET
 			payment_id = EXCLUDED.payment_id,
 			signature = EXCLUDED.signature,
@@ -166,7 +171,7 @@ func (r *Repository) RecordBillingTransaction(ctx context.Context, tx *models.Bi
 	return r.client.ExecWithTenant(ctx, tx.WorkspaceID, func(pgTx pgx.Tx) error {
 		_, err := pgTx.Exec(ctx, query,
 			tx.ID, tx.WorkspaceID, tx.Provider, tx.OrderID, tx.PaymentID, tx.Signature,
-			tx.Amount, tx.Currency, tx.PlanTier, tx.Status, tx.Receipt,
+			tx.Amount, tx.Currency, tx.PlanTier, interval, tx.Status, tx.Receipt,
 		)
 		return err
 	})
@@ -182,7 +187,7 @@ func (r *Repository) UpdateBillingTransactionStatus(ctx context.Context, wsID uu
 		UPDATE billing_transactions
 		SET payment_id = COALESCE(NULLIF($1, ''), payment_id),
 		    signature = COALESCE(NULLIF($2, ''), signature),
-		    status = $3,
+		    status = CASE WHEN status = 'captured' THEN status ELSE $3 END,
 		    updated_at = now()
 		WHERE workspace_id = $4 AND order_id = $5;
 	`
@@ -508,7 +513,7 @@ func (r *Repository) GetBillingTransaction(ctx context.Context, wsID uuid.UUID, 
 	}
 	query := `
 		SELECT id, workspace_id, provider, order_id, COALESCE(payment_id, ''), COALESCE(signature, ''),
-		       amount, currency, plan_tier, status, COALESCE(receipt, ''), created_at, updated_at
+		       amount, currency, plan_tier, COALESCE(billing_interval, 'monthly'), status, COALESCE(receipt, ''), created_at, updated_at
 		FROM billing_transactions
 		WHERE workspace_id = $1 AND order_id = $2
 		LIMIT 1;
@@ -517,7 +522,32 @@ func (r *Repository) GetBillingTransaction(ctx context.Context, wsID uuid.UUID, 
 	err := r.client.ExecWithTenant(ctx, wsID, func(pgTx pgx.Tx) error {
 		return pgTx.QueryRow(ctx, query, wsID, orderID).Scan(
 			&tx.ID, &tx.WorkspaceID, &tx.Provider, &tx.OrderID, &tx.PaymentID, &tx.Signature,
-			&tx.Amount, &tx.Currency, &tx.PlanTier, &tx.Status, &tx.Receipt, &tx.CreatedAt, &tx.UpdatedAt,
+			&tx.Amount, &tx.Currency, &tx.PlanTier, &tx.BillingInterval, &tx.Status, &tx.Receipt, &tx.CreatedAt, &tx.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
+// LookupBillingTransactionByOrderID retrieves a billing transaction by order ID across all tenants (system background lookup).
+func (r *Repository) LookupBillingTransactionByOrderID(ctx context.Context, orderID string) (*models.BillingTransaction, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, nil
+	}
+	query := `
+		SELECT id, workspace_id, provider, order_id, COALESCE(payment_id, ''), COALESCE(signature, ''),
+		       amount, currency, plan_tier, COALESCE(billing_interval, 'monthly'), status, COALESCE(receipt, ''), created_at, updated_at
+		FROM billing_transactions
+		WHERE order_id = $1
+		LIMIT 1;
+	`
+	var tx models.BillingTransaction
+	err := r.client.ExecAsSystem(ctx, func(pgTx pgx.Tx) error {
+		return pgTx.QueryRow(ctx, query, orderID).Scan(
+			&tx.ID, &tx.WorkspaceID, &tx.Provider, &tx.OrderID, &tx.PaymentID, &tx.Signature,
+			&tx.Amount, &tx.Currency, &tx.PlanTier, &tx.BillingInterval, &tx.Status, &tx.Receipt, &tx.CreatedAt, &tx.UpdatedAt,
 		)
 	})
 	if err != nil {

@@ -3,10 +3,12 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/issues"
 )
@@ -80,15 +82,16 @@ func (c *IssuesController) handleCountIssues(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	statusFilter := issues.IssueStatus(r.URL.Query().Get("status"))
-	var count int
-	if c.repo != nil {
-		var countErr error
-		count, countErr = c.repo.CountTrackedIssues(r.Context(), wsID, statusFilter)
-		if countErr != nil {
-			http.Error(w, `{"error":"failed counting issues"}`, http.StatusInternalServerError)
-			return
-		}
+	count, countErr := c.repo.CountTrackedIssues(r.Context(), wsID, statusFilter)
+	if countErr != nil {
+		http.Error(w, `{"error":"failed counting issues"}`, http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -149,6 +152,15 @@ func (c *IssuesController) handleUpdateIssue(w http.ResponseWriter, r *http.Requ
 	}
 
 	if c.repo != nil {
+		_, err := c.repo.GetTrackedIssue(r.Context(), wsID, issueID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				http.Error(w, `{"error":"issue not found"}`, http.StatusNotFound)
+				return
+			}
+			http.Error(w, `{"error":"failed retrieving issue"}`, http.StatusInternalServerError)
+			return
+		}
 		if err := c.repo.UpdateTrackedIssueStatus(r.Context(), wsID, issueID, issues.IssueStatus(body.Status)); err != nil {
 			http.Error(w, `{"error":"failed updating issue"}`, http.StatusInternalServerError)
 			return

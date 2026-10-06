@@ -201,6 +201,19 @@ func Load() (*Config, error) {
 	}
 
 	smtpPort, _ := strconv.Atoi(getEnvOrDefault("SMTP_PORT", "587"))
+	smtpHost := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	smtpUser := os.Getenv("SMTP_USERNAME")
+	smtpPass := os.Getenv("SMTP_PASSWORD")
+	resendKey := strings.TrimSpace(os.Getenv("RESEND_API_KEY"))
+	if smtpHost == "" && resendKey != "" {
+		smtpHost = "smtp.resend.com"
+		if smtpUser == "" {
+			smtpUser = "resend"
+		}
+		if smtpPass == "" {
+			smtpPass = resendKey
+		}
+	}
 
 	workerRole := strings.ToLower(getEnvOrDefault("WORKER_ROLE", "all"))
 	workerHealthPort, _ := strconv.Atoi(getEnvOrDefault("WORKER_HEALTH_PORT", getEnvOrDefault("API_WORKER_PORT", "8082")))
@@ -273,10 +286,10 @@ func Load() (*Config, error) {
 		GitHubOAuthRedirectURI:     os.Getenv("GITHUB_OAUTH_REDIRECT_URI"),
 		GitLabOAuthRedirectURI:     getEnvOrDefault("GITLAB_OAUTH_REDIRECT_URI", os.Getenv("GLOBAL_GITLAB_REDIRECT_URL")),
 		BitbucketOAuthRedirectURI:  os.Getenv("BITBUCKET_OAUTH_REDIRECT_URI"),
-		SMTPHost:                   os.Getenv("SMTP_HOST"),
+		SMTPHost:                   smtpHost,
 		SMTPPort:                   smtpPort,
-		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
+		SMTPUsername:               smtpUser,
+		SMTPPassword:               smtpPass,
 		SMTPFrom:                   getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"),
 		RequireEmailVerification:   os.Getenv("REQUIRE_EMAIL_VERIFICATION") == "true",
 		BlockedEmailDomains:        parseCommaSeparated(os.Getenv("BLOCKED_EMAIL_DOMAINS")),

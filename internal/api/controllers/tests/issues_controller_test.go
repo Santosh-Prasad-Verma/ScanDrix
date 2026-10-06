@@ -10,10 +10,29 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/api/controllers"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/internal/issues"
 )
 
+type mockIssuesRepo struct{}
+
+func (m *mockIssuesRepo) ListTrackedIssues(ctx context.Context, wsID uuid.UUID, status issues.IssueStatus) ([]issues.TrackedIssue, error) {
+	return []issues.TrackedIssue{}, nil
+}
+
+func (m *mockIssuesRepo) CountTrackedIssues(ctx context.Context, wsID uuid.UUID, status issues.IssueStatus) (int, error) {
+	return 0, nil
+}
+
+func (m *mockIssuesRepo) GetTrackedIssue(ctx context.Context, wsID, issueID uuid.UUID) (*issues.TrackedIssue, error) {
+	return nil, nil
+}
+
+func (m *mockIssuesRepo) UpdateTrackedIssueStatus(ctx context.Context, wsID, issueID uuid.UUID, status issues.IssueStatus) error {
+	return nil
+}
+
 func TestIssuesControllerEndpoints(t *testing.T) {
-	ctrl := controllers.NewIssuesController(nil)
+	ctrl := controllers.NewIssuesController(&mockIssuesRepo{})
 	router := ctrl.Routes()
 	wsID := uuid.New()
 
