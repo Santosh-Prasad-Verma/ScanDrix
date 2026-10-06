@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Code Review Platform
-// Copyright (c) 2026 ScanDrix AI. All rights reserved.
-// ═══════════════════════════════════════════════════════════════
-
 package repositories
 
 import (
@@ -14,12 +9,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/scandrix/backend/internal/database"
 	memberdomain "github.com/scandrix/backend/internal/organization/domain/teammembers"
 )
 
 // PostgresTeamMemberRepository implements ITeamMembersRepository with PostgreSQL and in-memory fallback.
 type PostgresTeamMemberRepository struct {
+	client *database.Client
 	pool   *pgxpool.Pool
 	mu     sync.RWMutex
 	memory map[string]*memberdomain.TeamMemberEntity // key: teamID:userID
@@ -28,6 +26,7 @@ type PostgresTeamMemberRepository struct {
 // NewPostgresTeamMemberRepository creates a new repository.
 func NewPostgresTeamMemberRepository(pool *pgxpool.Pool) *PostgresTeamMemberRepository {
 	return &PostgresTeamMemberRepository{
+		client: &database.Client{Pool: pool},
 		pool:   pool,
 		memory: make(map[string]*memberdomain.TeamMemberEntity),
 	}
@@ -70,6 +69,10 @@ func (r *PostgresTeamMemberRepository) Find(ctx context.Context, filter memberdo
 		return res, nil
 	}
 
+	if filter.WorkspaceID == nil {
+		return nil, ErrTenantRequired
+	}
+
 	query := `
 		SELECT tm.id, tm.team_id, tm.user_id, COALESCE(tm.email, ''), tm.role, tm.created_at, t.workspace_id,
 		       COALESCE(tm.name, tm.email, ''), COALESCE(tm.avatar, ''), COALESCE(tm.status, true),
@@ -100,63 +103,69 @@ func (r *PostgresTeamMemberRepository) Find(ctx context.Context, filter memberdo
 		filterWsID = filter.WorkspaceID
 	}
 
-	rows, err := r.pool.Query(ctx, query, filterID, filterTeamID, filterUserID, filter.Email, filterWsID, filter.Status)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query team_members: %w", err)
-	}
-	defer rows.Close()
-
 	var list []*memberdomain.TeamMemberEntity
-	for rows.Next() {
-		var id, teamID, userID, wsID uuid.UUID
-		var email, roleStr, name, avatar, commID string
-		var status bool
-		var reviewCount int
-		var codeMgmtRaw, commRaw, pmRaw []byte
-		var createdAt time.Time
-
-		if err := rows.Scan(
-			&id, &teamID, &userID, &email, &roleStr, &createdAt, &wsID,
-			&name, &avatar, &status, &codeMgmtRaw, &commRaw, &pmRaw, &commID, &reviewCount,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan team_member: %w", err)
+	err := r.client.ExecWithTenant(ctx, *filter.WorkspaceID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, filterID, filterTeamID, filterUserID, filter.Email, filterWsID, filter.Status)
+		if err != nil {
+			return fmt.Errorf("failed to query team_members: %w", err)
 		}
+		defer rows.Close()
 
-		entity := &memberdomain.TeamMemberEntity{
-			UUID:            id,
-			WorkspaceID:     wsID,
-			TeamID:          teamID,
-			UserID:          userID,
-			Email:           email,
-			Name:            name,
-			Role:            memberdomain.TeamMemberRole(roleStr),
-			Avatar:          avatar,
-			Status:          status,
-			CommunicationID: commID,
-			ReviewCount:     reviewCount,
-			JoinedAt:        createdAt,
-		}
+		for rows.Next() {
+			var id, teamID, userID, wsID uuid.UUID
+			var email, roleStr, name, avatar, commID string
+			var status bool
+			var reviewCount int
+			var codeMgmtRaw, commRaw, pmRaw []byte
+			var createdAt time.Time
 
-		if len(codeMgmtRaw) > 0 && string(codeMgmtRaw) != "{}" {
-			var cm memberdomain.CodeManagementMemberConfig
-			if err := json.Unmarshal(codeMgmtRaw, &cm); err == nil {
-				entity.CodeManagement = &cm
+			if err := rows.Scan(
+				&id, &teamID, &userID, &email, &roleStr, &createdAt, &wsID,
+				&name, &avatar, &status, &codeMgmtRaw, &commRaw, &pmRaw, &commID, &reviewCount,
+			); err != nil {
+				return fmt.Errorf("failed to scan team_member: %w", err)
 			}
-		}
-		if len(commRaw) > 0 && string(commRaw) != "{}" {
-			var c memberdomain.CommunicationMemberConfig
-			if err := json.Unmarshal(commRaw, &c); err == nil {
-				entity.Communication = &c
-			}
-		}
-		if len(pmRaw) > 0 && string(pmRaw) != "{}" {
-			var pm memberdomain.ProjectManagementMemberConfig
-			if err := json.Unmarshal(pmRaw, &pm); err == nil {
-				entity.ProjectManagement = &pm
-			}
-		}
 
-		list = append(list, entity)
+			entity := &memberdomain.TeamMemberEntity{
+				UUID:            id,
+				WorkspaceID:     wsID,
+				TeamID:          teamID,
+				UserID:          userID,
+				Email:           email,
+				Name:            name,
+				Role:            memberdomain.TeamMemberRole(roleStr),
+				Avatar:          avatar,
+				Status:          status,
+				CommunicationID: commID,
+				ReviewCount:     reviewCount,
+				JoinedAt:        createdAt,
+			}
+
+			if len(codeMgmtRaw) > 0 && string(codeMgmtRaw) != "{}" {
+				var cm memberdomain.CodeManagementMemberConfig
+				if err := json.Unmarshal(codeMgmtRaw, &cm); err == nil {
+					entity.CodeManagement = &cm
+				}
+			}
+			if len(commRaw) > 0 && string(commRaw) != "{}" {
+				var c memberdomain.CommunicationMemberConfig
+				if err := json.Unmarshal(commRaw, &c); err == nil {
+					entity.Communication = &c
+				}
+			}
+			if len(pmRaw) > 0 && string(pmRaw) != "{}" {
+				var pm memberdomain.ProjectManagementMemberConfig
+				if err := json.Unmarshal(pmRaw, &pm); err == nil {
+					entity.ProjectManagement = &pm
+				}
+			}
+
+			list = append(list, entity)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
 	return list, nil
 }
@@ -173,9 +182,9 @@ func (r *PostgresTeamMemberRepository) FindOne(ctx context.Context, filter membe
 	return list[0], nil
 }
 
-// FindByID retrieves a team member by UUID.
-func (r *PostgresTeamMemberRepository) FindByID(ctx context.Context, id uuid.UUID) (*memberdomain.TeamMemberEntity, error) {
-	return r.FindOne(ctx, memberdomain.TeamMemberFilter{UUID: &id})
+// FindByID retrieves a team member by UUID within a workspace.
+func (r *PostgresTeamMemberRepository) FindByID(ctx context.Context, wsID, id uuid.UUID) (*memberdomain.TeamMemberEntity, error) {
+	return r.FindOne(ctx, memberdomain.TeamMemberFilter{UUID: &id, WorkspaceID: &wsID})
 }
 
 // FindManyByWorkspaceID retrieves all members within a workspace.
@@ -183,13 +192,13 @@ func (r *PostgresTeamMemberRepository) FindManyByWorkspaceID(ctx context.Context
 	return r.Find(ctx, memberdomain.TeamMemberFilter{WorkspaceID: &wsID})
 }
 
-// FindManyByUserID retrieves all team memberships for a given user.
-func (r *PostgresTeamMemberRepository) FindManyByUserID(ctx context.Context, userID uuid.UUID) ([]*memberdomain.TeamMemberEntity, error) {
-	return r.Find(ctx, memberdomain.TeamMemberFilter{UserID: &userID})
+// FindManyByUserID retrieves all team memberships for a given user in a workspace.
+func (r *PostgresTeamMemberRepository) FindManyByUserID(ctx context.Context, wsID, userID uuid.UUID) ([]*memberdomain.TeamMemberEntity, error) {
+	return r.Find(ctx, memberdomain.TeamMemberFilter{WorkspaceID: &wsID, UserID: &userID})
 }
 
 // FindMembersByCommunicationID retrieves team members associated with a specific chat or communication handle.
-func (r *PostgresTeamMemberRepository) FindMembersByCommunicationID(ctx context.Context, communicationID string) ([]*memberdomain.TeamMemberEntity, error) {
+func (r *PostgresTeamMemberRepository) FindMembersByCommunicationID(ctx context.Context, wsID uuid.UUID, communicationID string) ([]*memberdomain.TeamMemberEntity, error) {
 	if communicationID == "" {
 		return nil, nil
 	}
@@ -198,11 +207,14 @@ func (r *PostgresTeamMemberRepository) FindMembersByCommunicationID(ctx context.
 		defer r.mu.RUnlock()
 		var res []*memberdomain.TeamMemberEntity
 		for _, m := range r.memory {
-			if m.CommunicationID == communicationID && m.Status {
+			if (wsID == uuid.Nil || m.WorkspaceID == wsID) && m.CommunicationID == communicationID && m.Status {
 				res = append(res, m)
 			}
 		}
 		return res, nil
+	}
+	if wsID == uuid.Nil {
+		return nil, ErrTenantRequired
 	}
 
 	query := `
@@ -213,58 +225,64 @@ func (r *PostgresTeamMemberRepository) FindMembersByCommunicationID(ctx context.
 		       COALESCE(tm.review_count, 0)
 		FROM team_members tm
 		JOIN teams t ON t.id = tm.team_id
-		WHERE tm.communication_id = $1 AND tm.status = true
+		WHERE tm.communication_id = $1 AND t.workspace_id = $2 AND tm.status = true
 		ORDER BY tm.created_at ASC
 	`
-	rows, err := r.pool.Query(ctx, query, communicationID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query members by communication ID: %w", err)
-	}
-	defer rows.Close()
-
 	var list []*memberdomain.TeamMemberEntity
-	for rows.Next() {
-		var id, teamID, userID, wsID uuid.UUID
-		var email, roleStr, name, avatar, commID string
-		var status bool
-		var reviewCount int
-		var codeMgmtRaw, commRaw, pmRaw []byte
-		var createdAt time.Time
-
-		if err := rows.Scan(
-			&id, &teamID, &userID, &email, &roleStr, &createdAt, &wsID,
-			&name, &avatar, &status, &codeMgmtRaw, &commRaw, &pmRaw, &commID, &reviewCount,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan member: %w", err)
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, communicationID, wsID)
+		if err != nil {
+			return fmt.Errorf("failed to query members by communication ID: %w", err)
 		}
+		defer rows.Close()
 
-		entity := &memberdomain.TeamMemberEntity{
-			UUID:            id,
-			WorkspaceID:     wsID,
-			TeamID:          teamID,
-			UserID:          userID,
-			Email:           email,
-			Name:            name,
-			Role:            memberdomain.TeamMemberRole(roleStr),
-			Avatar:          avatar,
-			Status:          status,
-			CommunicationID: commID,
-			ReviewCount:     reviewCount,
-			JoinedAt:        createdAt,
+		for rows.Next() {
+			var id, teamID, userID, wID uuid.UUID
+			var email, roleStr, name, avatar, commID string
+			var status bool
+			var reviewCount int
+			var codeMgmtRaw, commRaw, pmRaw []byte
+			var createdAt time.Time
+
+			if err := rows.Scan(
+				&id, &teamID, &userID, &email, &roleStr, &createdAt, &wID,
+				&name, &avatar, &status, &codeMgmtRaw, &commRaw, &pmRaw, &commID, &reviewCount,
+			); err != nil {
+				return fmt.Errorf("failed to scan member: %w", err)
+			}
+
+			entity := &memberdomain.TeamMemberEntity{
+				UUID:            id,
+				WorkspaceID:     wID,
+				TeamID:          teamID,
+				UserID:          userID,
+				Email:           email,
+				Name:            name,
+				Role:            memberdomain.TeamMemberRole(roleStr),
+				Avatar:          avatar,
+				Status:          status,
+				CommunicationID: commID,
+				ReviewCount:     reviewCount,
+				JoinedAt:        createdAt,
+			}
+			list = append(list, entity)
 		}
-		list = append(list, entity)
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
 	return list, nil
 }
 
-// CountByUser counts how many teams a user belongs to.
-func (r *PostgresTeamMemberRepository) CountByUser(ctx context.Context, userID uuid.UUID, teamMemberStatus *bool) (int, error) {
+// CountByUser counts how many teams a user belongs to within a workspace.
+func (r *PostgresTeamMemberRepository) CountByUser(ctx context.Context, wsID, userID uuid.UUID, teamMemberStatus *bool) (int, error) {
 	if r.pool == nil {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		count := 0
 		for _, m := range r.memory {
-			if m.UserID == userID {
+			if m.UserID == userID && (wsID == uuid.Nil || m.WorkspaceID == wsID) {
 				if teamMemberStatus == nil || m.Status == *teamMemberStatus {
 					count++
 				}
@@ -272,13 +290,19 @@ func (r *PostgresTeamMemberRepository) CountByUser(ctx context.Context, userID u
 		}
 		return count, nil
 	}
+	if wsID == uuid.Nil {
+		return 0, ErrTenantRequired
+	}
 
 	query := `
-		SELECT COUNT(*) FROM team_members
-		WHERE user_id = $1 AND ($2::boolean IS NULL OR status = $2)
+		SELECT COUNT(*) FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
+		WHERE tm.user_id = $1 AND t.workspace_id = $2 AND ($3::boolean IS NULL OR tm.status = $3)
 	`
 	var count int
-	err := r.pool.QueryRow(ctx, query, userID, teamMemberStatus).Scan(&count)
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, userID, wsID, teamMemberStatus).Scan(&count)
+	})
 	return count, err
 }
 
@@ -295,6 +319,9 @@ func (r *PostgresTeamMemberRepository) CountTeamMembers(ctx context.Context, wsI
 		}
 		return count, nil
 	}
+	if wsID == uuid.Nil {
+		return 0, ErrTenantRequired
+	}
 
 	query := `
 		SELECT COUNT(*) FROM team_members tm
@@ -302,7 +329,9 @@ func (r *PostgresTeamMemberRepository) CountTeamMembers(ctx context.Context, wsI
 		WHERE tm.team_id = $1 AND t.workspace_id = $2 AND tm.status = true
 	`
 	var count int
-	err := r.pool.QueryRow(ctx, query, teamID, wsID).Scan(&count)
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, teamID, wsID).Scan(&count)
+	})
 	return count, err
 }
 
@@ -318,6 +347,9 @@ func (r *PostgresTeamMemberRepository) FindManyByOrganizationID(ctx context.Cont
 func (r *PostgresTeamMemberRepository) Create(ctx context.Context, entity *memberdomain.TeamMemberEntity) (*memberdomain.TeamMemberEntity, error) {
 	if entity == nil {
 		return nil, errors.New("team member entity cannot be nil")
+	}
+	if entity.WorkspaceID == uuid.Nil {
+		return nil, ErrTenantRequired
 	}
 	if entity.UUID == uuid.Nil {
 		entity.UUID = uuid.New()
@@ -373,12 +405,14 @@ func (r *PostgresTeamMemberRepository) Create(ctx context.Context, entity *membe
 	var reviewCount int
 	var createdAt time.Time
 
-	err := r.pool.QueryRow(
-		ctx, query,
-		entity.UUID, entity.TeamID, entity.UserID, entity.Email, string(entity.Role), entity.JoinedAt,
-		entity.Name, entity.Avatar, entity.Status, codeMgmtBytes, commBytes, pmBytes,
-		entity.CommunicationID, entity.ReviewCount,
-	).Scan(&id, &teamID, &userID, &email, &roleStr, &createdAt, &name, &avatar, &status, &commID, &reviewCount)
+	err := r.client.ExecWithTenant(ctx, entity.WorkspaceID, func(tx pgx.Tx) error {
+		return tx.QueryRow(
+			ctx, query,
+			entity.UUID, entity.TeamID, entity.UserID, entity.Email, string(entity.Role), entity.JoinedAt,
+			entity.Name, entity.Avatar, entity.Status, codeMgmtBytes, commBytes, pmBytes,
+			entity.CommunicationID, entity.ReviewCount,
+		).Scan(&id, &teamID, &userID, &email, &roleStr, &createdAt, &name, &avatar, &status, &commID, &reviewCount)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert team_member: %w", err)
 	}
@@ -426,22 +460,31 @@ func (r *PostgresTeamMemberRepository) Update(ctx context.Context, filter member
 	return r.Create(ctx, existing)
 }
 
-// Delete removes a team member by team and user ID.
-func (r *PostgresTeamMemberRepository) Delete(ctx context.Context, teamID, userID uuid.UUID) error {
+// Delete removes a team member by team and user ID within a workspace.
+func (r *PostgresTeamMemberRepository) Delete(ctx context.Context, wsID, teamID, userID uuid.UUID) error {
 	if r.pool == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		delete(r.memory, memberKey(teamID, userID))
 		return nil
 	}
+	if wsID == uuid.Nil {
+		return ErrTenantRequired
+	}
 
-	query := `DELETE FROM team_members WHERE team_id = $1 AND user_id = $2`
-	_, err := r.pool.Exec(ctx, query, teamID, userID)
-	return err
+	query := `
+		DELETE FROM team_members tm
+		USING teams t
+		WHERE tm.team_id = t.id AND tm.team_id = $1 AND tm.user_id = $2 AND t.workspace_id = $3
+	`
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, teamID, userID, wsID)
+		return err
+	})
 }
 
-// DeleteMembers deletes a slice of team members by their primary UUIDs.
-func (r *PostgresTeamMemberRepository) DeleteMembers(ctx context.Context, memberUUIDs []uuid.UUID) error {
+// DeleteMembers deletes a slice of team members by their primary UUIDs within a workspace.
+func (r *PostgresTeamMemberRepository) DeleteMembers(ctx context.Context, wsID uuid.UUID, memberUUIDs []uuid.UUID) error {
 	if len(memberUUIDs) == 0 {
 		return nil
 	}
@@ -458,8 +501,17 @@ func (r *PostgresTeamMemberRepository) DeleteMembers(ctx context.Context, member
 		}
 		return nil
 	}
+	if wsID == uuid.Nil {
+		return ErrTenantRequired
+	}
 
-	query := `DELETE FROM team_members WHERE id = ANY($1)`
-	_, err := r.pool.Exec(ctx, query, memberUUIDs)
-	return err
+	query := `
+		DELETE FROM team_members tm
+		USING teams t
+		WHERE tm.team_id = t.id AND tm.id = ANY($1) AND t.workspace_id = $2
+	`
+	return r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, memberUUIDs, wsID)
+		return err
+	})
 }

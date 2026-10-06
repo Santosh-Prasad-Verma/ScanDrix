@@ -50,11 +50,11 @@ func (s *TeamMembersService) FindOne(ctx context.Context, filter memberdomain.Te
 	return s.repo.FindOne(ctx, filter)
 }
 
-func (s *TeamMembersService) FindByID(ctx context.Context, id uuid.UUID) (*memberdomain.TeamMemberEntity, error) {
+func (s *TeamMembersService) FindByID(ctx context.Context, wsID, id uuid.UUID) (*memberdomain.TeamMemberEntity, error) {
 	if s.repo == nil {
 		return nil, errors.New("repository uninitialized")
 	}
-	return s.repo.FindByID(ctx, id)
+	return s.repo.FindByID(ctx, wsID, id)
 }
 
 func (s *TeamMembersService) FindManyByWorkspaceID(ctx context.Context, wsID uuid.UUID) ([]*memberdomain.TeamMemberEntity, error) {
@@ -64,25 +64,25 @@ func (s *TeamMembersService) FindManyByWorkspaceID(ctx context.Context, wsID uui
 	return s.repo.FindManyByWorkspaceID(ctx, wsID)
 }
 
-func (s *TeamMembersService) FindManyByUserID(ctx context.Context, userID uuid.UUID) ([]*memberdomain.TeamMemberEntity, error) {
+func (s *TeamMembersService) FindManyByUserID(ctx context.Context, wsID, userID uuid.UUID) ([]*memberdomain.TeamMemberEntity, error) {
 	if s.repo == nil {
 		return nil, errors.New("repository uninitialized")
 	}
-	return s.repo.FindManyByUserID(ctx, userID)
+	return s.repo.FindManyByUserID(ctx, wsID, userID)
 }
 
-func (s *TeamMembersService) FindMembersByCommunicationID(ctx context.Context, communicationID string) ([]*memberdomain.TeamMemberEntity, error) {
+func (s *TeamMembersService) FindMembersByCommunicationID(ctx context.Context, wsID uuid.UUID, communicationID string) ([]*memberdomain.TeamMemberEntity, error) {
 	if s.repo == nil {
 		return nil, errors.New("repository uninitialized")
 	}
-	return s.repo.FindMembersByCommunicationID(ctx, communicationID)
+	return s.repo.FindMembersByCommunicationID(ctx, wsID, communicationID)
 }
 
-func (s *TeamMembersService) CountByUser(ctx context.Context, userID uuid.UUID, teamMemberStatus *bool) (int, error) {
+func (s *TeamMembersService) CountByUser(ctx context.Context, wsID, userID uuid.UUID, teamMemberStatus *bool) (int, error) {
 	if s.repo == nil {
 		return 0, errors.New("repository uninitialized")
 	}
-	return s.repo.CountByUser(ctx, userID, teamMemberStatus)
+	return s.repo.CountByUser(ctx, wsID, userID, teamMemberStatus)
 }
 
 func (s *TeamMembersService) CountTeamMembers(ctx context.Context, wsID, teamID uuid.UUID) (int, error) {
@@ -113,18 +113,18 @@ func (s *TeamMembersService) Update(ctx context.Context, filter memberdomain.Tea
 	return s.repo.Update(ctx, filter, data)
 }
 
-func (s *TeamMembersService) Delete(ctx context.Context, teamID, userID uuid.UUID) error {
+func (s *TeamMembersService) Delete(ctx context.Context, wsID, teamID, userID uuid.UUID) error {
 	if s.repo == nil {
 		return errors.New("repository uninitialized")
 	}
-	return s.repo.Delete(ctx, teamID, userID)
+	return s.repo.Delete(ctx, wsID, teamID, userID)
 }
 
-func (s *TeamMembersService) DeleteMembers(ctx context.Context, memberUUIDs []uuid.UUID) error {
+func (s *TeamMembersService) DeleteMembers(ctx context.Context, wsID uuid.UUID, memberUUIDs []uuid.UUID) error {
 	if s.repo == nil {
 		return errors.New("repository uninitialized")
 	}
-	return s.repo.DeleteMembers(ctx, memberUUIDs)
+	return s.repo.DeleteMembers(ctx, wsID, memberUUIDs)
 }
 
 // FindTeamMembersFormatted produces formatted MemberItem list.

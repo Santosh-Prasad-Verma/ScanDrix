@@ -23,13 +23,13 @@ type TeamFilter struct {
 type ITeamRepository interface {
 	Find(ctx context.Context, filter TeamFilter) ([]*TeamEntity, error)
 	FindOne(ctx context.Context, filter TeamFilter) (*TeamEntity, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*TeamEntity, error)
+	FindByID(ctx context.Context, wsID, id uuid.UUID) (*TeamEntity, error)
 	FindByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) ([]*TeamEntity, error)
 	GetTeamsByUserID(ctx context.Context, userID, workspaceID uuid.UUID) ([]*TeamEntity, error)
 	FindFirstCreatedTeam(ctx context.Context, workspaceID uuid.UUID) (*TeamEntity, error)
 	Create(ctx context.Context, entity *TeamEntity) (*TeamEntity, error)
 	Update(ctx context.Context, filter TeamFilter, data *TeamEntity) (*TeamEntity, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Delete(ctx context.Context, wsID, id uuid.UUID) error
 	ListWithIntegrations(ctx context.Context, workspaceID uuid.UUID) ([]*TeamWithIntegrations, error)
 }
 

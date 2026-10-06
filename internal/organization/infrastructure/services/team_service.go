@@ -37,11 +37,11 @@ func (s *TeamService) FindOne(ctx context.Context, filter teamdomain.TeamFilter)
 	return s.repo.FindOne(ctx, filter)
 }
 
-func (s *TeamService) FindByID(ctx context.Context, id uuid.UUID) (*teamdomain.TeamEntity, error) {
+func (s *TeamService) FindByID(ctx context.Context, wsID, id uuid.UUID) (*teamdomain.TeamEntity, error) {
 	if s.repo == nil {
 		return nil, errors.New("repository uninitialized")
 	}
-	return s.repo.FindByID(ctx, id)
+	return s.repo.FindByID(ctx, wsID, id)
 }
 
 func (s *TeamService) FindByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) ([]*teamdomain.TeamEntity, error) {
@@ -79,11 +79,11 @@ func (s *TeamService) Update(ctx context.Context, filter teamdomain.TeamFilter, 
 	return s.repo.Update(ctx, filter, data)
 }
 
-func (s *TeamService) Delete(ctx context.Context, id uuid.UUID) error {
+func (s *TeamService) Delete(ctx context.Context, wsID, id uuid.UUID) error {
 	if s.repo == nil {
 		return errors.New("repository uninitialized")
 	}
-	return s.repo.Delete(ctx, id)
+	return s.repo.Delete(ctx, wsID, id)
 }
 
 func (s *TeamService) ListWithIntegrations(ctx context.Context, workspaceID uuid.UUID) ([]*teamdomain.TeamWithIntegrations, error) {

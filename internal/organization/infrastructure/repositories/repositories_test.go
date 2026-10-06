@@ -122,7 +122,7 @@ func TestParametersRepository(t *testing.T) {
 		t.Fatalf("FindByKey failed: %v", err)
 	}
 
-	err = repo.DeleteByTeamID(ctx, teamID)
+	err = repo.DeleteByTeamID(ctx, wsID, teamID)
 	if err != nil {
 		t.Fatalf("DeleteByTeamID failed: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestTeamAndMemberRepositories(t *testing.T) {
 		t.Fatalf("expected 1 member, got %d", len(members))
 	}
 
-	err = memberRepo.Delete(ctx, createdTeam.UUID, userID)
+	err = memberRepo.Delete(ctx, wsID, createdTeam.UUID, userID)
 	if err != nil {
 		t.Fatalf("Member Delete failed: %v", err)
 	}

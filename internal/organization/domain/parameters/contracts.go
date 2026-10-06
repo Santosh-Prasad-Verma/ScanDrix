@@ -24,14 +24,17 @@ type ParametersFilter struct {
 type IParametersRepository interface {
 	Find(ctx context.Context, filter ParametersFilter) ([]*ParametersEntity, error)
 	FindOne(ctx context.Context, filter ParametersFilter) (*ParametersEntity, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*ParametersEntity, error)
+	FindByID(ctx context.Context, wsID, id uuid.UUID) (*ParametersEntity, error)
 	FindByKey(ctx context.Context, wsID uuid.UUID, teamID *uuid.UUID, key ParameterKey) (*ParametersEntity, error)
 	Create(ctx context.Context, entity *ParametersEntity) (*ParametersEntity, error)
 	Update(ctx context.Context, filter ParametersFilter, data *ParametersEntity) (*ParametersEntity, error)
 	CreateNewActiveVersion(ctx context.Context, wsID uuid.UUID, teamID *uuid.UUID, key ParameterKey, val any, nextVersion int) (*ParametersEntity, error)
 	CreateActiveVersionIfAbsent(ctx context.Context, wsID uuid.UUID, teamID *uuid.UUID, key ParameterKey, val any) (*ParametersEntity, error)
 	Delete(ctx context.Context, wsID uuid.UUID, teamID *uuid.UUID, key ParameterKey) error
-	DeleteByTeamID(ctx context.Context, teamID uuid.UUID) error
+	// DeleteByTeamID takes the owning workspace explicitly. Resolving the
+	// workspace from team_id alone would leave the update without a tenant
+	// context, and RLS would then match zero rows and report a clean purge.
+	DeleteByTeamID(ctx context.Context, wsID, teamID uuid.UUID) error
 }
 
 // IParametersService defines the business logic contract for parameters.

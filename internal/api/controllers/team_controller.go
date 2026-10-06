@@ -521,7 +521,7 @@ func (c *TeamController) handleRemoveTeamMember(w http.ResponseWriter, r *http.R
 	}
 
 	if c.deleteMemberUC != nil && wsID != uuid.Nil {
-		if err := c.deleteMemberUC.ExecuteByID(r.Context(), teamID, userID); err != nil {
+		if err := c.deleteMemberUC.ExecuteByID(r.Context(), wsID, teamID, userID); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 			return
 		}

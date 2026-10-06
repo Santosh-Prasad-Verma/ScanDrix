@@ -26,17 +26,17 @@ type TeamMemberFilter struct {
 type ITeamMembersRepository interface {
 	Find(ctx context.Context, filter TeamMemberFilter) ([]*TeamMemberEntity, error)
 	FindOne(ctx context.Context, filter TeamMemberFilter) (*TeamMemberEntity, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*TeamMemberEntity, error)
+	FindByID(ctx context.Context, wsID, id uuid.UUID) (*TeamMemberEntity, error)
 	FindManyByWorkspaceID(ctx context.Context, wsID uuid.UUID) ([]*TeamMemberEntity, error)
-	FindManyByUserID(ctx context.Context, userID uuid.UUID) ([]*TeamMemberEntity, error)
-	FindMembersByCommunicationID(ctx context.Context, communicationID string) ([]*TeamMemberEntity, error)
-	CountByUser(ctx context.Context, userID uuid.UUID, teamMemberStatus *bool) (int, error)
+	FindManyByUserID(ctx context.Context, wsID, userID uuid.UUID) ([]*TeamMemberEntity, error)
+	FindMembersByCommunicationID(ctx context.Context, wsID uuid.UUID, communicationID string) ([]*TeamMemberEntity, error)
+	CountByUser(ctx context.Context, wsID, userID uuid.UUID, teamMemberStatus *bool) (int, error)
 	CountTeamMembers(ctx context.Context, wsID, teamID uuid.UUID) (int, error)
 	FindManyByOrganizationID(ctx context.Context, wsID uuid.UUID, teamStatus []string) ([]*TeamMemberEntity, error)
 	Create(ctx context.Context, entity *TeamMemberEntity) (*TeamMemberEntity, error)
 	Update(ctx context.Context, filter TeamMemberFilter, data *TeamMemberEntity) (*TeamMemberEntity, error)
-	Delete(ctx context.Context, teamID, userID uuid.UUID) error
-	DeleteMembers(ctx context.Context, memberUUIDs []uuid.UUID) error
+	Delete(ctx context.Context, wsID, teamID, userID uuid.UUID) error
+	DeleteMembers(ctx context.Context, wsID uuid.UUID, memberUUIDs []uuid.UUID) error
 }
 
 // ITeamMembersService defines business operations for team members.

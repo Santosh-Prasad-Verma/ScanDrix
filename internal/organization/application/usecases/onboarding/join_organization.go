@@ -127,8 +127,9 @@ func (uc *JoinOrganizationUseCase) Execute(ctx context.Context, input JoinOrgani
 
 	// Find or create team member
 	existingMember, _ := uc.memberRepo.FindOne(ctx, memberdomain.TeamMemberFilter{
-		UserID: &user.ID,
-		TeamID: &targetTeam.UUID,
+		WorkspaceID: &input.OrganizationID,
+		UserID:      &user.ID,
+		TeamID:      &targetTeam.UUID,
 	})
 
 	if existingMember == nil {
@@ -196,16 +197,19 @@ func (uc *JoinOrganizationUseCase) cleanUpOrphanedWorkspace(ctx context.Context,
 		return
 	}
 	for _, t := range teams {
-		members, mErr := uc.memberRepo.Find(ctx, memberdomain.TeamMemberFilter{TeamID: &t.UUID})
+		members, mErr := uc.memberRepo.Find(ctx, memberdomain.TeamMemberFilter{
+			WorkspaceID: &wsID,
+			TeamID:      &t.UUID,
+		})
 		if mErr != nil {
 			slog.Warn("Skipping team cleanup: member lookup failed", "team_id", t.UUID, "error", mErr)
 			continue
 		}
 		if len(members) == 0 {
 			if uc.paramRepo != nil {
-				_ = uc.paramRepo.DeleteByTeamID(ctx, t.UUID)
+				_ = uc.paramRepo.DeleteByTeamID(ctx, wsID, t.UUID)
 			}
-			_ = uc.teamRepo.Delete(ctx, t.UUID)
+			_ = uc.teamRepo.Delete(ctx, wsID, t.UUID)
 		}
 	}
 

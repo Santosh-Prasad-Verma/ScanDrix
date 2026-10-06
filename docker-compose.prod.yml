@@ -1,0 +1,150 @@
+services:
+  # ----------------------------------------------------------------------------
+  # Redis (L2 Cache, Token Bucket Rate Limiting, Monotonic Fencing Locks)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: scandrix-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:-scandrix_redis_secret}
+      - --protected-mode
+      - "yes"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-scandrix_redis_secret}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # ScanDrix Database Schema Migrations (Runs against Supabase on startup)
+  # ----------------------------------------------------------------------------
+  scandrix-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-migrate
+    restart: "no"
+    entrypoint: ["/app/bin/scandrix-migrate", "/app/migrations"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be provided in .env}
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # ScanDrix REST API Service
+  # ----------------------------------------------------------------------------
+  scandrix-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/app/bin/scandrix-api"]
+    environment:
+      - PORT=8080
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be provided in .env}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scandrix_redis_secret}@redis:6379/0
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be provided in .env}
+      - APP_BASE_URL=${APP_BASE_URL:-https://scandrix.dev}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be provided in .env}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # ScanDrix Webhooks Ingestion Service (Port 8081)
+  # ----------------------------------------------------------------------------
+  scandrix-webhooks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-webhooks
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/app/bin/scandrix-webhooks"]
+    environment:
+      - PORT=8081
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be provided in .env}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scandrix_redis_secret}@redis:6379/0
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be provided in .env}
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-network
+
+  # ----------------------------------------------------------------------------
+  # ScanDrix Review Worker (AST Engine, Taint Tracking & AI Model Orchestration)
+  # ----------------------------------------------------------------------------
+  scandrix-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scandrix-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/app/bin/scandrix-worker"]
+    environment:
+      - HEALTH_PROBE_PORT=8082
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be provided in .env}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scandrix_redis_secret}@redis:6379/0
+      - RABBITMQ_URL=${RABBITMQ_URL:?RABBITMQ_URL must be provided in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      scandrix-migrate:
+        condition: service_completed_successfully
+    networks:
+      - scandrix-network
+
+volumes:
+  redis_data:
+
+networks:
+  scandrix-network:
+    driver: bridge

@@ -58,8 +58,9 @@ func (uc *CreateOrUpdateTeamMembersUseCase) Execute(ctx context.Context, wsID, t
 		}
 
 		existing, _ := uc.memberRepo.FindOne(ctx, memberdomain.TeamMemberFilter{
-			TeamID: &teamID,
-			Email:  &m.Email,
+			WorkspaceID: &wsID,
+			TeamID:      &teamID,
+			Email:       &m.Email,
 		})
 
 		if existing != nil {

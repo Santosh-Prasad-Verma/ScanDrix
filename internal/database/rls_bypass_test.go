@@ -58,7 +58,6 @@ var (
 //
 // See docs/LEAST_PRIVILEGE_ROLLOUT.md section R3.
 var knownBypass = map[string]int{
-	"organization/infrastructure/repositories/postgres_global_parameters_repository.go":       6,
 	"core/repositories/audit_automation_repository.go":                                        8,
 	"core/repositories/auth_sso_repository.go":                                                9,
 	"core/repositories/billing_license_repository.go":                                         7,
@@ -70,10 +69,7 @@ var knownBypass = map[string]int{
 	"organization/infrastructure/repositories/postgres_cli_device_repository.go":              5,
 	"organization/infrastructure/repositories/postgres_organization_parameters_repository.go": 5,
 	"organization/infrastructure/repositories/postgres_organization_repository.go":            5,
-	"organization/infrastructure/repositories/postgres_parameters_repository.go":              9,
 	"organization/infrastructure/repositories/postgres_team_cli_key_repository.go":            6,
-	"organization/infrastructure/repositories/postgres_team_member_repository.go":             7,
-	"organization/infrastructure/repositories/postgres_team_repository.go":                    7,
 	"organization/infrastructure/repositories/postgres_tracked_repository_reader.go":          1,
 	"organization/infrastructure/repositories/postgres_user_account_repository.go":            5,
 	"platformdata/infrastructure/repositories/postgres_repository.go":                         15,

@@ -1,0 +1,78 @@
+name: "Deploy Backend to AWS EC2"
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'scandrix-website/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: "Deploy to AWS EC2"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout Code"
+        uses: actions/checkout@v4
+
+      - name: "Configure SSH Key"
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: "Sync Codebase to EC2 via Rsync"
+        run: |
+          echo "📦 Syncing repository to EC2..."
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude '.env' \
+            --exclude 'node_modules' \
+            --exclude '.github' \
+            --exclude 'scandrix-website' \
+            -e "ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no" \
+            ./ ${{ secrets.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }}:/home/ubuntu/ScanDrix/
+
+      - name: "Rebuild & Restart Backend Containers"
+        run: |
+          echo "🚀 Executing deployment on EC2..."
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd /home/ubuntu/ScanDrix
+
+            # Create default .env from template if missing
+            if [ ! -f ".env" ]; then
+              if [ -f ".env.production.template" ]; then
+                echo "Notice: Creating initial .env from template..."
+                cp .env.production.template .env
+              else
+                echo "⚠️ Error: .env file missing in /home/ubuntu/ScanDrix!"
+                exit 1
+              fi
+            fi
+
+            echo "Building and launching containers..."
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+
+            echo "Pruning dangling build cache images..."
+            docker image prune -f
+
+            echo "Waiting for services to initialize..."
+            sleep 5
+            docker compose -f docker-compose.prod.yml ps
+
+            echo "Verifying API health status..."
+            if wget -qO- --timeout=5 http://localhost:8080/healthz > /dev/null 2>&1; then
+              echo "✅ API is online and healthy on port 8080!"
+            else
+              echo "⚠️ API container is running. Check 'docker compose -f docker-compose.prod.yml logs scandrix-api' for live logs."
+            fi
+
+            echo "🎉 Deployment finished successfully!"
+          EOF

@@ -14,12 +14,28 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/scandrix/backend/internal/database"
 	paramdomain "github.com/scandrix/backend/internal/organization/domain/parameters"
+)
+
+var (
+	// ErrTenantRequired is returned when a query would have to run without a
+	// tenant context. Under RLS that silently matches every tenant's rows, so
+	// the repository refuses instead of widening the read.
+	ErrTenantRequired = errors.New("parameters: workspace ID is required for this query")
+
+	// errUndefinedParametersTable signals the pre-migration schema, where
+	// settings still live in workspace_parameters. Only this justifies the
+	// legacy fallback path.
+	errUndefinedParametersTable = errors.New("parameters table does not exist")
 )
 
 // PostgresParametersRepository implements IParametersRepository.
 type PostgresParametersRepository struct {
+	client *database.Client
 	pool   *pgxpool.Pool
 	mu     sync.RWMutex
 	memory map[string]*paramdomain.ParametersEntity // key: wsID:teamID:paramKey
@@ -28,6 +44,7 @@ type PostgresParametersRepository struct {
 // NewPostgresParametersRepository creates a new repository.
 func NewPostgresParametersRepository(pool *pgxpool.Pool) *PostgresParametersRepository {
 	return &PostgresParametersRepository{
+		client: &database.Client{Pool: pool},
 		pool:   pool,
 		memory: make(map[string]*paramdomain.ParametersEntity),
 	}
@@ -68,6 +85,13 @@ func (r *PostgresParametersRepository) Find(ctx context.Context, filter paramdom
 		return res, nil
 	}
 
+	if filter.WorkspaceID == nil {
+		// The tenant cannot be inferred from the remaining predicates. Under a
+		// non-superuser role this would return rows from every tenant, so fail
+		// loudly instead of widening the query.
+		return nil, ErrTenantRequired
+	}
+
 	query := `
 		SELECT id, workspace_id, team_id, config_key, config_value, description, active, version, created_at, updated_at
 		FROM parameters
@@ -85,9 +109,7 @@ func (r *PostgresParametersRepository) Find(ctx context.Context, filter paramdom
 	if filter.UUID != nil {
 		filterID = filter.UUID
 	}
-	if filter.WorkspaceID != nil {
-		filterWsID = filter.WorkspaceID
-	}
+	filterWsID = filter.WorkspaceID
 	if filter.TeamID != nil {
 		filterTeamID = filter.TeamID
 	}
@@ -99,39 +121,55 @@ func (r *PostgresParametersRepository) Find(ctx context.Context, filter paramdom
 		filterActive = filter.Active
 	}
 
-	rows, err := r.pool.Query(ctx, query, filterID, filterWsID, filterTeamID, filterKey, filterActive)
-	if err != nil {
+	var list []*paramdomain.ParametersEntity
+	err := r.client.ExecWithTenant(ctx, *filter.WorkspaceID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, filterID, filterWsID, filterTeamID, filterKey, filterActive)
+		if err != nil {
+			// Only an absent `parameters` table justifies the legacy fallback; a
+			// permission or policy error must surface instead of being retried
+			// against a different table and reported as empty data.
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+				return errUndefinedParametersTable
+			}
+			return fmt.Errorf("failed to query parameters: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var id, wsID uuid.UUID
+			var teamID *uuid.UUID
+			var keyStr, desc string
+			var configValRaw []byte
+			var active bool
+			var version int
+			var createdAt, updatedAt time.Time
+
+			if err := rows.Scan(&id, &wsID, &teamID, &keyStr, &configValRaw, &desc, &active, &version, &createdAt, &updatedAt); err != nil {
+				return fmt.Errorf("failed to scan parameter row: %w", err)
+			}
+
+			list = append(list, &paramdomain.ParametersEntity{
+				UUID:        id,
+				WorkspaceID: wsID,
+				TeamID:      teamID,
+				ConfigKey:   paramdomain.ParameterKey(keyStr),
+				ConfigValue: json.RawMessage(configValRaw),
+				Description: desc,
+				Active:      active,
+				Version:     version,
+				CreatedAt:   createdAt,
+				UpdatedAt:   updatedAt,
+			})
+		}
+		return rows.Err()
+	})
+	if errors.Is(err, errUndefinedParametersTable) {
 		// Fallback to legacy workspace_parameters if table parameters is not yet created
 		return r.findLegacyWorkspaceParameters(ctx, filter)
 	}
-	defer rows.Close()
-
-	var list []*paramdomain.ParametersEntity
-	for rows.Next() {
-		var id, wsID uuid.UUID
-		var teamID *uuid.UUID
-		var keyStr, desc string
-		var configValRaw []byte
-		var active bool
-		var version int
-		var createdAt, updatedAt time.Time
-
-		if err := rows.Scan(&id, &wsID, &teamID, &keyStr, &configValRaw, &desc, &active, &version, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan parameter row: %w", err)
-		}
-
-		list = append(list, &paramdomain.ParametersEntity{
-			UUID:        id,
-			WorkspaceID: wsID,
-			TeamID:      teamID,
-			ConfigKey:   paramdomain.ParameterKey(keyStr),
-			ConfigValue: json.RawMessage(configValRaw),
-			Description: desc,
-			Active:      active,
-			Version:     version,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
-		})
+	if err != nil {
+		return nil, err
 	}
 
 	return list, nil
@@ -151,7 +189,9 @@ func (r *PostgresParametersRepository) findLegacyWorkspaceParameters(ctx context
 	var reviewParamsRaw, orgParamsRaw []byte
 	var updatedAt time.Time
 
-	err := r.pool.QueryRow(ctx, query, *filter.WorkspaceID).Scan(&wsID, &reviewParamsRaw, &orgParamsRaw, &updatedAt)
+	err := r.client.ExecWithTenant(ctx, *filter.WorkspaceID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, *filter.WorkspaceID).Scan(&wsID, &reviewParamsRaw, &orgParamsRaw, &updatedAt)
+	})
 	if err != nil {
 		return []*paramdomain.ParametersEntity{}, nil
 	}
@@ -193,9 +233,15 @@ func (r *PostgresParametersRepository) FindOne(ctx context.Context, filter param
 	return list[0], nil
 }
 
-// FindByID retrieves a parameter by UUID.
-func (r *PostgresParametersRepository) FindByID(ctx context.Context, id uuid.UUID) (*paramdomain.ParametersEntity, error) {
-	return r.FindOne(ctx, paramdomain.ParametersFilter{UUID: &id})
+// FindByID retrieves a parameter by UUID within a workspace.
+//
+// wsID is explicit rather than resolved from the row. A reverse lookup would
+// have to be system-elevated, and the `parameters` policy has no
+// system-worker branch, so that lookup would match zero rows and report the
+// row as missing. Requiring the caller to name the workspace keeps the read
+// inside the tenant it belongs to.
+func (r *PostgresParametersRepository) FindByID(ctx context.Context, wsID, id uuid.UUID) (*paramdomain.ParametersEntity, error) {
+	return r.FindOne(ctx, paramdomain.ParametersFilter{UUID: &id, WorkspaceID: &wsID})
 }
 
 // FindByKey retrieves a parameter by workspace, team, and key.
@@ -258,52 +304,75 @@ func (r *PostgresParametersRepository) Create(ctx context.Context, entity *param
 			updated_at = EXCLUDED.updated_at
 		RETURNING id, version, updated_at
 	`
-	err = r.pool.QueryRow(ctx, query,
-		entity.UUID,
-		entity.WorkspaceID,
-		entity.TeamID,
-		string(entity.ConfigKey),
-		valBytes,
-		entity.Description,
-		entity.Active,
-		entity.Version,
-		entity.CreatedAt,
-		entity.UpdatedAt,
-	).Scan(&entity.UUID, &entity.Version, &entity.UpdatedAt)
+	var savedID uuid.UUID
+	var savedVersion int
+	var savedUpdatedAt time.Time
+	err = r.client.ExecWithTenant(ctx, entity.WorkspaceID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query,
+			entity.UUID,
+			entity.WorkspaceID,
+			entity.TeamID,
+			string(entity.ConfigKey),
+			valBytes,
+			entity.Description,
+			entity.Active,
+			entity.Version,
+			entity.CreatedAt,
+			entity.UpdatedAt,
+		).Scan(&savedID, &savedVersion, &savedUpdatedAt)
+	})
 
-	if err != nil {
-		// Fallback to legacy workspace_parameters if table parameters is not yet migrated
+	// Only an absent `parameters` table justifies the legacy fallback. A policy
+	// or permission error must surface: retrying against workspace_parameters
+	// would report "no parameters configured" for a real configuration.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
 		return r.createLegacyWorkspaceParameters(ctx, entity, valBytes)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to store parameter: %w", err)
+	}
+
+	entity.UUID = savedID
+	entity.Version = savedVersion
+	entity.UpdatedAt = savedUpdatedAt
 
 	return entity, nil
 }
 
+// entityScanner carries the RETURNING columns out of a closure that cannot
+// return them directly.
+type entityScanner struct {
+	id        uuid.UUID
+	version   int
+	updatedAt time.Time
+}
+
 func (r *PostgresParametersRepository) createLegacyWorkspaceParameters(ctx context.Context, entity *paramdomain.ParametersEntity, valBytes []byte) (*paramdomain.ParametersEntity, error) {
+	var query string
 	if entity.ConfigKey == paramdomain.KeyCodeReviewConfig {
-		query := `
+		query = `
 			INSERT INTO workspace_parameters (workspace_id, review_params, updated_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (workspace_id) DO UPDATE SET
 				review_params = EXCLUDED.review_params,
 				updated_at = EXCLUDED.updated_at
 		`
-		_, err := r.pool.Exec(ctx, query, entity.WorkspaceID, valBytes, entity.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
 	} else {
-		query := `
+		query = `
 			INSERT INTO workspace_parameters (workspace_id, org_params, updated_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (workspace_id) DO UPDATE SET
 				org_params = EXCLUDED.org_params,
 				updated_at = EXCLUDED.updated_at
 		`
-		_, err := r.pool.Exec(ctx, query, entity.WorkspaceID, valBytes, entity.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
+	}
+	err := r.client.ExecWithTenant(ctx, entity.WorkspaceID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, entity.WorkspaceID, valBytes, entity.UpdatedAt)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed writing legacy workspace parameters: %w", err)
 	}
 	return entity, nil
 }
@@ -346,20 +415,44 @@ func (r *PostgresParametersRepository) Delete(ctx context.Context, wsID uuid.UUI
 	if teamID != nil {
 		filterTeamID = teamID
 	}
-	_, err := r.pool.Exec(ctx, query, wsID, filterTeamID, string(key))
-	if err != nil {
-		// Fallback
-		if key == paramdomain.KeyCodeReviewConfig {
-			_, _ = r.pool.Exec(ctx, `UPDATE workspace_parameters SET review_params = '{}'::jsonb, updated_at = now() WHERE workspace_id = $1`, wsID)
-		} else {
-			_, _ = r.pool.Exec(ctx, `UPDATE workspace_parameters SET org_params = '{}'::jsonb, updated_at = now() WHERE workspace_id = $1`, wsID)
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		cmd, err := tx.Exec(ctx, query, wsID, filterTeamID, string(key))
+		if err != nil {
+			return err
 		}
+		if cmd.RowsAffected() > 0 {
+			return nil
+		}
+		// No row matched on the primary table. Clearing the legacy column is a
+		// real fallback, so report whether it changed anything instead of
+		// discarding the outcome: under RLS a missing tenant context lands here
+		// too, and a silent no-op would look like a successful delete.
+		legacy := `UPDATE workspace_parameters SET org_params = '{}'::jsonb, updated_at = now() WHERE workspace_id = $1`
+		if key == paramdomain.KeyCodeReviewConfig {
+			legacy = `UPDATE workspace_parameters SET review_params = '{}'::jsonb, updated_at = now() WHERE workspace_id = $1`
+		}
+		lcmd, lerr := tx.Exec(ctx, legacy, wsID)
+		if lerr != nil {
+			return lerr
+		}
+		if lcmd.RowsAffected() == 0 {
+			return errors.New("parameter not found")
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed deleting parameter: %w", err)
 	}
+
 	return nil
 }
-
 // DeleteByTeamID purges parameters associated with a deleted team.
-func (r *PostgresParametersRepository) DeleteByTeamID(ctx context.Context, teamID uuid.UUID) error {
+//
+// wsID is an explicit parameter rather than a reverse lookup: the caller is
+// deleting a team inside a known workspace, and under RLS a bare
+// `WHERE team_id = $1` with no tenant context matches zero rows and reports a
+// successful purge while leaving every row behind.
+func (r *PostgresParametersRepository) DeleteByTeamID(ctx context.Context, wsID, teamID uuid.UUID) error {
 	if r.pool == nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -371,9 +464,15 @@ func (r *PostgresParametersRepository) DeleteByTeamID(ctx context.Context, teamI
 		return nil
 	}
 
-	query := `UPDATE parameters SET active = false, updated_at = now() WHERE team_id = $1`
-	_, err := r.pool.Exec(ctx, query, teamID)
-	return err
+	query := `UPDATE parameters SET active = false, updated_at = now() WHERE workspace_id = $1 AND team_id = $2`
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, wsID, teamID)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("failed purging team parameters: %w", err)
+	}
+	return nil
 }
 
 // CreateNewActiveVersion atomically deactivates every currently-active row for (wsID, teamID, key)
@@ -406,38 +505,33 @@ func (r *PostgresParametersRepository) CreateNewActiveVersion(ctx context.Contex
 		return entity, nil
 	}
 
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
+	// Deactivate-then-insert must be one transaction, and it must run inside the
+	// tenant context: a transaction opened straight off the pool carries no
+	// app.current_tenant_id, so RLS would reject the update and the insert.
+	err = r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		deactivateQuery := `
+			UPDATE parameters
+			SET active = false, updated_at = $4
+			WHERE workspace_id = $1
+			  AND (team_id IS NOT DISTINCT FROM $2)
+			  AND config_key = $3
+			  AND active = true
+		`
+		if _, err := tx.Exec(ctx, deactivateQuery, wsID, teamID, string(key), now); err != nil {
+			return fmt.Errorf("failed deactivating prior active versions: %w", err)
+		}
 
-	// 1. Bulk-deactivate all currently active rows for this (workspace_id, team_id, config_key)
-	deactivateQuery := `
-		UPDATE parameters
-		SET active = false, updated_at = $4
-		WHERE workspace_id = $1
-		  AND (team_id IS NOT DISTINCT FROM $2)
-		  AND config_key = $3
-		  AND active = true
-	`
-	_, err = tx.Exec(ctx, deactivateQuery, wsID, teamID, string(key), now)
+		insertQuery := `
+			INSERT INTO parameters (id, workspace_id, team_id, config_key, config_value, active, version, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8)
+		`
+		if _, err := tx.Exec(ctx, insertQuery, newUUID, wsID, teamID, string(key), valBytes, nextVersion, now, now); err != nil {
+			return fmt.Errorf("failed inserting new active version: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed deactivating prior active versions: %w", err)
-	}
-
-	// 2. Insert the new active version
-	insertQuery := `
-		INSERT INTO parameters (id, workspace_id, team_id, config_key, config_value, active, version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8)
-	`
-	_, err = tx.Exec(ctx, insertQuery, newUUID, wsID, teamID, string(key), valBytes, nextVersion, now, now)
-	if err != nil {
-		return nil, fmt.Errorf("failed inserting new active version: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed committing new active version: %w", err)
+		return nil, err
 	}
 
 	return entity, nil

@@ -19,7 +19,7 @@ unverified.
 | Long-running services on a superuser role | **0** (was 3: api, webhooks, worker) |
 | Bare-pool call sites in worker-path repositories | **0** (`review_`, `audit_`, `ast_graph_`) |
 | Bare-pool call sites in `auth_repository.go` | **0 of 29** |
-| Live repositories still bypassing RLS | **19 files, 150 calls** — see R3 |
+| Live repositories still bypassing RLS | **15 files, 121 calls** — see R3 |
 | Tables with RLS enabled | 43 |
 | RLS tables with no policy | 0 |
 | RLS tables lacking a system-worker branch | 28, deliberately (see R3) |
@@ -300,6 +300,40 @@ broken fixture. To exercise the static-rule path specifically, use code that tri
 ### R3 — Parallel repository layer bypasses RLS
 
 **Status:** open. Now **measured and ratcheted**, previously neither.
+
+**Progress.**
+- `postgres_parameters_repository.go` is converted (9 calls removed, 19 → 18 files, 150 → 141 calls). Every query now runs through `ExecWithTenant`, `CreateNewActiveVersion` no longer opens its own transaction off the pool, and `DeleteByTeamID` takes the owning workspace explicitly. Proven by `parameters_rls_test.go`.
+- `postgres_team_repository.go` and `postgres_team_member_repository.go` are converted (14 calls removed, 18 → 16 files, 141 → 127 calls).
+  - All queries now route through `r.client.ExecWithTenant`.
+  - Signatures of `FindByID`, `Delete`, `DeleteMembers`, and `CountByUser` now take explicit `wsID` tenant parameters instead of bare IDs, eliminating silent zero-row matches under RLS.
+  - In `postgres_team_repository.go`, `ListWithIntegrations` now executes queries for `team_members`, `integration_connections`, and `notification_channels` inside `ExecWithTenant(ctx, workspaceID, ...)`.
+  - Proven by `team_rls_test.go`, verifying tenant isolation, cross-tenant invisibility, and member counting/deletion under a `NOSUPERUSER NOBYPASSRLS` role in a disposable database.
+- `postgres_global_parameters_repository.go` is converted (6 calls removed, 16 → 15 files, 127 → 121 calls).
+  - All 6 queries route through `r.client.ExecAsSystem`.
+  - Table `global_parameters` is a system-wide table with the `system_worker_global_parameters` RLS policy; under `scandrix_runtime`, a bare pool query returns 0 rows, while `ExecAsSystem` sets `app.is_system_worker = 'true'`.
+  - Proven by `TestGlobalParametersUnderSystemWorkerRLS` in `team_rls_test.go` running against a `NOSUPERUSER NOBYPASSRLS` role.
+
+Two defects were found while converting parameters, both of which failed silently:
+
+- `Find` and `Create` fell back to the legacy `workspace_parameters` table on
+  **any** error. Under RLS a policy rejection would therefore be reported as
+  "no parameters configured". The fallback is now restricted to SQLSTATE 42P01
+  (undefined table).
+- `Delete` discarded the outcome of its fallback with `_, _ =` and returned
+  `nil` regardless, so a delete that matched nothing looked successful. It now
+  checks `RowsAffected` on both the primary and legacy statements.
+
+`FindByID` was changed to take the workspace explicitly. Its previous
+signature (id only) forced a system-elevated reverse lookup, and the
+`parameters` policy has no system-worker branch, so that lookup matched zero
+rows and reported existing rows as missing. `FindByID` has no callers.
+
+**Correction to this document's earlier wording.** The 19 files counted above
+were described as "live". At least one is not: the four repositories in
+`core/repositories/repository_scm.go` (18 calls) are never constructed by any
+composition root or test, so they cannot be reached at runtime. Its RLS
+exposure is latent, not active.
+
 
 **What the audit found.** The original framing of this item was "28 RLS tables lack a
 system-worker branch". That was the wrong question, and answering it properly changed the size of

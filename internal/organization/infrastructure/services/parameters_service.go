@@ -61,11 +61,11 @@ func (s *ParametersService) FindOne(ctx context.Context, filter paramdomain.Para
 	return s.repo.FindOne(ctx, filter)
 }
 
-func (s *ParametersService) FindByID(ctx context.Context, id uuid.UUID) (*paramdomain.ParametersEntity, error) {
+func (s *ParametersService) FindByID(ctx context.Context, wsID, id uuid.UUID) (*paramdomain.ParametersEntity, error) {
 	if s.repo == nil {
 		return nil, errors.New("repository uninitialized")
 	}
-	return s.repo.FindByID(ctx, id)
+	return s.repo.FindByID(ctx, wsID, id)
 }
 
 func (s *ParametersService) FindByKey(ctx context.Context, wsID uuid.UUID, teamID *uuid.UUID, key paramdomain.ParameterKey) (*paramdomain.ParametersEntity, error) {
@@ -108,11 +108,11 @@ func (s *ParametersService) Delete(ctx context.Context, wsID uuid.UUID, teamID *
 	return err
 }
 
-func (s *ParametersService) DeleteByTeamID(ctx context.Context, teamID uuid.UUID) error {
+func (s *ParametersService) DeleteByTeamID(ctx context.Context, wsID, teamID uuid.UUID) error {
 	if s.repo == nil {
 		return errors.New("repository uninitialized")
 	}
-	return s.repo.DeleteByTeamID(ctx, teamID)
+	return s.repo.DeleteByTeamID(ctx, wsID, teamID)
 }
 
 // FindByKeyCached returns cached parameter entity or queries database with TTL refresh.

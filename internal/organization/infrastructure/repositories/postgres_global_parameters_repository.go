@@ -15,11 +15,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/scandrix/backend/internal/database"
 	globalparamdomain "github.com/scandrix/backend/internal/organization/domain/globalparameters"
 )
 
 // PostgresGlobalParametersRepository implements IGlobalParametersRepository.
 type PostgresGlobalParametersRepository struct {
+	client *database.Client
 	pool   *pgxpool.Pool
 	mu     sync.RWMutex
 	memory map[string]*globalparamdomain.GlobalParametersEntity // key: config_key
@@ -28,6 +30,7 @@ type PostgresGlobalParametersRepository struct {
 // NewPostgresGlobalParametersRepository creates a new repository.
 func NewPostgresGlobalParametersRepository(pool *pgxpool.Pool) *PostgresGlobalParametersRepository {
 	return &PostgresGlobalParametersRepository{
+		client: &database.Client{Pool: pool},
 		pool:   pool,
 		memory: make(map[string]*globalparamdomain.GlobalParametersEntity),
 	}
@@ -54,7 +57,9 @@ func (r *PostgresGlobalParametersRepository) FindByID(ctx context.Context, id uu
 	`
 	var p globalparamdomain.GlobalParametersEntity
 	var valBytes []byte
-	err := r.pool.QueryRow(ctx, query, id).Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt)
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, id).Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -84,7 +89,9 @@ func (r *PostgresGlobalParametersRepository) FindByKey(ctx context.Context, key 
 	`
 	var p globalparamdomain.GlobalParametersEntity
 	var valBytes []byte
-	err := r.pool.QueryRow(ctx, query, key).Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt)
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, key).Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -113,7 +120,9 @@ func (r *PostgresGlobalParametersRepository) FindUpdatedAtByKey(ctx context.Cont
 		LIMIT 1
 	`
 	var updatedAt time.Time
-	err := r.pool.QueryRow(ctx, query, key).Scan(&updatedAt)
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, key).Scan(&updatedAt)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -138,8 +147,10 @@ func (r *PostgresGlobalParametersRepository) Delete(ctx context.Context, id uuid
 	}
 
 	query := `DELETE FROM global_parameters WHERE id = $1`
-	_, err := r.pool.Exec(ctx, query, id)
-	return err
+	return r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, id)
+		return err
+	})
 }
 
 // Create inserts or upserts a global parameter.
@@ -171,7 +182,10 @@ func (r *PostgresGlobalParametersRepository) Create(ctx context.Context, entity 
 			description = EXCLUDED.description,
 			updated_at = EXCLUDED.updated_at
 	`
-	_, err := r.pool.Exec(ctx, query, entity.UUID, entity.ConfigKey, entity.ConfigValue, entity.Description, entity.CreatedAt, entity.UpdatedAt)
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, entity.UUID, entity.ConfigKey, entity.ConfigValue, entity.Description, entity.CreatedAt, entity.UpdatedAt)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("failed to insert global parameter: %w", err)
 	}
@@ -200,21 +214,28 @@ func (r *PostgresGlobalParametersRepository) List(ctx context.Context) ([]*globa
 		FROM global_parameters
 		ORDER BY config_key ASC
 	`
-	rows, err := r.pool.Query(ctx, query)
+	var list []*globalparamdomain.GlobalParametersEntity
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var p globalparamdomain.GlobalParametersEntity
+			var valBytes []byte
+			if err := rows.Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
+				return err
+			}
+			p.ConfigValue = valBytes
+			list = append(list, &p)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list global parameters: %w", err)
 	}
-	defer rows.Close()
-
-	var list []*globalparamdomain.GlobalParametersEntity
-	for rows.Next() {
-		var p globalparamdomain.GlobalParametersEntity
-		var valBytes []byte
-		if err := rows.Scan(&p.UUID, &p.ConfigKey, &valBytes, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		p.ConfigValue = valBytes
-		list = append(list, &p)
-	}
 	return list, nil
 }
+
