@@ -185,6 +185,16 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      # Compiles every package, not just the nine binaries.
+      #
+      # The audit found `go build ./...` failing on internal/review while this
+      # job stayed green and /healthz kept answering 200 from a stale image.
+      # cmd/api transitively imports internal/review, so this would have caught
+      # it -- but nothing ran on the untracked file. `go build ./...` also covers
+      # test-only and tooling packages that no cmd imports.
+      - name: Compile All Packages
+        run: go build ./...
+
       - name: Build All 9 Applications
         run: |
           mkdir -p bin

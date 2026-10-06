@@ -724,7 +724,36 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 			authGroup.Mount("/reviews", reviewCtrl.Routes())
 			authGroup.Mount("/usage", usageCtrl.Routes())
-			authGroup.Mount("/spend-limit", spendLimitCtrl.Routes())
+			// Spend limits are budget configuration. Reads are visible to any
+			// role granted billing read (owner/admin); writing the cap is a
+			// full-authority billing action and stays owner-only, matching the
+			// /billing mount below and PermBillingManage in the role matrix.
+			// This mount previously carried no policy guard at all, so any
+			// authenticated viewer or member could raise or remove the
+			// workspace's spend ceiling.
+			// Spend limits are budget configuration. Reads are visible to any role
+			// granted billing read (owner/admin); writing the cap is a
+			// full-authority billing action and stays owner-only, matching the
+			// /billing mount below and PermBillingManage in the role matrix.
+			// This mount previously carried no policy guard at all, so any
+			// authenticated viewer or member could raise or remove the
+			// workspace's spend ceiling.
+			//
+			// Read routes are mounted from their own router; the write routes are
+			// registered directly on this group because chi refuses to mount a
+			// second router at an already-mounted path, and the two verbs need
+			// different policies.
+			authGroup.Group(func(spendGroup chi.Router) {
+				spendGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionRead, rbac.ResourceBilling))
+				spendGroup.Mount("/spend-limit", spendLimitCtrl.ReadRoutes())
+				// Reads are already authorised above. Writes additionally require
+				// full billing authority, applied per-route because chi cannot
+				// mount a second router at the same path.
+				manageBilling := rbac.RequirePolicy(policyEngine, rbac.ActionManage, rbac.ResourceBilling)
+				for _, route := range spendLimitCtrl.WriteRoutePatterns() {
+					spendGroup.Method(route.Method, "/spend-limit"+route.Pattern, manageBilling(route.Handler))
+				}
+			})
 			authGroup.Mount("/cockpit", cockpitCtrl.Routes())
 			authGroup.Mount("/code-health", cockpitCtrl.CodeHealthRoutes())
 			authGroup.Mount("/productivity", cockpitCtrl.ProductivityRoutes())
@@ -765,7 +794,26 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authGroup.Mount("/github", githubCtrl.Routes())
 
 			authGroup.Mount("/parameters", paramCtrl.Routes())
-			authGroup.Mount("/organization-parameters", orgParamCtrl.Routes())
+			// Workspace-level provider configuration holds BYOK credentials and
+			// model routing. Repointing it sends every subsequent review's source
+			// code to whatever endpoint is configured here, so writes require
+			// workspace update authority (owner/admin). Reads are visible to any
+			// role holding workspace read, because every member legitimately needs
+			// to know which model the workspace uses.
+			//
+			// This mount previously carried no policy guard, so any authenticated
+			// viewer or member could replace the workspace's LLM credentials.
+			authGroup.Group(func(orgParamGroup chi.Router) {
+				orgParamGroup.Use(rbac.RequirePolicy(policyEngine, rbac.ActionRead, rbac.ResourceWorkspace))
+				orgParamGroup.Mount("/organization-parameters", orgParamCtrl.ReadRoutes())
+				// Reads are already authorised above. Mutations additionally require
+				// workspace update authority, applied per-route because chi
+				// cannot mount a second router at the same path.
+				updateWorkspace := rbac.RequirePolicy(policyEngine, rbac.ActionUpdate, rbac.ResourceWorkspace)
+				for _, route := range orgParamCtrl.WriteRoutePatterns() {
+					orgParamGroup.Method(route.Method, "/organization-parameters"+route.Pattern, updateWorkspace(route.Handler))
+				}
+			})
 			authGroup.Mount("/notifications", notifCtrl.Routes())
 
 			// RBAC-protected routes: rules & automations require rule management policy

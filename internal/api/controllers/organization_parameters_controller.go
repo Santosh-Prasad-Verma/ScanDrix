@@ -119,6 +119,46 @@ func (c *OrganizationParametersController) Routes() chi.Router {
 	return r
 }
 
+// ReadRoutes returns only the read-only organization-parameter endpoints.
+func (c *OrganizationParametersController) ReadRoutes() chi.Router {
+	r := chi.NewRouter()
+
+	r.Get("/find-by-key", c.handleFindByKey)
+	r.Get("/list-providers", c.handleListProviders)
+	r.Get("/list-models", c.handleListModels)
+	r.Get("/model-capabilities", c.handleModelCapabilities)
+	r.Get("/model-overrides", c.handleModelOverrides)
+	r.Get("/llm-config/status", c.handleLLMConfigStatus)
+	r.Get("/byok/providers", c.handleBYOKProviders)
+	r.Get("/cockpit-metrics-visibility", c.handleGetCockpitMetricsVisibility)
+
+	return r
+}
+
+// WriteRoutePatterns returns the endpoints that mutate organization parameters
+// as discrete method+path+handler triples.
+//
+// These change BYOK credentials, model routing, cockpit metric visibility and
+// the auto-license allow-list. Each alters workspace-wide behaviour, so they are
+// registered behind workspace update authority.
+//
+// The router registers these directly rather than by mounting a second router:
+// chi panics if the same path is mounted twice on one mux, and reads and writes
+// need different policies.
+func (c *OrganizationParametersController) WriteRoutePatterns() []RoutePattern {
+	return []RoutePattern{
+		{Method: http.MethodPost, Pattern: "/create-or-update", Handler: c.handleCreateOrUpdate},
+		{Method: http.MethodPost, Pattern: "/list-models", Handler: c.handleListModels},
+		{Method: http.MethodDelete, Pattern: "/delete-byok-config", Handler: c.handleDeleteBYOK},
+		{Method: http.MethodPost, Pattern: "/test-byok", Handler: c.handleTestBYOK},
+		{Method: http.MethodPost, Pattern: "/test-byok-model", Handler: c.handleTestBYOK},
+		{Method: http.MethodPost, Pattern: "/model-overrides/clear", Handler: c.handleClearModelOverrides},
+		{Method: http.MethodPost, Pattern: "/cockpit-metrics-visibility", Handler: c.handleUpdateCockpitMetricsVisibility},
+		{Method: http.MethodPost, Pattern: "/auto-license/allowed-users", Handler: c.handleUpdateAutoLicenseAllowedUsers},
+		{Method: http.MethodPost, Pattern: "/update-auto-license-allowed-users", Handler: c.handleUpdateAutoLicenseAllowedUsers},
+	}
+}
+
 func (c *OrganizationParametersController) resolveWorkspaceID(r *http.Request) (uuid.UUID, error) {
 	wsID, _ := auth.WorkspaceFromContext(r.Context())
 	if wsID != uuid.Nil {
@@ -289,6 +329,31 @@ func (c *OrganizationParametersController) handleFindByKey(w http.ResponseWriter
 	})
 }
 
+// writableOrgParamKeys is the allow-list of configuration keys that
+// handleCreateOrUpdate may write.
+//
+// The handler previously accepted any caller-supplied key, which meant a caller
+// with workspace update authority could also write rows they had no legitimate
+// route to: licensing state, the first-review timestamp, or the code-review
+// preset. Restricting writes to the keys this endpoint actually owns keeps the
+// blast radius of a single credential write confined to provider configuration.
+//
+// Keys that are deliberately absent are managed elsewhere or by the system:
+// license_key / license_assigned_users / license_key issuance, auto_license_assignment,
+// spend_limit_config (owned by the spend-limit routes), first_review_at (set by the
+// review pipeline), and global_rules_source_repositories (owned by repository rules).
+var writableOrgParamKeys = map[string]bool{
+	models.OrgParamKeyBYOKConfig:                 true,
+	models.OrgParamKeyCockpitMetricsVisibility:   true,
+	models.OrgParamKeyAutoLicenseAllowedUsers:    true,
+	models.OrgParamKeyModelOverrides:             true,
+	models.OrgParamKeyTimezoneConfig:             true,
+	models.OrgParamKeyAutoJoinConfig:             true,
+	string(models.OrgParamReviewModeConfig):      true,
+	string(models.OrgParamDrixyFineTuningConfig): true,
+	string(models.OrgParamCategoryWorkitemTypes): true,
+}
+
 func (c *OrganizationParametersController) handleCreateOrUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Key         string `json:"key"`
@@ -303,6 +368,10 @@ func (c *OrganizationParametersController) handleCreateOrUpdate(w http.ResponseW
 	key := strings.TrimSpace(req.Key)
 	if key == "" {
 		http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+		return
+	}
+	if !writableOrgParamKeys[key] {
+		http.Error(w, `{"error":"key is not writable through this endpoint"}`, http.StatusBadRequest)
 		return
 	}
 

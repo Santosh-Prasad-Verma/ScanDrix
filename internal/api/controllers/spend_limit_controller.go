@@ -60,6 +60,42 @@ func (c *SpendLimitController) Routes() chi.Router {
 	return r
 }
 
+// ReadRoutes returns only the read-only spend-limit endpoints.
+//
+// Split from Routes() so the router can apply a weaker policy to reads and a
+// stronger one to writes. Budget visibility is not the same authority as
+// changing the cap: owners and admins may both see spend, but only a role with
+// full billing authority may raise or remove the ceiling.
+func (c *SpendLimitController) ReadRoutes() chi.Router {
+	r := chi.NewRouter()
+
+	r.Get("/status", c.handleGetStatus)
+	r.Get("/", c.handleGetConfig)
+
+	return r
+}
+
+// RoutePattern is a single method+path+handler triple.
+//
+// chi panics if the same mount path is registered twice on one router, so a
+// stronger policy on a write endpoint cannot be layered on top of a weaker
+// one by mounting a second sub-router at the same path. Registering the write
+// routes directly on the guarded group, and the read routes by mount, avoids
+// that collision while still giving each verb its own policy.
+type RoutePattern struct {
+	Method  string
+	Pattern string
+	Handler http.HandlerFunc
+}
+
+// WriteRoutePatterns returns the spend-limit endpoints that mutate configuration,
+// as discrete method+path+handler triples ready to register on a guarded router.
+func (c *SpendLimitController) WriteRoutePatterns() []RoutePattern {
+	return []RoutePattern{
+		{Method: http.MethodPost, Pattern: "/", Handler: c.handleConfigureSpendLimit},
+	}
+}
+
 func (c *SpendLimitController) resolveOrgAndTeam(r *http.Request) (string, string) {
 	orgID := r.URL.Query().Get("organizationId")
 	teamID := r.URL.Query().Get("teamId")
