@@ -210,7 +210,7 @@ func TestMassive_MultiTenantIsolation(t *testing.T) {
 				WorkspaceID:   wsID,
 				Fingerprint:   fmt.Sprintf("fp-ws-%d-find-%d", w, f),
 				Title:         fmt.Sprintf("RULE-SECURITY-%d-%d", w, f),
-				Category:      "security",
+				Category:      fmt.Sprintf("security-%d", w),
 				SuggestedDiff: fmt.Sprintf("tenant_%d_leak_token_%d := %q", w, f, uuid.New().String()),
 				Description:   fmt.Sprintf("Secret token detected in workspace %d finding %d", w, f),
 			}
