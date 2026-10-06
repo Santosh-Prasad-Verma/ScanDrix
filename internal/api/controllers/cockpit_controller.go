@@ -84,6 +84,17 @@ func (c *CockpitController) Routes() chi.Router {
 
 	r.Get("/overview", c.handleGetOverview)
 
+	// Review analytics and suggestion search.
+	//
+	// These handlers and their repository implementations were written but never
+	// mounted, so the dashboard's review-analytics calls returned 404 and every
+	// consumer silently rendered empty. They are registered here rather than left
+	// dead because both answer with contracts the dashboard already parses
+	// exactly: models.ReviewAnalytics matches getReviewAnalytics, and
+	// models.SuggestionSearchResult matches searchSuggestions.
+	r.Get("/review-summary", c.handleReviewAnalytics)
+	r.Get("/suggestions", c.handleSearchSuggestions)
+
 	return r
 }
 
