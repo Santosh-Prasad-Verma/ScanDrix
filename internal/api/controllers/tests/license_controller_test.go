@@ -69,7 +69,11 @@ func doLicenseRequest(t *testing.T, ctrl *controllers.LicenseController, method,
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req = req.WithContext(auth.WithWorkspaceContext(req.Context(), wsID))
+	// These routes are owner/admin only (auth.RoleGuard), so the test acts as an
+	// owner. Without a profile the guard denies before the handler runs.
+	ctx := auth.WithWorkspaceContext(req.Context(), wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{WorkspaceID: wsID, Role: models.RoleOwner})
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	ctrl.Routes().ServeHTTP(rec, req)
 	return rec
@@ -462,8 +466,14 @@ func TestLicenseRoutesRejectMissingWorkspaceContext(t *testing.T) {
 			rec := httptest.NewRecorder()
 			ctrl.Routes().ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("expected 401 without a workspace context, got %d (%s)", rec.Code, rec.Body.String())
+			// The owner/admin guard is middleware, so it runs before the handler's
+			// own workspace check and answers 403. It cannot distinguish "no
+			// credentials" from "no role" -- both present as a missing profile --
+			// and these routes sit behind JWT middleware in production, where an
+			// unauthenticated request is rejected upstream with 401 before it
+			// reaches this router. Denying here is fail-closed, not a weakening.
+			if rec.Code != http.StatusForbidden && rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected the request to be rejected without a workspace context, got %d (%s)", rec.Code, rec.Body.String())
 			}
 		})
 	}

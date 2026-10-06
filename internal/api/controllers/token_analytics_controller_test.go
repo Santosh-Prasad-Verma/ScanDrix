@@ -14,6 +14,7 @@ import (
 	"github.com/scandrix/backend/internal/analytics/spendlimit"
 	"github.com/scandrix/backend/internal/analytics/usage"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,8 +55,12 @@ func setupTestAnalytics() (*UsageController, *SpendLimitController, uuid.UUID) {
 	return usageCtrl, spendCtrl, wsID
 }
 
+// withWorkspaceContext attaches a workspace and an owner profile. Spend-limit
+// and other privileged routes are guarded by auth.RoleGuard, which denies any
+// request without a role, so tests that drive those routes need one.
 func withWorkspaceContext(r *http.Request, wsID uuid.UUID) *http.Request {
 	ctx := context.WithValue(r.Context(), auth.WorkspaceContextKey, wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{WorkspaceID: wsID, Role: models.RoleOwner})
 	return r.WithContext(ctx)
 }
 

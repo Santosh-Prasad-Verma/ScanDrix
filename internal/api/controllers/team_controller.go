@@ -193,14 +193,14 @@ func (c *TeamController) Routes() chi.Router {
 	r.Get("/list-with-integrations", c.handleListWithIntegrations)
 	r.Get("/{id}/members", c.handleListTeamMembers)
 	r.Post("/{id}/members", c.handleAddTeamMember)
-	r.Delete("/{id}/members/{userId}", c.handleRemoveTeamMember)
+	r.Delete("/{id}/members/{userId}", auth.RoleGuard(models.RoleAdmin, c.handleRemoveTeamMember))
 
 	// Team CLI keys management (/teams/:id/cli-keys)
 	r.Get("/{id}/cli-keys", c.handleListTeamCLIKeys)
-	r.Post("/{id}/cli-keys", c.handleCreateTeamCLIKey)
-	r.Patch("/{id}/cli-keys/{keyId}/config", c.handleUpdateTeamCLIKeyConfig)
-	r.Patch("/{id}/cli-keys/{keyId}", c.handleUpdateTeamCLIKeyConfig)
-	r.Delete("/{id}/cli-keys/{keyId}", c.handleRevokeTeamCLIKey)
+	r.Post("/{id}/cli-keys", auth.RoleGuard(models.RoleAdmin, c.handleCreateTeamCLIKey))
+	r.Patch("/{id}/cli-keys/{keyId}/config", auth.RoleGuard(models.RoleAdmin, c.handleUpdateTeamCLIKeyConfig))
+	r.Patch("/{id}/cli-keys/{keyId}", auth.RoleGuard(models.RoleAdmin, c.handleUpdateTeamCLIKeyConfig))
+	r.Delete("/{id}/cli-keys/{keyId}", auth.RoleGuard(models.RoleAdmin, c.handleRevokeTeamCLIKey))
 
 	return r
 }

@@ -244,6 +244,8 @@ func TestSpendLimitController(t *testing.T) {
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			ctx := context.WithValue(req.Context(), auth.WorkspaceContextKey, wsID)
+			// Spend-limit configuration is owner/admin only (auth.RoleGuard).
+			ctx = auth.WithAccountContext(ctx, &models.AccountProfile{WorkspaceID: wsID, Role: models.RoleOwner})
 			next.ServeHTTP(w, req.WithContext(ctx))
 		})
 	})

@@ -106,15 +106,15 @@ func (c *LicenseController) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/", c.handleGetLicense)
-	r.Post("/activate", c.handleActivateLicense)
+	r.Post("/activate", auth.RoleGuard(models.RoleAdmin, c.handleActivateLicense))
 	r.Get("/seats", c.handleGetSeats)
 	r.Get("/status", c.handleGetStatus)
 	r.Get("/org-status", c.handleGetOrgStatus)
 	r.Get("/users", c.handleGetUsersWithLicense)
-	r.Post("/assign", c.handleAssignLicense)
+	r.Post("/assign", auth.RoleGuard(models.RoleAdmin, c.handleAssignLicense))
 	r.Get("/removable-seats", c.handleGetRemovableSeats)
-	r.Post("/prune-seats", c.handlePruneSeats)
-	r.Post("/trial-extension-request", c.handleTrialExtensionRequest)
+	r.Post("/prune-seats", auth.RoleGuard(models.RoleAdmin, c.handlePruneSeats))
+	r.Post("/trial-extension-request", auth.RoleGuard(models.RoleAdmin, c.handleTrialExtensionRequest))
 
 	return r
 }

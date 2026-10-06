@@ -140,7 +140,9 @@ func TestLicenseControllerExtended(t *testing.T) {
 	ctrl := controllers.NewLicenseController(nil)
 	router := ctrl.Routes()
 	wsID := uuid.New()
+	// License mutation routes are owner/admin only (auth.RoleGuard).
 	ctx := auth.WithWorkspaceContext(context.Background(), wsID)
+	ctx = auth.WithAccountContext(ctx, &models.AccountProfile{WorkspaceID: wsID, Role: models.RoleOwner})
 
 	t.Run("get status returns valid community license", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/status", nil).WithContext(ctx)

@@ -55,7 +55,7 @@ func (c *SpendLimitController) Routes() chi.Router {
 
 	r.Get("/status", c.handleGetStatus)
 	r.Get("/", c.handleGetConfig)
-	r.Post("/", c.handleConfigureSpendLimit)
+	r.Post("/", auth.RoleGuard(models.RoleAdmin, c.handleConfigureSpendLimit))
 
 	return r
 }

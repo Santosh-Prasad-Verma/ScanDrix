@@ -50,10 +50,10 @@ func (c *PermissionsController) Routes() chi.Router {
 	r.Post("/check", c.handleCheckPermission)
 
 	// Per-User Fine-Grained Repository Access Control (Enterprise RBAC)
-	r.Post("/users/{userId}/repositories", c.handleAssignRepositories)
+	r.Post("/users/{userId}/repositories", auth.RoleGuard(models.RoleAdmin, c.handleAssignRepositories))
 	r.Get("/users/{userId}/repositories", c.handleGetAssignedRepositories)
-	r.Delete("/users/{userId}/repositories/{repoId}", c.handleRevokeRepository)
-	r.Post("/assign-repos", c.handleAssignRepositoriesLegacy)
+	r.Delete("/users/{userId}/repositories/{repoId}", auth.RoleGuard(models.RoleAdmin, c.handleRevokeRepository))
+	r.Post("/assign-repos", auth.RoleGuard(models.RoleAdmin, c.handleAssignRepositoriesLegacy))
 	r.Get("/assigned-repos", c.handleGetAssignedRepositoriesLegacy)
 
 	return r

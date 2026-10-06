@@ -12,6 +12,7 @@ import (
 	"github.com/scandrix/backend/internal/api/controllers"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 func TestUsageControllerEndpoints(t *testing.T) {
@@ -72,7 +73,10 @@ func TestUsageControllerEndpoints(t *testing.T) {
 		MonthlySpendLimitUSD: 100.0,
 	})
 	req = httptest.NewRequest(http.MethodPut, "/spend-limit", bytes.NewReader(body))
-	req = req.WithContext(ctx)
+	// Raising a spend limit is owner/admin only (auth.RoleGuard); the shared ctx
+	// above carries no role, so attach an owner for this privileged call.
+	spendCtx := auth.WithAccountContext(ctx, &models.AccountProfile{WorkspaceID: wsID, Role: models.RoleOwner})
+	req = req.WithContext(spendCtx)
 
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

@@ -16,6 +16,7 @@ import (
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/database"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 // UsageRepository defines the data contract for AI token usage and quota metrics (Clean Architecture).
@@ -71,7 +72,7 @@ func (c *UsageController) Routes() chi.Router {
 	r.Get("/", c.handleGetUsage)
 	r.Get("/quota", c.handleGetQuota)
 	r.Get("/history", c.handleGetUsageHistory)
-	r.Put("/spend-limit", c.handleUpdateSpendLimit)
+	r.Put("/spend-limit", auth.RoleGuard(models.RoleAdmin, c.handleUpdateSpendLimit))
 
 	// Rich Token Analytics Endpoints Scandrix
 	r.Get("/tokens/summary", c.handleGetTokenSummary)
