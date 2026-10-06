@@ -204,7 +204,7 @@ func (r *Repository) UpgradeWorkspacePlan(ctx context.Context, wsID uuid.UUID, p
 	}
 
 	featuresJSON, _ := json.Marshal(features)
-	licenseKey := fmt.Sprintf("SUB-%s-%s", strings.ToUpper(planTier), wsID.String()[:8])
+	licenseKey := fmt.Sprintf("SUB-%s-%s", strings.ToUpper(planTier), wsID.String())
 
 	queryLicense := `
 		INSERT INTO organization_licenses (
@@ -220,19 +220,11 @@ func (r *Repository) UpgradeWorkspacePlan(ctx context.Context, wsID uuid.UUID, p
 			updated_at = now();
 	`
 
-	querySeats := `
-		INSERT INTO organization_billing_seats (
-			id, workspace_id, tier, max_seats, allocated_seats, byok_enabled, dora_enabled, active_until, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 1, true, true, $5, now(), now())
-		ON CONFLICT (id) DO NOTHING;
-	`
-
 	return r.client.ExecWithTenant(ctx, wsID, func(pgTx pgx.Tx) error {
 		if _, err := pgTx.Exec(ctx, queryLicense, uuid.New(), wsID, licenseKey, planTier+" Plan", planTier, maxSeats, expiresAt, string(featuresJSON)); err != nil {
 			return err
 		}
-		_, err := pgTx.Exec(ctx, querySeats, uuid.New(), wsID, planTier, maxSeats, expiresAt)
-		return err
+		return upsertBillingSeats(ctx, pgTx, wsID, planTier, maxSeats, expiresAt)
 	})
 }
 
@@ -243,7 +235,7 @@ func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.U
 	}
 
 	featuresJSON, _ := json.Marshal(features)
-	licenseKey := fmt.Sprintf("SUB-%s-%s", strings.ToUpper(planTier), wsID.String()[:8])
+	licenseKey := fmt.Sprintf("SUB-%s-%s", strings.ToUpper(planTier), wsID.String())
 
 	queryTx := `
 		UPDATE billing_transactions
@@ -268,13 +260,6 @@ func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.U
 			updated_at = now();
 	`
 
-	querySeats := `
-		INSERT INTO organization_billing_seats (
-			id, workspace_id, tier, max_seats, allocated_seats, byok_enabled, dora_enabled, active_until, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 1, true, true, $5, now(), now())
-		ON CONFLICT (id) DO NOTHING;
-	`
-
 	return r.client.ExecWithTenant(ctx, wsID, func(pgTx pgx.Tx) error {
 		if orderID != "" {
 			tag, err := pgTx.Exec(ctx, queryTx, paymentID, signature, wsID, orderID)
@@ -290,12 +275,62 @@ func (r *Repository) UpgradeWorkspacePlanAtomic(ctx context.Context, wsID uuid.U
 			return fmt.Errorf("failed upserting organization_licenses: %w", err)
 		}
 
-		if _, err := pgTx.Exec(ctx, querySeats, uuid.New(), wsID, planTier, maxSeats, expiresAt); err != nil {
+		if err := upsertBillingSeats(ctx, pgTx, wsID, planTier, maxSeats, expiresAt); err != nil {
 			return fmt.Errorf("failed upserting organization_billing_seats: %w", err)
 		}
 
 		return nil
 	})
+}
+
+// Seat allocation is one row per workspace.
+//
+// The original statement used ON CONFLICT (id) DO NOTHING with a freshly
+// generated uuid, so the conflict could never fire and every checkout retry or
+// duplicate webhook inserted another row for the same workspace.
+//
+// This is deliberately UPDATE-then-INSERT rather than
+// ON CONFLICT (workspace_id) DO UPDATE: an ON CONFLICT clause naming a column
+// requires a unique index on it, which migration 046 adds. That couples the
+// deploy order -- code before migration fails with SQLSTATE 42P10 (no matching
+// unique or exclusion constraint), and migration before code fails on the very
+// duplicate it introduces. These two statements behave identically whether or
+// not the index is present, so either can ship first.
+const (
+	updateSeats = `
+		UPDATE organization_billing_seats
+		SET tier = $2,
+		    max_seats = $3,
+		    allocated_seats = GREATEST(allocated_seats, 1),
+		    byok_enabled = true,
+		    dora_enabled = true,
+		    active_until = $4,
+		    updated_at = now()
+		WHERE workspace_id = $1;
+	`
+
+	insertSeats = `
+		INSERT INTO organization_billing_seats (
+			id, workspace_id, tier, max_seats, allocated_seats, byok_enabled, dora_enabled, active_until, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, 1, true, true, $5, now(), now());
+	`
+)
+
+// upsertBillingSeats writes the workspace seat allocation inside an existing
+// tenant transaction. See the updateSeats/insertSeats definitions for why this
+// is UPDATE-then-INSERT instead of a single ON CONFLICT statement.
+func upsertBillingSeats(ctx context.Context, pgTx pgx.Tx, wsID uuid.UUID, planTier string, maxSeats int, expiresAt time.Time) error {
+	tag, err := pgTx.Exec(ctx, updateSeats, wsID, planTier, maxSeats, expiresAt)
+	if err != nil {
+		return fmt.Errorf("failed updating organization_billing_seats: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	if _, err := pgTx.Exec(ctx, insertSeats, uuid.New(), wsID, planTier, maxSeats, expiresAt); err != nil {
+		return fmt.Errorf("failed inserting organization_billing_seats: %w", err)
+	}
+	return nil
 }
 
 // GetPlanConfiguration fetches dynamic plan pricing and quotas from PostgreSQL.
@@ -401,15 +436,12 @@ func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID
 	isExpired := false
 
 	if lic != nil {
-		rawTier := strings.ToUpper(lic.PlanTier)
-		switch rawTier {
-		case "PLUS", "PRO", "TEAMS", "STARTER":
-			rawTier = "TEAM"
-		case "CUSTOM", "ENT":
-			rawTier = "ENTERPRISE"
-		default:
-			rawTier = "COMMUNITY"
-		}
+		// NormalizeTier is the single tier mapping, shared with
+		// GetPlanConfiguration. The local switch this replaced omitted DEVELOPER, so
+		// every workspace on the DEVELOPER plan fell through to COMMUNITY and was
+		// served the free tier's quotas, models and entitlements. It also disagreed
+		// with NormalizeTier on STARTER.
+		rawTier := string(license.NormalizeTier(license.LicenseTier(lic.PlanTier)))
 
 		orgName = lic.OrganizationName
 		totalSeats = lic.TotalSeats
@@ -441,12 +473,16 @@ func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID
 	burstLimit := defaultQuota.BurstLimitPerMin
 	maxConcurrent := defaultQuota.MaxConcurrentReviews
 	allocatedModels := license.GetAllocatedModelsList(license.LicenseTier(activeTier))
+	// Defaults apply when the tier has no configuration row; a present row is
+	// authoritative.
+	byokAllowed := true
 
 	if planConfig != nil {
 		monthlyLimit = planConfig.MonthlyTokens
 		burstLimit = planConfig.BurstLimitPerMin
 		allocatedModels = planConfig.AllocatedModels
 		maxConcurrent = planConfig.MaxConcurrentReviews
+		byokAllowed = planConfig.BYOKAllowed
 		if len(planConfig.FeaturesEnabled) > 0 {
 			features = planConfig.FeaturesEnabled
 		}
@@ -473,9 +509,12 @@ func (r *Repository) GetWorkspacePlanDetails(ctx context.Context, wsID uuid.UUID
 		AllocatedModels:      allocatedModels,
 		FeaturesEnabled:      features,
 		MaxConcurrentReviews: maxConcurrent,
-		BYOKAllowed:          true,
-		SubscriptionStatus:   subscriptionStatus,
-		IsExpired:            isExpired,
+		// Sourced from plan_configurations rather than hardcoded true. This value
+		// gates BYOK entitlement, so reporting true unconditionally permitted
+		// BYOK on tiers whose configuration disallows it.
+		BYOKAllowed:        byokAllowed,
+		SubscriptionStatus: subscriptionStatus,
+		IsExpired:          isExpired,
 	}, nil
 }
 

@@ -248,11 +248,24 @@ func (s *BillingService) VerifyAndUpgrade(ctx context.Context, wsID uuid.UUID, r
 			slog.Error("Failed to fetch payment status from Razorpay", "payment_id", req.PaymentID, "error", err)
 			return nil, fmt.Errorf("failed verifying payment status with razorpay API: %w", err)
 		}
-		if payment.Status != "captured" && payment.Status != "authorized" {
+		// Only a captured payment entitles a workspace to a plan. An authorized
+		// payment is funds-held and still voidable, so accepting it granted a
+		// paid plan that could later evaporate. ProcessVerifiedWebhook already
+		// required captured; this keeps the two ingress paths from disagreeing.
+		if payment.Status != "captured" {
 			return nil, fmt.Errorf("payment verification rejected: razorpay status is %s", payment.Status)
 		}
 		if payment.OrderID != "" && payment.OrderID != req.OrderID {
 			return nil, errors.New("payment order ID mismatch")
+		}
+		// The provider must confirm the payment we asked about, not merely some
+		// captured payment. Without this, only OrderID was bound, so a response
+		// describing a different payment passed every later identity check.
+		if payment.ID != "" && payment.ID != req.PaymentID {
+			slog.Warn("Payment identity tampering attempt detected",
+				"workspace_id", wsID, "order_id", req.OrderID, "requested_payment_id", req.PaymentID,
+				"provider_payment_id", payment.ID)
+			return nil, errors.New("payment ID mismatch")
 		}
 		// Enforce amount and currency consistency to prevent price/tier tampering
 		if chargedTx != nil {
@@ -328,12 +341,25 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 			}
 		}
 
+		// Claim the order before writing the audit side effect. Concurrent
+		// deliveries all read status "created" before any of them commits, so
+		// without the claim each one recorded its own plan_upgrade audit for a
+		// single payment. The upserts above are idempotent and still run; only the
+		// audit is gated. An order left in processing_upgrade by a crashed attempt
+		// is recovered by reconciliation rather than by a second claim.
+		claimed, claimErr := s.repo.ClaimBillingUpgrade(ctx, wsID, orderID)
+		if claimErr != nil {
+			return nil, fmt.Errorf("failed claiming billing upgrade: %w", claimErr)
+		}
+
 		// Atomically update transaction status and upgrade workspace plan in a single transaction
 		err := s.repo.UpgradeWorkspacePlanAtomic(ctx, wsID, orderID, paymentID, signature, string(planTier), maxSeats, expiresAt, features)
 		if err != nil {
 			return nil, fmt.Errorf("failed atomically upgrading workspace plan in database: %w", err)
 		}
-		_ = s.repo.InsertAuditLog(ctx, wsID, "system:billing", "", "", "workspace.plan_upgrade", "workspace", wsID.String(), fmt.Appendf(nil, `{"plan":"%s","order_id":"%s","payment_id":"%s"}`, planTier, orderID, paymentID))
+		if claimed {
+			_ = s.repo.InsertAuditLog(ctx, wsID, "system:billing", "", "", "workspace.plan_upgrade", "workspace", wsID.String(), fmt.Appendf(nil, `{"plan":"%s","order_id":"%s","payment_id":"%s"}`, planTier, orderID, paymentID))
+		}
 	}
 
 	// Upgrade in-memory token rate limiter
@@ -423,8 +449,11 @@ func (s *BillingService) applyWorkspaceUpgrade(ctx context.Context, wsID uuid.UU
 	}
 
 	return &models.OrganizationLicense{
-		WorkspaceID:      wsID,
-		LicenseKey:       fmt.Sprintf("SUB-%s-%s", planTier, wsID.String()[:8]),
+		WorkspaceID: wsID,
+		// The full workspace UUID keeps this identical to the key
+		// UpgradeWorkspacePlanAtomic persists, so the returned license and the
+		// stored row agree instead of differing in their last segment.
+		LicenseKey:       fmt.Sprintf("SUB-%s-%s", planTier, wsID.String()),
 		OrganizationName: fmt.Sprintf("%s Plan", planTier),
 		PlanTier:         string(planTier),
 		TotalSeats:       quota.MaxSeats,

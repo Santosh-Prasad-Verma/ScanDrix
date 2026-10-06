@@ -17,6 +17,18 @@ const (
 	StatusDismissed  IssueStatus = "DISMISSED"
 )
 
+// ValidIssueStatus reports whether the status is a known life-cycle value.
+// Callers must check this before persisting: tracked_issues.status has no CHECK
+// constraint, so an unvalidated write stores a value nothing else can interpret.
+func ValidIssueStatus(status IssueStatus) bool {
+	switch status {
+	case StatusOpen, StatusInProgress, StatusResolved, StatusDismissed:
+		return true
+	default:
+		return false
+	}
+}
+
 // TrackedIssue models an enterprise tracked code finding persistent across commits and branches.
 type TrackedIssue struct {
 	ID               uuid.UUID              `json:"id" db:"id"`

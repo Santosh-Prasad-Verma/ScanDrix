@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/issues"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 // IssuesRepository defines the data contract for issue tracking (Clean Architecture).
@@ -136,6 +138,14 @@ func (c *IssuesController) handleUpdateIssue(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Triaging a finding mutates workspace state, so a read-only viewer must not
+	// be able to resolve or reopen issues. Matches the guard on triggerReview.
+	profile, ok := auth.AccountProfileFromContext(r.Context())
+	if ok && profile != nil && profile.Role == models.RoleViewer {
+		http.Error(w, `{"error":"forbidden: viewers cannot update issue status"}`, http.StatusForbidden)
+		return
+	}
+
 	idStr := chi.URLParam(r, "id")
 	issueID, err := uuid.Parse(idStr)
 	if err != nil {
@@ -151,6 +161,14 @@ func (c *IssuesController) handleUpdateIssue(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// The enum is validated here because tracked_issues.status carries no CHECK
+	// constraint. An unvalidated value persisted silently and then broke every
+	// analytics filter that groups by status.
+	if !issues.ValidIssueStatus(issues.IssueStatus(body.Status)) {
+		http.Error(w, `{"error":"invalid issue status"}`, http.StatusBadRequest)
+		return
+	}
+
 	if c.repo != nil {
 		_, err := c.repo.GetTrackedIssue(r.Context(), wsID, issueID)
 		if err != nil {
@@ -162,6 +180,7 @@ func (c *IssuesController) handleUpdateIssue(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if err := c.repo.UpdateTrackedIssueStatus(r.Context(), wsID, issueID, issues.IssueStatus(body.Status)); err != nil {
+			slog.Error("Failed to update tracked issue status", "workspace_id", wsID, "issue_id", issueID, "status", body.Status, "error", err)
 			http.Error(w, `{"error":"failed updating issue"}`, http.StatusInternalServerError)
 			return
 		}

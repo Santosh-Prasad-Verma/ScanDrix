@@ -38,7 +38,10 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'auth' AND column_name = 'refreshToken'
+        -- current_schema(), not a literal 'public': these migrations are also
+        -- applied into per-test isolated schemas, where a hardcoded 'public'
+        -- made every guard silently skip and left the table with no policy.
+        WHERE table_schema = current_schema() AND table_name = 'auth' AND column_name = 'refreshToken'
     ) THEN
         EXECUTE $b$
             UPDATE "auth"
@@ -78,7 +81,12 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_policies
-        WHERE tablename = 'auth' AND policyname = 'auth_tenant_isolation'
+        -- schemaname must be constrained. Without it the guard matched the
+        -- public schema's policy and skipped creating one for the schema being
+        -- migrated, so "auth" ended up with FORCE ROW LEVEL SECURITY and no
+        -- policy at all, denying every credential read and write.
+        WHERE schemaname = current_schema()
+          AND tablename = 'auth' AND policyname = 'auth_tenant_isolation'
     ) THEN
         -- users.organization_id is the tenant column (snake_case, unlike the
         -- camelCase columns on auth itself). NULLIF matches the pattern already

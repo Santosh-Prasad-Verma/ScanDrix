@@ -37,7 +37,7 @@ func billingTestRepository(t *testing.T) (*database.Repository, uuid.UUID) {
 	setup, err := pgxpool.NewWithConfig(ctx, config.Copy())
 	require.NoError(t, err)
 	defer setup.Close()
-	for _, migration := range []string{"001_initial_schema", "004_extended_warehouse_and_billing", "005_teams_parameters_audit_and_integrations", "006_billing_transactions", "007_plan_configurations", "012_system_worker_outbox_rls", "018_workspaces_rls", "032_plan_pricing_integrity", "043_billing_intervals", "045_billing_webhook_integrity"} {
+	for _, migration := range []string{"001_initial_schema", "004_extended_warehouse_and_billing", "005_teams_parameters_audit_and_integrations", "006_billing_transactions", "007_plan_configurations", "012_system_worker_outbox_rls", "018_workspaces_rls", "032_plan_pricing_integrity", "043_billing_intervals", "045_billing_webhook_integrity", "046_billing_seats_single_row_per_workspace"} {
 		body, err := os.ReadFile("../../../migrations/" + migration + ".sql")
 		require.NoError(t, err)
 		_, err = setup.Exec(ctx, string(body))

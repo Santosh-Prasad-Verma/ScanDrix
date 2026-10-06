@@ -154,9 +154,12 @@ func (r *Repository) UpdateTrackedIssueStatus(ctx context.Context, workspaceID, 
 		return nil
 	}
 
+	// resolved_at is cleared on any non-RESOLVED transition. Keeping the old
+	// timestamp left a reopened finding looking resolved, so time-to-resolution
+	// metrics measured from a stale closure instead of the current one.
 	query := `
 		UPDATE tracked_issues
-		SET status = $1, updated_at = $2, resolved_at = CASE WHEN $1 = 'RESOLVED' THEN $2 ELSE resolved_at END
+		SET status = $1, updated_at = $2::timestamptz, resolved_at = CASE WHEN $1 = 'RESOLVED' THEN $2::timestamptz ELSE NULL END
 		WHERE workspace_id = $3 AND id = $4
 	`
 	now := time.Now().UTC()

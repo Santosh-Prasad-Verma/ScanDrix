@@ -170,10 +170,14 @@ func (r *Repository) UpdateWorkspace(ctx context.Context, id uuid.UUID, name str
 
 // CreateReview records a new incoming pull request review lifecycle job.
 func (r *Repository) CreateReview(ctx context.Context, rev *models.PullRequestReview) error {
+	// completed_at is persisted here because a review can reach a terminal state
+	// on creation: the per-repository policy skip path records a SKIPPED review
+	// in one shot, and dropping the timestamp left those reviews looking
+	// perpetually unfinished to GetReview and to any duration metric.
 	query := `
 		INSERT INTO pull_request_reviews (
-			id, workspace_id, repository_id, pull_number, title, head_sha, base_sha, author_username, state, findings_count, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			id, workspace_id, repository_id, pull_number, title, head_sha, base_sha, author_username, state, findings_count, created_at, completed_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 	now := time.Now().UTC()
 	rev.CreatedAt = now
@@ -185,6 +189,7 @@ func (r *Repository) CreateReview(ctx context.Context, rev *models.PullRequestRe
 		_, err := tx.Exec(ctx, query,
 			rev.ID, rev.WorkspaceID, rev.RepositoryID, rev.PullNumber, rev.Title,
 			rev.HeadSHA, rev.BaseSHA, rev.AuthorUsername, rev.State, rev.FindingsCount, rev.CreatedAt,
+			rev.CompletedAt,
 		)
 		return err
 	})
@@ -566,7 +571,7 @@ func (r *Repository) CreateWorkspaceWithUser(ctx context.Context, ws *models.Wor
 		}
 
 		// 4. Provision default Community organization_licenses record
-		defaultLicenseKey := fmt.Sprintf("COMMUNITY-%s", ws.ID.String()[:8])
+		defaultLicenseKey := fmt.Sprintf("COMMUNITY-%s", ws.ID.String())
 		featuresJSON, _ := json.Marshal([]string{"pr_reviews", "basic_rules", "community_models"})
 		expiresAt := time.Now().UTC().AddDate(10, 0, 0) // 10-year baseline for community tier
 		queryLicense := `

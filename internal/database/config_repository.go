@@ -55,10 +55,15 @@ func (r *Repository) ListTrackedRepositories(ctx context.Context, wsID uuid.UUID
 		return []models.TrackedRepository{}, nil
 	}
 
+	// is_active is filtered so this agrees with
+	// PostgresTrackedRepositoryReader.ListTrackedRepositories. Untracking a
+	// repository (UntrackRepository) clears is_active, and without this filter a
+	// deleted repository kept appearing in repo listings, cockpit dashboards and
+	// language detection.
 	query := `
 		SELECT id, workspace_id, provider, external_id, namespace_path, default_branch, is_active, created_at, updated_at
 		FROM tracked_repositories
-		WHERE workspace_id = $1
+		WHERE workspace_id = $1 AND is_active = true
 		ORDER BY namespace_path ASC;
 	`
 
