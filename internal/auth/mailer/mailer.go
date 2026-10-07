@@ -8,6 +8,7 @@ import (
 	"html"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 
@@ -57,6 +58,27 @@ func sanitizeHeader(val string) string {
 	return strings.TrimSpace(val)
 }
 
+func parseMailbox(raw string, defaultName string) (displayName, address string) {
+	raw = strings.Trim(strings.TrimSpace(raw), `"'`)
+	if parsed, err := mail.ParseAddress(raw); err == nil && parsed != nil {
+		name := parsed.Name
+		if name == "" {
+			name = defaultName
+		}
+		return name, parsed.Address
+	}
+	if start := strings.Index(raw, "<"); start != -1 {
+		if end := strings.Index(raw, ">"); end > start {
+			name := strings.Trim(strings.TrimSpace(raw[:start]), `"'`)
+			if name == "" {
+				name = defaultName
+			}
+			return name, strings.TrimSpace(raw[start+1 : end])
+		}
+	}
+	return defaultName, strings.Trim(raw, "<>")
+}
+
 func (s *SMTPSender) sendHTML(ctx context.Context, recipientEmail, subject, htmlBody string) error {
 	if s.cfg.Host == "" {
 		slog.Info("SMTP host not configured; skipping email dispatch", "recipient", recipientEmail, "subject", subject)
@@ -64,16 +86,29 @@ func (s *SMTPSender) sendHTML(ctx context.Context, recipientEmail, subject, html
 	}
 
 	cleanSubj := sanitizeHeader(subject)
-	cleanFrom := sanitizeHeader(s.cfg.From)
-	cleanTo := sanitizeHeader(recipientEmail)
+	fromName, fromAddr := parseMailbox(s.cfg.From, "ScanDrix Platform")
+	toName, toAddr := parseMailbox(recipientEmail, "")
 
-	if cleanTo == "" || !strings.Contains(cleanTo, "@") {
+	fromAddr = sanitizeHeader(fromAddr)
+	toAddr = sanitizeHeader(toAddr)
+
+	if toAddr == "" || !strings.Contains(toAddr, "@") {
 		return fmt.Errorf("invalid recipient email address: %q", recipientEmail)
 	}
 
 	subjectHeader := fmt.Sprintf("Subject: %s\r\n", cleanSubj)
-	fromHeader := fmt.Sprintf("From: ScanDrix Platform <%s>\r\n", cleanFrom)
-	toHeader := fmt.Sprintf("To: %s\r\n", cleanTo)
+	var fromHeader string
+	if fromName != "" {
+		fromHeader = fmt.Sprintf("From: %s <%s>\r\n", sanitizeHeader(fromName), fromAddr)
+	} else {
+		fromHeader = fmt.Sprintf("From: <%s>\r\n", fromAddr)
+	}
+	var toHeader string
+	if toName != "" {
+		toHeader = fmt.Sprintf("To: %s <%s>\r\n", sanitizeHeader(toName), toAddr)
+	} else {
+		toHeader = fmt.Sprintf("To: <%s>\r\n", toAddr)
+	}
 	mimeHeader := "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
 
 	msg := []byte(fromHeader + toHeader + subjectHeader + mimeHeader + htmlBody)
@@ -120,10 +155,10 @@ func (s *SMTPSender) sendHTML(ctx context.Context, recipientEmail, subject, html
 		}
 	}
 
-	if err := c.Mail(cleanFrom); err != nil {
+	if err := c.Mail(fromAddr); err != nil {
 		return fmt.Errorf("smtp mail from failed: %w", err)
 	}
-	if err := c.Rcpt(cleanTo); err != nil {
+	if err := c.Rcpt(toAddr); err != nil {
 		return fmt.Errorf("smtp rcpt to failed: %w", err)
 	}
 	w, err := c.Data()
@@ -139,7 +174,7 @@ func (s *SMTPSender) sendHTML(ctx context.Context, recipientEmail, subject, html
 	}
 	_ = c.Quit()
 
-	slog.Info("Email dispatched successfully", "recipient", cleanTo, "subject", cleanSubj)
+	slog.Info("Email dispatched successfully", "recipient", toAddr, "subject", cleanSubj)
 	return nil
 }
 
