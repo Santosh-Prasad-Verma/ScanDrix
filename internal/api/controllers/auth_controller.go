@@ -43,6 +43,7 @@ type AuthRepository interface {
 	CreateRefreshToken(ctx context.Context, userUUID uuid.UUID, token string, expiryDate time.Time) error
 	CreateWorkspaceWithUser(ctx context.Context, ws *models.Workspace, userEmail, passwordHash, role, name string) (*database.UserRecord, error)
 	UpdateUserStatus(ctx context.Context, userUUID uuid.UUID, status string) error
+	ConfirmUserEmail(ctx context.Context, userID uuid.UUID, email string) error
 	GetRefreshToken(ctx context.Context, token string) (*database.RefreshTokenRecord, error)
 	InvalidateAllUserRefreshTokens(ctx context.Context, userUUID uuid.UUID) error
 	MarkRefreshTokenUsed(ctx context.Context, token string) error
@@ -434,6 +435,10 @@ func (c *AuthController) handleLogin(w http.ResponseWriter, r *http.Request) {
 	user := res.User
 
 	if user.Status != "active" {
+		if user.Status == "pending_email" || user.Status == "pending_verification" || user.Status == "pending" {
+			http.Error(w, `{"error":"Please verify your email address to activate your account."}`, http.StatusForbidden)
+			return
+		}
 		http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
 		return
 	}
@@ -617,7 +622,9 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 
 	// 4. Email Verification Gating: When enabled, user status starts pending and no JWTs are issued until email is clicked
 	if c.requireEmailVerification {
-		_ = c.repo.UpdateUserStatus(r.Context(), userID, "pending_verification")
+		if err := c.repo.UpdateUserStatus(r.Context(), userID, "pending_email"); err != nil {
+			slog.Error("Failed setting user status to pending_email", "user_id", userID, "error", err)
+		}
 
 		if c.jwtSecret != "" {
 			token, err := auth.CreateEmailConfirmationToken(userID, req.Email, c.jwtSecret, 24*time.Hour)
@@ -647,7 +654,7 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 				"email":          req.Email,
 				"name":           displayName,
 				"role":           userRole,
-				"status":         "pending_verification",
+				"status":         "pending_email",
 			},
 		})
 		return
@@ -1096,7 +1103,9 @@ func (c *AuthController) handleConfirmEmail(w http.ResponseWriter, r *http.Reque
 			_ = json.NewEncoder(w).Encode(map[string]string{"message": "Email already confirmed"})
 			return
 		}
-		_ = c.repo.UpdateUserStatus(r.Context(), user.UUID, "active")
+		if err := c.repo.ConfirmUserEmail(r.Context(), user.UUID, user.Email); err != nil {
+			_ = c.repo.UpdateUserStatus(r.Context(), user.UUID, "active")
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
