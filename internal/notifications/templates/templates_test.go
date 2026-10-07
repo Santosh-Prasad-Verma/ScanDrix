@@ -95,3 +95,36 @@ func TestRenderTeamInviteAndPasswordReset(t *testing.T) {
 		t.Errorf("expected reset button")
 	}
 }
+
+func TestRenderEmailVerification(t *testing.T) {
+	subj, body := templates.RenderEmailVerification("Tarun", "https://app.scandrix.dev/confirm-email?token=xyz123")
+	if !strings.Contains(subj, "Verify your email to activate ScanDrix") {
+		t.Errorf("unexpected verification subject: %s", subj)
+	}
+	if !strings.Contains(body, "Tarun") {
+		t.Errorf("expected body to contain user's name")
+	}
+	if !strings.Contains(body, "Verify Email Address") {
+		t.Errorf("expected body to contain CTA text")
+	}
+	if !strings.Contains(body, "https://app.scandrix.dev/confirm-email?token=xyz123") {
+		t.Errorf("expected body to contain confirmation URL")
+	}
+}
+
+func TestRenderNewUserWelcome(t *testing.T) {
+	subj, body := templates.RenderNewUserWelcome("Tarun", "https://app.scandrix.dev/dashboard")
+	if !strings.Contains(subj, "Welcome to ScanDrix") {
+		t.Errorf("unexpected welcome subject: %s", subj)
+	}
+	if !strings.Contains(body, "Tarun") {
+		t.Errorf("expected body to contain recipient name")
+	}
+	if !strings.Contains(body, "Quickstart Guide") {
+		t.Errorf("expected body to contain quickstart guide")
+	}
+	if !strings.Contains(body, "Open Developer Dashboard") {
+		t.Errorf("expected body to contain CTA button")
+	}
+}
+

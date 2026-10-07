@@ -28,6 +28,9 @@ func TestUnconfiguredSenderFailsEveryPath(t *testing.T) {
 		"email confirmation": func() error {
 			return s.SendEmailConfirmation(ctx, "u@example.test", "https://x/confirm?t=1")
 		},
+		"new user welcome": func() error {
+			return s.SendNewUserWelcomeEmail(ctx, "u@example.test", "Alice", "https://x/dash")
+		},
 		"subscription welcome": func() error {
 			return s.SendSubscriptionWelcomeEmail(ctx, "u@example.test", "U", "Org", "pro", 1000, nil, "https://x")
 		},

@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"net"
 	"net/mail"
@@ -19,6 +18,7 @@ import (
 type EmailSender interface {
 	SendPasswordResetEmail(ctx context.Context, recipientEmail, resetURL string) error
 	SendEmailConfirmation(ctx context.Context, recipientEmail, confirmURL string) error
+	SendNewUserWelcomeEmail(ctx context.Context, recipientEmail, recipientName, dashboardURL string) error
 	SendSubscriptionWelcomeEmail(ctx context.Context, recipientEmail, subscriberName, orgName, planTier string, monthlyTokens int64, allocatedModels []string, dashboardURL string) error
 	SendPaymentInvoiceEmail(ctx context.Context, recipientEmail string, invoice templates.InvoiceDetails) error
 	SendPaymentFailedEmail(ctx context.Context, recipientEmail, subscriberName, orgName, planTier, orderID, failureReason, retryURL string) error
@@ -184,11 +184,15 @@ func (s *SMTPSender) SendPasswordResetEmail(ctx context.Context, recipientEmail,
 	return s.sendHTML(ctx, recipientEmail, subj, body)
 }
 
-// SendEmailConfirmation sends an email confirmation link via SMTP.
+// SendEmailConfirmation sends an email confirmation link via SMTP using the branded template.
 func (s *SMTPSender) SendEmailConfirmation(ctx context.Context, recipientEmail, confirmURL string) error {
-	subj := "Confirm your ScanDrix Account"
-	safeURL := html.EscapeString(confirmURL)
-	body := fmt.Sprintf(`<html><body><h2>Confirm your Email</h2><p>Please confirm your email by clicking <a href="%s">here</a>.</p></body></html>`, safeURL)
+	subj, body := templates.RenderEmailVerification("", confirmURL)
+	return s.sendHTML(ctx, recipientEmail, subj, body)
+}
+
+// SendNewUserWelcomeEmail sends the onboarding welcome email when an account is activated.
+func (s *SMTPSender) SendNewUserWelcomeEmail(ctx context.Context, recipientEmail, recipientName, dashboardURL string) error {
+	subj, body := templates.RenderNewUserWelcome(recipientName, dashboardURL)
 	return s.sendHTML(ctx, recipientEmail, subj, body)
 }
 
@@ -249,6 +253,10 @@ func (UnconfiguredSender) SendEmailConfirmation(context.Context, string, string)
 	return ErrSMTPNotConfigured
 }
 
+func (UnconfiguredSender) SendNewUserWelcomeEmail(context.Context, string, string, string) error {
+	return ErrSMTPNotConfigured
+}
+
 func (UnconfiguredSender) SendSubscriptionWelcomeEmail(context.Context, string, string, string, string, int64, []string, string) error {
 	return ErrSMTPNotConfigured
 }
@@ -297,8 +305,15 @@ func (n *NoopSender) SendPasswordResetEmail(_ context.Context, recipientEmail, r
 
 func (n *NoopSender) SendEmailConfirmation(_ context.Context, recipientEmail, confirmURL string) error {
 	n.LastRecipient = recipientEmail
-	n.LastSubject = "Confirm your ScanDrix Account"
+	n.LastSubject = "Verify your email to activate ScanDrix"
 	slog.Info("Mock email dispatch", "recipient", recipientEmail, "action", "confirm_email")
+	return nil
+}
+
+func (n *NoopSender) SendNewUserWelcomeEmail(_ context.Context, recipientEmail, recipientName, dashboardURL string) error {
+	n.LastRecipient = recipientEmail
+	n.LastSubject = "Welcome to ScanDrix"
+	slog.Info("Mock email dispatch", "recipient", recipientEmail, "action", "new_user_welcome")
 	return nil
 }
 

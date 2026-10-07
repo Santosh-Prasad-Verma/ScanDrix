@@ -25,6 +25,15 @@ func TestNoopSender(t *testing.T) {
 		t.Errorf("unexpected reset URL: %s", sender.LastResetURL)
 	}
 
+	// Test new user welcome email
+	err = sender.SendNewUserWelcomeEmail(ctx, "dev@scandrix.dev", "Alice", "https://app.scandrix.dev/dashboard")
+	if err != nil {
+		t.Fatalf("unexpected new user welcome error: %v", err)
+	}
+	if sender.LastRecipient != "dev@scandrix.dev" || sender.LastSubject != "Welcome to ScanDrix" {
+		t.Errorf("unexpected new user welcome state: recipient=%s subject=%s", sender.LastRecipient, sender.LastSubject)
+	}
+
 	// Test subscription welcome email
 	err = sender.SendSubscriptionWelcomeEmail(ctx, "dev@scandrix.dev", "Alice", "Acme", "TEAM", 10000000, []string{"claude-sonnet-5"}, "https://app.scandrix.dev")
 	if err != nil {

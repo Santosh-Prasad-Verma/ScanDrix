@@ -670,6 +670,17 @@ func (c *AuthController) handleRegister(w http.ResponseWriter, r *http.Request) 
 		_ = c.repo.CreateRefreshToken(r.Context(), userID, refreshToken, time.Now().Add(30*24*time.Hour))
 	}
 
+	if c.mailer != nil {
+		dashURL := fmt.Sprintf("%s/dashboard", c.appBaseURL)
+		if mailErr := c.mailer.SendNewUserWelcomeEmail(r.Context(), req.Email, displayName, dashURL); mailErr != nil {
+			slog.Error("auth.email.welcome_send_failed",
+				"event", "auth.email.welcome_send_failed",
+				"recipient", req.Email,
+				"error", mailErr,
+			)
+		}
+	}
+
 	expiresIn := int64(900)
 	if c.authService != nil {
 		expiresIn = c.authService.AccessTokenExpiresIn()
@@ -1105,6 +1116,17 @@ func (c *AuthController) handleConfirmEmail(w http.ResponseWriter, r *http.Reque
 		}
 		if err := c.repo.ConfirmUserEmail(r.Context(), user.UUID, user.Email); err != nil {
 			_ = c.repo.UpdateUserStatus(r.Context(), user.UUID, "active")
+		}
+		if c.mailer != nil {
+			dashURL := fmt.Sprintf("%s/dashboard", c.appBaseURL)
+			recipientName := strings.Split(user.Email, "@")[0]
+			if mailErr := c.mailer.SendNewUserWelcomeEmail(r.Context(), user.Email, recipientName, dashURL); mailErr != nil {
+				slog.Error("auth.email.welcome_send_failed",
+					"event", "auth.email.welcome_send_failed",
+					"recipient", user.Email,
+					"error", mailErr,
+				)
+			}
 		}
 	}
 
