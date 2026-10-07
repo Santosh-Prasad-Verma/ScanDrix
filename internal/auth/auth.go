@@ -92,12 +92,17 @@ type Authenticator struct {
 	jwtSecret         []byte
 	cliVerifier       CLITokenVerifier
 	revocationChecker RevocationChecker
+	identityValidator IdentityValidator
 	accessTokenTTL    time.Duration
 }
 
 // RevocationChecker verifies whether an access token has been revoked before expiration.
 // Returns true if the token is revoked, false if valid.
 type RevocationChecker func(ctx context.Context, userID uuid.UUID, issuedAt int64) bool
+
+// IdentityValidator verifies and refreshes identity context against durable store,
+// preventing stale privilege or deactivation bypass (AUDIT-ACCEPTANCE F02).
+type IdentityValidator func(ctx context.Context, userID, workspaceID uuid.UUID) (*models.AccountProfile, error)
 
 // NewAuthenticator initializes the auth service with default 15-minute access token TTL.
 // If an empty secret is provided, it generates a cryptographically secure 32-byte ephemeral key
@@ -146,6 +151,11 @@ func (a *Authenticator) SetCLIVerifier(verifier CLITokenVerifier) {
 // SetRevocationChecker injects a revocation verification hook.
 func (a *Authenticator) SetRevocationChecker(checker RevocationChecker) {
 	a.revocationChecker = checker
+}
+
+// SetIdentityValidator injects a validator to recheck persisted user/workspace status and role.
+func (a *Authenticator) SetIdentityValidator(validator IdentityValidator) {
+	a.identityValidator = validator
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -314,13 +324,26 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := WithWorkspaceContext(r.Context(), claims.WorkspaceID)
-		ctx = WithAccountContext(ctx, &models.AccountProfile{
+		profile := &models.AccountProfile{
 			ID:          claims.UserID,
 			WorkspaceID: claims.WorkspaceID,
 			Email:       claims.Email,
 			Role:        claims.Role,
-		})
+		}
+		if a.identityValidator != nil {
+			liveProfile, err := a.identityValidator(r.Context(), claims.UserID, claims.WorkspaceID)
+			if err != nil {
+				slog.Warn("Rejected inactive or modified identity", "user_id", claims.UserID, "error", err)
+				http.Error(w, `{"error":"unauthorized: account or workspace is inactive or suspended"}`, http.StatusUnauthorized)
+				return
+			}
+			if liveProfile != nil {
+				profile = liveProfile
+			}
+		}
+
+		ctx := WithWorkspaceContext(r.Context(), profile.WorkspaceID)
+		ctx = WithAccountContext(ctx, profile)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

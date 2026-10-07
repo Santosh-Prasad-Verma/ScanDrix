@@ -2,7 +2,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,8 @@ type AuthRepository interface {
 	// IsAccessTokenRevoked backs the middleware's revocation check (F-18).
 	// A returned error is not "not revoked": the caller rejects the request.
 	IsAccessTokenRevoked(ctx context.Context, userID uuid.UUID, issuedAt int64) (bool, error)
+	// RotateRefreshTokenSession atomically rotates the refresh token and detects reuse.
+	RotateRefreshTokenSession(ctx context.Context, oldToken, newToken string, expiry time.Time) (*database.UserRecord, error)
 }
 
 // AuthController handles identity, login, tokens, CLI API keys, OAuth, SAML, and device flows.
@@ -712,47 +716,24 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	record, err := c.repo.GetRefreshToken(r.Context(), req.RefreshToken)
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		http.Error(w, `{"error":"failed generating rotated tokens"}`, http.StatusInternalServerError)
+		return
+	}
+	newRefresh := hex.EncodeToString(randomBytes)
+
+	user, err := c.repo.RotateRefreshTokenSession(r.Context(), req.RefreshToken, newRefresh, time.Now().Add(30*24*time.Hour))
 	if err != nil {
+		if errors.Is(err, database.ErrRefreshTokenReuse) {
+			slog.Warn("Security alert: refresh token reuse detected; all active sessions revoked for user")
+			http.Error(w, `{"error":"security violation: token reuse detected; all active sessions revoked"}`, http.StatusUnauthorized)
+			return
+		}
 		http.Error(w, `{"error":"invalid or expired refresh token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Token Theft Detection: Replay of an already-used refresh token indicates compromised credentials (RFC 6819, Master Rule 5.1).
-	// Immediately revoke the entire refresh token family for this user to contain the breach.
-	if record.Used {
-		_ = c.repo.InvalidateAllUserRefreshTokens(r.Context(), record.UserUUID)
-		slog.Warn("Security alert: refresh token reuse detected; all active sessions revoked for user",
-			"user_id", record.UserUUID,
-		)
-		http.Error(w, `{"error":"security violation: token reuse detected; all active sessions revoked"}`, http.StatusUnauthorized)
-		return
-	}
-
-	if time.Now().After(record.ExpiryDate) {
-		http.Error(w, `{"error":"refresh token has expired"}`, http.StatusUnauthorized)
-		return
-	}
-
-	// 1. Invalidate used token (One-time rotation, Master Rule 5.1)
-	_ = c.repo.MarkRefreshTokenUsed(r.Context(), req.RefreshToken)
-
-	// 2. Load refreshed user and derive workspace & role
-	user, err := c.repo.GetUserByID(r.Context(), record.UserUUID)
-	if err != nil {
-		http.Error(w, `{"error":"user account not found"}`, http.StatusUnauthorized)
-		return
-	}
-
-	if user.Status != "active" {
-		http.Error(w, `{"error":"account is not active"}`, http.StatusForbidden)
-		return
-	}
-
-	if user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
-		http.Error(w, `{"error":"user is not assigned to an active workspace"}`, http.StatusForbidden)
-		return
-	}
 	userID := user.UUID
 	wsID := *user.OrganizationID
 	userRole := models.UserRole(user.Role)
@@ -762,14 +743,10 @@ func (c *AuthController) handleRefreshToken(w http.ResponseWriter, r *http.Reque
 		slog.Warn("Failed touching user last_active_at on refresh", "workspace_id", wsID, "email", user.Email, "error", err)
 	}
 
-	newAccess, newRefresh, err := c.authService.GenerateTokenPair(userID, wsID, userRole)
+	newAccess, err := c.authService.GenerateTokenWithEmail(userID, wsID, userRole, user.Email)
 	if err != nil {
 		http.Error(w, `{"error":"failed generating rotated tokens"}`, http.StatusInternalServerError)
 		return
-	}
-
-	if c.repo != nil {
-		_ = c.repo.CreateRefreshToken(r.Context(), userID, newRefresh, time.Now().Add(30*24*time.Hour))
 	}
 
 	expiresIn := int64(900)

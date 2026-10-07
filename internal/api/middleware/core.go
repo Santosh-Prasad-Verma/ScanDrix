@@ -1,8 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// ScanDrix AI - Enterprise Agent Architecture
-// Copyright (c) 2026 ScanDrix AI. All rights reserved.
-// ═══════════════════════════════════════════════════════════════
-
 package middleware
 
 import (
@@ -71,6 +66,16 @@ func (rw *statusResponseWriter) Write(b []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(b)
 	rw.bytesWritten += int64(n)
 	return n, err
+}
+
+func (rw *statusResponseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (rw *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 // LoggingInterceptor logs structured HTTP request and response metrics.

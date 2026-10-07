@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -50,6 +52,7 @@ import (
 	drixyModules "github.com/scandrix/backend/internal/rules/drixy/modules"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -335,6 +338,31 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				return true
 			}
 			return revoked
+		})
+		cfg.AuthService.SetIdentityValidator(func(rctx context.Context, userID, workspaceID uuid.UUID) (*models.AccountProfile, error) {
+			user, err := authRepo.GetUserByID(rctx, userID)
+			if err != nil || user == nil {
+				return nil, errors.New("user not found")
+			}
+			if user.Status != "active" {
+				return nil, errors.New("user account is not active")
+			}
+			if user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
+				return nil, errors.New("user has no active workspace")
+			}
+			ws, err := authRepo.GetWorkspaceByID(rctx, *user.OrganizationID)
+			if err != nil || ws == nil {
+				return nil, errors.New("workspace not found")
+			}
+			if ws.Status != models.TenantStatusActive && strings.ToUpper(string(ws.Status)) != "ACTIVE" {
+				return nil, errors.New("workspace is not active")
+			}
+			return &models.AccountProfile{
+				ID:          user.UUID,
+				WorkspaceID: *user.OrganizationID,
+				Email:       user.Email,
+				Role:        models.UserRole(user.Role),
+			}, nil
 		})
 	} else if cfg.AuthService != nil {
 		slog.Warn("no repository available: access-token revocation cannot be enforced, tokens will be accepted without a revocation check")

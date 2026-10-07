@@ -129,6 +129,69 @@ func (r *Repository) RotateRefreshToken(ctx context.Context, expected *UserRecor
 	return err
 }
 
+// RotateRefreshTokenSession atomically consumes an old refresh token and issues a replacement.
+// If replay of an already-used token is detected, it revokes all sessions and all outstanding
+// access tokens for that user (RFC 6819) and returns ErrRefreshTokenReuse.
+func (r *Repository) RotateRefreshTokenSession(ctx context.Context, oldToken, newToken string, expiry time.Time) (*UserRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, ErrRevocationStoreUnavailable
+	}
+	if oldToken == "" || newToken == "" || !expiry.After(time.Now()) {
+		return nil, ErrInvalidRefreshToken
+	}
+
+	var user UserRecord
+	reused := false
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		var userUUID uuid.UUID
+		var used bool
+		var expires time.Time
+		// Lock the auth row first to serialize concurrent refresh requests on the same token
+		err := tx.QueryRow(ctx, `SELECT "userUuid", used, "expiryDate" FROM auth WHERE "tokenHash"=$1 FOR UPDATE`, hashRefreshToken(oldToken)).
+			Scan(&userUUID, &used, &expires)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrInvalidRefreshToken
+			}
+			return err
+		}
+
+		if used {
+			reused = true
+			return revokeUserSessions(ctx, tx, userUUID, time.Now().Unix())
+		}
+
+		u, err := lockSessionUser(ctx, tx, userUUID)
+		if err != nil {
+			return err
+		}
+		user = *u
+
+		if !expires.After(time.Now()) || user.Status != "active" || user.OrganizationID == nil || *user.OrganizationID == uuid.Nil {
+			return ErrInvalidRefreshToken
+		}
+
+		if err := lockActiveSessionWorkspace(ctx, tx, *user.OrganizationID); err != nil {
+			return err
+		}
+
+		if err := insertRefreshToken(ctx, tx, user.UUID, newToken, expiry); err != nil {
+			return err
+		}
+
+		_, err = tx.Exec(ctx, `UPDATE auth SET used=true,"updatedAt"=now() WHERE "tokenHash"=$1 AND "userUuid"=$2`, hashRefreshToken(oldToken), user.UUID)
+		return err
+	})
+	if err == nil && reused {
+		return nil, ErrRefreshTokenReuse
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+
 func revokeUserSessions(ctx context.Context, tx pgx.Tx, userID uuid.UUID, cutoff int64) error {
 	if _, err := tx.Exec(ctx, `UPDATE auth SET used=true,"updatedAt"=now() WHERE "userUuid"=$1`, userID); err != nil {
 		return err

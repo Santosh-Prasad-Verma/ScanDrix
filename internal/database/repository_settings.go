@@ -41,7 +41,7 @@ func (r *Repository) PatchRepositoryReviewSettings(ctx context.Context, wsID, re
 	var saved []byte
 	var active bool
 	err = r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `UPDATE tracked_repositories SET is_active=COALESCE($3::boolean,is_active), review_settings=review_settings || $4::jsonb, updated_at=now() WHERE workspace_id=$1 AND id=$2 AND is_tracked RETURNING is_active,review_settings`, wsID, repoID, patch.Active, raw).Scan(&active, &saved)
+		return tx.QueryRow(ctx, `UPDATE tracked_repositories SET is_active=COALESCE($3::boolean,is_active), review_settings=review_settings || $4::jsonb, updated_at=now() WHERE workspace_id=$1 AND id=$2 AND is_tracked RETURNING is_active,review_settings`, wsID, repoID, patch.Active, string(raw)).Scan(&active, &saved)
 	})
 	if err != nil {
 		return models.RepositoryReviewSettings{}, err

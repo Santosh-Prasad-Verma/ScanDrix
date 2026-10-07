@@ -226,7 +226,17 @@ func (c *TeamController) handleCreateTeam(w http.ResponseWriter, r *http.Request
 	if c.createTeamUC != nil {
 		team, err := c.createTeamUC.Execute(r.Context(), wsID, req.Name, req.Description, "least_busy")
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "already exists") {
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, errMsg), http.StatusConflict)
+				return
+			}
+			if strings.Contains(errMsg, "required") {
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, errMsg), http.StatusBadRequest)
+				return
+			}
+			slog.Error("Failed creating team via usecase", "error", err, "workspace_id", wsID)
+			http.Error(w, `{"error":"failed creating team"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
