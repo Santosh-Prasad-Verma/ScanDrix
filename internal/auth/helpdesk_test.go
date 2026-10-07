@@ -81,3 +81,46 @@ func TestHelpdeskTokenService(t *testing.T) {
 		t.Fatalf("expected ErrHelpdeskKeyMissing, got: %v", errMissing)
 	}
 }
+
+func TestHelpdeskTokenServiceWithEscapedNewlines(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed generating RSA key: %v", err)
+	}
+
+	keyDER := x509.MarshalPKCS1PrivateKey(rsaKey)
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: keyDER,
+	}))
+
+	// Simulate single-line escaped \n from .env or Docker env_file
+	escapedPEM := `"` + strings.ReplaceAll(keyPEM, "\n", `\n`) + `"`
+
+	svc, err := auth.NewHelpdeskTokenService(escapedPEM)
+	if err != nil {
+		t.Fatalf("failed initializing HelpdeskTokenService with escaped newlines: %v", err)
+	}
+
+	user := &models.AccountProfile{
+		ID:          uuid.New(),
+		WorkspaceID: uuid.New(),
+		Email:       "support-escaped@example.com",
+		DisplayName: "Support Escaped",
+		Role:        models.RoleMember,
+	}
+
+	token, err := svc.GenerateHelpdeskToken(user)
+	if err != nil {
+		t.Fatalf("failed generating token: %v", err)
+	}
+
+	claims, err := svc.VerifyHelpdeskToken(token)
+	if err != nil {
+		t.Fatalf("failed verifying token: %v", err)
+	}
+
+	if claims.Sub != user.ID.String() {
+		t.Fatalf("mismatched subject claim: got %s, want %s", claims.Sub, user.ID.String())
+	}
+}

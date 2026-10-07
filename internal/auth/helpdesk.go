@@ -45,14 +45,19 @@ type HelpdeskTokenService struct {
 
 // NewHelpdeskTokenService parses a PEM-encoded RSA private key (PKCS1 or PKCS8).
 func NewHelpdeskTokenService(privateKeyPEM string) (*HelpdeskTokenService, error) {
-	if strings.TrimSpace(privateKeyPEM) == "" {
+	cleanPEM := strings.TrimSpace(privateKeyPEM)
+	if cleanPEM == "" {
 		return &HelpdeskTokenService{
 			issuer:   "scandrix",
 			audience: "scandrix-helpdesk",
 		}, nil
 	}
 
-	block, _ := pem.Decode([]byte(privateKeyPEM))
+	// Normalize escaped newlines and outer quotes from environment variables
+	cleanPEM = strings.Trim(cleanPEM, `"'`)
+	cleanPEM = strings.ReplaceAll(cleanPEM, `\n`, "\n")
+
+	block, _ := pem.Decode([]byte(cleanPEM))
 	if block == nil {
 		return nil, errors.New("failed decoding PEM block from helpdesk private key")
 	}
