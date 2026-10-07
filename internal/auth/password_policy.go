@@ -38,8 +38,9 @@ var (
 	// Distinct from password.go's ErrPasswordTooLong, which reports the bcrypt
 	// 72-byte hash limit rather than the policy maximum.
 	ErrPasswordExceedsMax  = fmt.Errorf("password must be at most %d characters", MaxPasswordLength)
-	ErrPasswordInBlocklist = errors.New("this password is too common; choose something not used elsewhere")
-	ErrPasswordTooSimple   = errors.New("password is too predictable; avoid repeated characters and simple sequences")
+	ErrPasswordInBlocklist         = errors.New("this password is too common; choose something not used elsewhere")
+	ErrPasswordTooSimple           = errors.New("password is too predictable; avoid repeated characters and simple sequences")
+	ErrPasswordContainsIdentifier = errors.New("password cannot be based on your name, email, or workspace name")
 )
 
 // commonPasswords is a deliberately small, offline list. It is not a
@@ -129,20 +130,32 @@ func ValidatePassword(password string, identifiers ...string) error {
 	//
 	// Comparison happens on alphanumeric-only forms of both sides, so a
 	// workspace named "Acme Corp Team" is still caught by `Acme-Corp-Team-9`.
+	// A password that merely contains an identifier is permitted if the
+	// non-identifier remainder still provides sufficient independent entropy
+	// (at least MinPasswordLength non-identifier alphanumeric characters).
 	flat := alphanumericOnly(lower)
 	for _, id := range identifiers {
 		id = strings.ToLower(strings.TrimSpace(id))
 		if len([]rune(id)) < 4 {
 			continue
 		}
-		if flatIdentifier, ok := alphanumericOnly(id), true; ok && flatIdentifier != "" &&
-			len([]rune(flatIdentifier)) >= 4 && strings.Contains(flat, flatIdentifier) {
-			return ErrPasswordTooSimple
+		if flatIdentifier := alphanumericOnly(id); flatIdentifier != "" && len([]rune(flatIdentifier)) >= 4 {
+			if strings.Contains(flat, flatIdentifier) {
+				remainder := strings.ReplaceAll(flat, flatIdentifier, "")
+				if len([]rune(remainder)) < MinPasswordLength {
+					return ErrPasswordContainsIdentifier
+				}
+			}
 		}
 		// The local part of an email address is the most guessable piece.
 		if at := strings.Index(id, "@"); at > 0 {
-			if local := alphanumericOnly(id[:at]); len([]rune(local)) >= 4 && strings.Contains(flat, local) {
-				return ErrPasswordTooSimple
+			if local := alphanumericOnly(id[:at]); len([]rune(local)) >= 4 {
+				if strings.Contains(flat, local) {
+					remainder := strings.ReplaceAll(flat, local, "")
+					if len([]rune(remainder)) < MinPasswordLength {
+						return ErrPasswordContainsIdentifier
+					}
+				}
 			}
 		}
 	}

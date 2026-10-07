@@ -45,18 +45,26 @@ func TestValidatePasswordRejectsWeak(t *testing.T) {
 // the account's own email or workspace name, which are public.
 func TestValidatePasswordRejectsAccountIdentifiers(t *testing.T) {
 	const email = "jordan.blake@example.com"
-	if err := ValidatePassword("jordan.blake@example.com", email); err == nil {
-		t.Fatal("the password must not be the account email")
+	if err := ValidatePassword("jordan.blake@example.com", email); err != ErrPasswordContainsIdentifier {
+		t.Fatalf("the password must not be the account email, got %v", err)
 	}
-	if err := ValidatePassword("jordan.blake-91x", email); err == nil {
-		t.Fatal("the password must not contain the email local part")
+	if err := ValidatePassword("jordan.blake-91x", email); err != ErrPasswordContainsIdentifier {
+		t.Fatalf("the password must not contain the email local part, got %v", err)
 	}
-	if err := ValidatePassword("Acme-Corp-Team-9", "someone@example.com", "Acme Corp Team"); err == nil {
-		t.Fatal("the password must not contain the workspace name")
+	if err := ValidatePassword("Acme-Corp-Team-9", "someone@example.com", "Acme Corp Team"); err != ErrPasswordContainsIdentifier {
+		t.Fatalf("the password must not contain the workspace name, got %v", err)
 	}
 	// A very short identifier must not disqualify an unrelated strong password.
 	if err := ValidatePassword("Zq7-mv2-Kd4-pL9", "a", "jo"); err != nil {
 		t.Fatalf("short identifiers must not cause a rejection: %v", err)
+	}
+	// A strong password with 12+ characters of independent entropy beyond the identifier is accepted.
+	if err := ValidatePassword("Bittu@9971#$827989hfucw", "bittutrial1@gmail.com", "Bittu", "Bittu's Workspace"); err != nil {
+		t.Fatalf("strong password containing user name should be accepted: %v", err)
+	}
+	// A weak password based on the user's name is rejected with ErrPasswordContainsIdentifier.
+	if err := ValidatePassword("Bittu-12345678", "bittutrial1@gmail.com", "Bittu"); err != ErrPasswordContainsIdentifier {
+		t.Fatalf("weak password based on user name should be rejected with ErrPasswordContainsIdentifier, got %v", err)
 	}
 }
 
