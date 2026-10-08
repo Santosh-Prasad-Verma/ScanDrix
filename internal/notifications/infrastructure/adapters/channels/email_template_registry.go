@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 
 	"github.com/scandrix/backend/internal/notifications/domain/catalog"
 	"github.com/scandrix/backend/internal/notifications/templates"
@@ -62,17 +63,55 @@ func (r *EmailTemplateRegistry) ResolveEmail(event catalog.Event, payload map[st
 	case catalog.EventAuthForgotPassword:
 		token := getString(payload, "token")
 		name := getStringDefault(payload, "name", "there")
-		ctaURL := fmt.Sprintf("%s/forgot-password/reset?token=%s", r.webURL, token)
-		title := "Reset your password"
-		bodyHTML := fmt.Sprintf(`
-			<p>Hello %s,</p>
-			<p>We received a request to reset the password for your ScanDrix account. Click below to choose a new password.</p>
-			<p style="color: #6b7280; font-size: 13px;">If you didn't request a password reset, you can safely ignore this email. Your password will not change.</p>
-		`, html.EscapeString(name))
+		ctaURL := fmt.Sprintf("%s/reset-password?token=%s", r.webURL, token)
+		subj, body := templates.RenderPasswordResetWithDetails(templates.PasswordResetDetails{
+			RecipientName:  name,
+			ResetURL:       ctaURL,
+			Device:         getString(payload, "device"),
+			IPAddress:      getString(payload, "ip"),
+			Location:       getString(payload, "location"),
+			RequestedAt:    time.Now(),
+			LockAccountURL: fmt.Sprintf("%s/settings", r.webURL),
+		})
 		return &ResolvedEmail{
 			From:    fromSecurity,
-			Subject: "Reset your ScanDrix password",
-			HTML:    templates.RenderBrandLayout("Password reset request", title, bodyHTML, "Reset Password", ctaURL),
+			Subject: subj,
+			HTML:    body,
+			ReplyTo: replyTo,
+		}
+
+	case catalog.EventAuthNewDeviceLogin:
+		subj, body := templates.RenderNewDeviceLogin(templates.NewDeviceLoginDetails{
+			RecipientName:  getStringDefault(payload, "recipientName", "there"),
+			Device:         getString(payload, "device"),
+			IPAddress:      getString(payload, "ip"),
+			Location:       getString(payload, "location"),
+			LoginTime:      time.Now(),
+			LockAccountURL: fmt.Sprintf("%s/settings", r.webURL),
+			ActivityURL:    fmt.Sprintf("%s/settings", r.webURL),
+		})
+		return &ResolvedEmail{
+			From:    fromSecurity,
+			Subject: subj,
+			HTML:    body,
+			ReplyTo: replyTo,
+		}
+
+	case catalog.EventAuthApiKeyCreated:
+		subj, body := templates.RenderTeamAPIKeyCreated(templates.TeamAPIKeyCreatedDetails{
+			RecipientName: getStringDefault(payload, "recipientName", "there"),
+			OrgName:       getStringDefault(payload, "organizationName", "your workspace"),
+			KeyName:       getString(payload, "keyName"),
+			KeyPrefix:     getStringDefault(payload, "keyPrefix", "scandrix_live_..."),
+			CreatedBy:     getString(payload, "createdBy"),
+			Scopes:        getStrings(payload, "scopes"),
+			CreatedAt:     time.Now(),
+			ManageKeysURL: fmt.Sprintf("%s/organization/cli-keys", r.webURL),
+		})
+		return &ResolvedEmail{
+			From:    fromSecurity,
+			Subject: subj,
+			HTML:    body,
 			ReplyTo: replyTo,
 		}
 
@@ -161,6 +200,51 @@ func (r *EmailTemplateRegistry) ResolveEmail(event catalog.Event, payload map[st
 			ReplyTo: replyTo,
 		}
 
+	case catalog.EventReviewCompleted:
+		subj, body := templates.RenderPRReviewCompleted(templates.PRReviewCompletedDetails{
+			RecipientName:    getStringDefault(payload, "recipientName", "there"),
+			OrgName:          getStringDefault(payload, "organizationName", "your workspace"),
+			RepoName:         getString(payload, "repoName"),
+			PRNumber:         getInt(payload, "prNumber"),
+			PRTitle:          getString(payload, "prTitle"),
+			Author:           getString(payload, "author"),
+			Verdict:          getStringDefault(payload, "verdict", "Approved"),
+			CriticalCount:    getInt(payload, "criticalCount"),
+			HighCount:        getInt(payload, "highCount"),
+			SuggestionsCount: getInt(payload, "suggestionsCount"),
+			DrixyNotes:       getString(payload, "drixyNotes"),
+			ReviewURL:        getString(payload, "reviewUrl"),
+		})
+		return &ResolvedEmail{
+			From:    fromDefault,
+			Subject: subj,
+			HTML:    body,
+			ReplyTo: replyTo,
+		}
+
+	case catalog.EventCriticalVulnerability:
+		subj, body := templates.RenderCriticalVulnerabilityAlert(templates.CriticalVulnerabilityAlertDetails{
+			RecipientName: getStringDefault(payload, "recipientName", "there"),
+			OrgName:       getStringDefault(payload, "organizationName", "your workspace"),
+			Repository:    getString(payload, "repoName"),
+			BranchOrPR:    getString(payload, "branchOrPr"),
+			Severity:      getStringDefault(payload, "severity", "CRITICAL"),
+			FindingTitle:  getString(payload, "title"),
+			RuleID:        getString(payload, "ruleId"),
+			FilePath:      getString(payload, "filePath"),
+			LineNumber:    getInt(payload, "lineNumber"),
+			Description:   getString(payload, "description"),
+			Remediation:   getString(payload, "remediation"),
+			FindingURL:    getStringDefault(payload, "findingUrl", fmt.Sprintf("%s/issues", r.webURL)),
+			SourceCodeURL: getString(payload, "sourceCodeUrl"),
+		})
+		return &ResolvedEmail{
+			From:    fromSecurity,
+			Subject: subj,
+			HTML:    body,
+			ReplyTo: replyTo,
+		}
+
 	case catalog.EventReviewAutoApproved:
 		repo := getStringDefault(payload, "repoName", "Repository")
 		prURL := getString(payload, "prUrl")
@@ -197,7 +281,7 @@ func (r *EmailTemplateRegistry) ResolveEmail(event catalog.Event, payload map[st
 		repo := getStringDefault(payload, "repoName", "Repository")
 		author := getStringDefault(payload, "authorUsername", "Contributor")
 		ownerContact := getStringDefault(payload, "ownerContact", "your workspace administrator")
-		ctaURL := r.webURL + "/settings/team"
+		ctaURL := r.webURL + "/organization"
 		if pr := getString(payload, "prUrl"); pr != "" {
 			ctaURL = pr
 		}
@@ -214,44 +298,70 @@ func (r *EmailTemplateRegistry) ResolveEmail(event catalog.Event, payload map[st
 		}
 
 	case catalog.EventBillingPaymentFailed:
-		amt := getFloat(payload, "amount")
-		curr := getStringDefault(payload, "currency", "USD")
-		reason := getStringDefault(payload, "failureReason", "declined")
-		formatted := fmt.Sprintf("%s %.2f", curr, amt/100.0)
-		ctaURL := getStringDefault(payload, "updatePaymentUrl", r.webURL+"/billing")
-		title := "Payment processing failed"
-		bodyHTML := fmt.Sprintf(`
-			<p>We were unable to process the subscription payment of <strong>%s</strong> for your ScanDrix account.</p>
-			<div style="background-color: #fef2f2; border: 1px solid #fecaca; padding: 12px 16px; margin: 16px 0; border-radius: 6px; color: #b91c1c;">
-				<strong>Reason:</strong> %s
-			</div>
-			<p>Please update your billing method to avoid interruption to your automated code reviews.</p>
-		`, html.EscapeString(formatted), html.EscapeString(reason))
+		org := getStringDefault(payload, "organizationName", "your workspace")
+		reason := getStringDefault(payload, "failureReason", "Card payment declined")
+		orderID := getStringDefault(payload, "orderId", "")
+		retryURL := getStringDefault(payload, "updatePaymentUrl", r.webURL+"/billing")
+		subj, body := templates.RenderPaymentFailed(
+			getStringDefault(payload, "recipientName", "there"),
+			org,
+			getStringDefault(payload, "planTier", "Pro"),
+			orderID,
+			reason,
+			retryURL,
+		)
 		return &ResolvedEmail{
 			From:    fromBilling,
-			Subject: "Payment failed for your ScanDrix subscription",
-			HTML:    templates.RenderBrandLayout("Payment failure notification", title, bodyHTML, "Update Payment Method", ctaURL),
+			Subject: subj,
+			HTML:    body,
 			ReplyTo: replyTo,
 		}
 
 	case catalog.EventBillingTrialExpiring:
 		days := getInt(payload, "daysRemaining")
-		ctaURL := getStringDefault(payload, "upgradeUrl", r.webURL+"/billing/upgrade")
-		rem := fmt.Sprintf("%d days", days)
-		if days == 1 {
-			rem = "tomorrow"
+		if days <= 0 {
+			days = 3
 		}
-		title := "Your ScanDrix trial expires " + rem
-		bodyHTML := fmt.Sprintf(`
-			<p>Your free trial of ScanDrix will expire in <strong>%s</strong>.</p>
-			<p>Upgrade to a paid plan today to ensure continuous automated code reviews and keep your security policies active.</p>
-		`, rem)
+		subj, body := templates.RenderTrialExpiring(templates.TrialExpiringDetails{
+			RecipientName: getStringDefault(payload, "recipientName", "there"),
+			OrgName:       getStringDefault(payload, "organizationName", "your workspace"),
+			DaysRemaining: days,
+			TrialEndDate:  time.Now().AddDate(0, 0, days),
+			PRsScanned:    getInt(payload, "prsScanned"),
+			IssuesBlocked: getInt(payload, "issuesBlocked"),
+			HoursSaved:    getFloat(payload, "hoursSaved"),
+			UpgradeURL:    fmt.Sprintf("%s/billing", r.webURL),
+		})
 		return &ResolvedEmail{
 			From:    fromBilling,
-			Subject: "Your ScanDrix trial is expiring soon",
-			HTML:    templates.RenderBrandLayout("Trial expiration warning", title, bodyHTML, "Upgrade Subscription", ctaURL),
+			Subject: subj,
+			HTML:    body,
 			ReplyTo: replyTo,
 		}
+
+	case catalog.EventUsageThresholdWarning:
+		pct := getInt(payload, "percentage")
+		if pct <= 0 {
+			pct = 80
+		}
+		subj, body := templates.RenderUsageThresholdWarning(templates.UsageThresholdDetails{
+			RecipientName: getStringDefault(payload, "recipientName", "there"),
+			OrgName:       getStringDefault(payload, "organizationName", "your workspace"),
+			PlanTier:      getStringDefault(payload, "planTier", "Pro Team"),
+			PercentUsed:   pct,
+			UsedUnits:     int64(getInt(payload, "usedTokens")),
+			LimitUnits:    int64(getInt(payload, "limitTokens")),
+			UnitType:      getStringDefault(payload, "unitType", "Tokens"),
+			ResetDate:     time.Now().AddDate(0, 0, 7),
+			UpgradeURL:    fmt.Sprintf("%s/billing", r.webURL),
+		})
+		return &ResolvedEmail{
+			From:    fromBilling,
+			Subject: subj,
+			HTML:    body,
+			ReplyTo: replyTo,
+		}
+
 
 	case catalog.EventByokLlmErrorsThreshold:
 		provider := getStringDefault(payload, "provider", "BYOK")

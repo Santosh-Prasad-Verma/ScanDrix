@@ -9,6 +9,7 @@ build/
 *.dylib
 *.test
 /scandrix-*
+/email_previews/
 
 # 2. Test Coverage & Go Profiling Artifacts
 *.out

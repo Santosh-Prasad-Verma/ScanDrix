@@ -7,6 +7,8 @@ const (
 	// Auth
 	EventAuthEmailConfirmation Event = "auth.email_confirmation"
 	EventAuthForgotPassword    Event = "auth.forgot_password"
+	EventAuthNewDeviceLogin    Event = "auth.new_device_login"
+	EventAuthApiKeyCreated     Event = "auth.api_key_created"
 
 	// Organization / Team
 	EventTeamMemberInvited Event = "team.member_invited"
@@ -21,10 +23,12 @@ const (
 	EventIDERulesSynced     Event = "ide.rules_synced"
 	EventIDERulesSyncFailed Event = "ide.rules_sync_failed"
 
-	// Code Review
+	// Code Review & Security
 	EventReviewAutoApproved     Event = "review.auto_approved"
 	EventReviewFailed           Event = "review.failed"
 	EventReviewSkippedNoLicense Event = "review.skipped_no_license"
+	EventReviewCompleted        Event = "review.completed"
+	EventCriticalVulnerability  Event = "security.critical_vulnerability"
 
 	// SSO
 	EventSSODomainVerification Event = "sso.domain_verification"
@@ -40,9 +44,10 @@ const (
 	// BYOK
 	EventByokLlmErrorsThreshold Event = "byok.llm_errors_threshold"
 
-	// Spend Limit
+	// Spend Limit & Quotas
 	EventSpendLimitThresholdReached Event = "spend_limit.threshold_reached"
 	EventSpendLimitExceededFinal    Event = "spend_limit.exceeded_final"
+	EventUsageThresholdWarning      Event = "usage.threshold_warning"
 )
 
 // AuthEmailConfirmationPayload describes payload for auth.email_confirmation.
