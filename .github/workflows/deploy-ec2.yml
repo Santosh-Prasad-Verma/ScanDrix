@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths-ignore:
       - 'scandrix-website/**'
+      - 'scandrix-dashboard/**'
       - '**.md'
   workflow_dispatch:
 
@@ -14,19 +15,31 @@ concurrency:
 
 jobs:
   deploy:
-    name: "Deploy on EC2 Instance"
-    runs-on: [ self-hosted, linux ]
+    name: "Deploy to AWS EC2"
+    runs-on: ubuntu-latest
     steps:
       - name: "Checkout Code"
         uses: actions/checkout@v4
 
-      - name: "Sync Code & Deploy Docker Containers"
+      - name: "Configure SSH Key"
         run: |
-          set -e
-          echo "🚀 Executing automated deployment directly on EC2..."
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          # Sync checked-out repository code to the runtime application directory
-          rsync -av --delete \
+      - name: "Check EC2 Host Reachability"
+        run: |
+          echo "Checking reachability of ${{ secrets.EC2_HOST }}..."
+          if ! ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no -o ConnectTimeout=15 ${{ secrets.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }} "uptime" 2>&1; then
+            echo "::error::EC2 host ${{ secrets.EC2_HOST }} is unreachable or stopped. Please start the instance in AWS EC2 Console."
+            exit 1
+          fi
+
+      - name: "Sync Codebase to EC2 via Rsync"
+        run: |
+          echo "📦 Syncing repository to EC2..."
+          rsync -avz --delete \
             --exclude '.git' \
             --exclude '.env' \
             --exclude 'node_modules' \
@@ -34,31 +47,45 @@ jobs:
             --exclude 'scandrix-website' \
             --exclude 'scandrix-dashboard' \
             --exclude '.agents' \
-            ./ /home/ubuntu/ScanDrix/
+            -e "ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no" \
+            ./ ${{ secrets.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }}:/home/ubuntu/ScanDrix/
 
-          cd /home/ubuntu/ScanDrix
+      - name: "Rebuild & Restart Backend Containers"
+        run: |
+          echo "🚀 Executing deployment on EC2..."
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER || 'ubuntu' }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd /home/ubuntu/ScanDrix
 
-          # Verify production .env is present
-          if [ ! -f ".env" ]; then
-            echo "⚠️ Error: .env file missing in /home/ubuntu/ScanDrix!"
-            exit 1
-          fi
+            # Create default .env from template if missing
+            if [ ! -f ".env" ]; then
+              if [ -f ".env.production.template" ]; then
+                echo "Notice: Creating initial .env from template..."
+                cp .env.production.template .env
+              elif [ -f ".env.prod" ]; then
+                cp .env.prod .env
+              else
+                echo "⚠️ Error: .env file missing in /home/ubuntu/ScanDrix!"
+                exit 1
+              fi
+            fi
 
-          echo "Building and launching backend containers..."
-          docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+            echo "Building and launching containers..."
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 
-          echo "Pruning dangling build cache images..."
-          docker image prune -f
+            echo "Pruning dangling build cache images..."
+            docker image prune -f
 
-          echo "Waiting for services to initialize..."
-          sleep 5
-          docker compose -f docker-compose.prod.yml ps
+            echo "Waiting for services to initialize..."
+            sleep 5
+            docker compose -f docker-compose.prod.yml ps
 
-          echo "Verifying API health probe..."
-          if wget -qO- --timeout=5 http://localhost:8080/healthz > /dev/null 2>&1; then
-            echo "✅ API is online and healthy on port 8080!"
-          else
-            echo "ℹ️ Containers started. Check logs: 'docker compose -f docker-compose.prod.yml logs scandrix-api'."
-          fi
+            echo "Verifying API health status..."
+            if wget -qO- --timeout=10 http://localhost:8080/healthz > /dev/null 2>&1; then
+              echo "✅ API is online and healthy on port 8080!"
+            else
+              echo "ℹ️ Containers started. Check logs: 'docker compose -f docker-compose.prod.yml logs scandrix-api'."
+            fi
 
-          echo "🎉 Deployment completed successfully!"
+            echo "🎉 Deployment finished successfully!"
+          EOF

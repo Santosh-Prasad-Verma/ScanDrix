@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -911,9 +912,44 @@ func (c *AuthController) handleMe(w http.ResponseWriter, r *http.Request) {
 // Password Reset (HMAC-SHA256 bound to current password hash)
 // ============================================================================
 
+func (c *AuthController) resolveFrontendURL(r *http.Request) string {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err == nil && u.Scheme != "" && u.Host != "" {
+			return strings.TrimRight(origin, "/")
+		}
+	}
+	if referer := r.Header.Get("Referer"); referer != "" {
+		if u, err := url.Parse(referer); err == nil && u.Scheme != "" && u.Host != "" {
+			return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+		}
+	}
+	if fe := r.Header.Get("X-Frontend-URL"); fe != "" {
+		return strings.TrimRight(fe, "/")
+	}
+	if fe := os.Getenv("FRONTEND_URL"); fe != "" {
+		return strings.TrimRight(fe, "/")
+	}
+	if fe := os.Getenv("NEXT_PUBLIC_APP_URL"); fe != "" {
+		return strings.TrimRight(fe, "/")
+	}
+	if c.appBaseURL != "" {
+		if strings.Contains(c.appBaseURL, ":8080") {
+			return strings.Replace(c.appBaseURL, ":8080", ":3000", 1)
+		}
+		return strings.TrimRight(c.appBaseURL, "/")
+	}
+	return "http://localhost:3000"
+}
+
 func (c *AuthController) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	var req dtos.ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		http.Error(w, `{"error":"email is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" {
 		http.Error(w, `{"error":"email is required"}`, http.StatusBadRequest)
 		return
 	}
@@ -923,33 +959,49 @@ func (c *AuthController) handleForgotPassword(w http.ResponseWriter, r *http.Req
 	successMsg := `{"status":"if that email exists, a password reset link has been sent"}`
 
 	if c.repo == nil || c.jwtSecret == "" {
+		slog.Warn("auth.password_reset_unconfigured", "has_repo", c.repo != nil, "has_secret", c.jwtSecret != "")
 		_, _ = w.Write([]byte(successMsg))
 		return
 	}
 
-	user, err := c.repo.GetUserByEmail(r.Context(), req.Email)
+	user, err := c.repo.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		// Don't reveal whether email exists (Master Rule 5.7)
+		slog.Warn("auth.password_reset_user_not_found", "email", email, "error", err)
 		_, _ = w.Write([]byte(successMsg))
 		return
 	}
 
 	token, err := auth.CreatePasswordResetToken(user.UUID, user.Email, user.Password, c.jwtSecret, 15*time.Minute)
 	if err != nil {
+		slog.Error("auth.password_reset_token_create_failed", "recipient", user.Email, "error", err)
 		_, _ = w.Write([]byte(successMsg))
 		return
 	}
 
+	frontendBase := c.resolveFrontendURL(r)
+	resetURL := fmt.Sprintf("%s/reset-password?token=%s", frontendBase, token)
+
+	slog.Info("auth.password_reset_link_generated",
+		"recipient", user.Email,
+		"reset_url", resetURL,
+	)
+
 	// Dispatch transactional email with reset link (Master Rule 1.7 — token never returned in API response)
 	if c.mailer != nil {
-		resetURL := fmt.Sprintf("%s/reset-password?token=%s", c.appBaseURL, token)
 		if mailErr := c.mailer.SendPasswordResetEmail(r.Context(), user.Email, resetURL); mailErr != nil {
 			slog.Error("auth.email.password_reset_send_failed",
 				"event", "auth.email.password_reset_send_failed",
 				"recipient", user.Email,
 				"error", mailErr,
 			)
+		} else {
+			slog.Info("auth.email.password_reset_sent",
+				"recipient", user.Email,
+			)
 		}
+	} else {
+		slog.Warn("auth.email.mailer_not_configured", "recipient", user.Email)
 	}
 
 	_, _ = w.Write([]byte(successMsg))
