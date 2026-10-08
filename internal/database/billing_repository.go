@@ -394,7 +394,9 @@ func (r *Repository) ListPlanConfigurations(ctx context.Context) ([]models.PlanC
 	// which is how ENTERPRISE (seeded at ₹9,999) came to render above SCALE
 	// (₹24,990). tier is the tiebreaker so the order is total and stable.
 	query := `
-		SELECT tier, display_name, amount_inr, amount_usd, monthly_tokens,
+		SELECT tier, display_name, amount_inr, amount_usd,
+		       annual_amount_inr, annual_amount_usd,
+		       monthly_tokens,
 		       burst_limit_per_min, max_seats, max_repositories, max_concurrent_reviews,
 		       byok_allowed, sort_order, self_serve, allocated_models, features_enabled,
 		       created_at, updated_at
@@ -413,6 +415,7 @@ func (r *Repository) ListPlanConfigurations(ctx context.Context) ([]models.PlanC
 		var modelsJSON, featuresJSON []byte
 		if err := rows.Scan(
 			&plan.Tier, &plan.DisplayName, &plan.AmountINR, &plan.AmountUSD,
+			&plan.AnnualAmountINR, &plan.AnnualAmountUSD,
 			&plan.MonthlyTokens, &plan.BurstLimitPerMin, &plan.MaxSeats,
 			&plan.MaxRepositories, &plan.MaxConcurrentReviews, &plan.BYOKAllowed,
 			&plan.SortOrder, &plan.SelfServe,

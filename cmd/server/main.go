@@ -13,6 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	contracts "github.com/scandrix/backend/internal/platform/domain/contracts"
+	github "github.com/scandrix/backend/internal/platform/github"
+	gitlab "github.com/scandrix/backend/internal/platform/gitlab"
+	bitbucket "github.com/scandrix/backend/internal/platform/bitbucket"
 	"github.com/scandrix/backend/internal/api"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/auth/cliauth"
@@ -30,6 +34,7 @@ import (
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/pkg/models"
 	"github.com/scandrix/backend/internal/sandbox"
 	"github.com/scandrix/backend/internal/sandbox/lease"
 	"github.com/scandrix/backend/internal/storage"
@@ -194,6 +199,27 @@ func main() {
 		slog.Info("SCIM provisioning bound to workspace", "workspace_id", scimWS.String())
 	}
 
+	/**
+	 * Code-management adapters for live pull request diffs.
+	 *
+	 * These are stateless: credentials are supplied per request from the stored
+	 * integration connection, so one instance per provider serves every workspace.
+	 * Without them GET /pull-requests/files can only report which paths a review
+	 * touched and must mark every diff field unavailable.
+	 */
+	scmHTTPClient := &http.Client{Timeout: 30 * time.Second}
+	scmProviders := map[models.SCMProvider]contracts.ICodeManagementService{
+		models.ProviderGitHub: github.NewGitHubService(github.GitHubServiceConfig{
+			HTTPClient:     scmHTTPClient,
+			DefaultTimeout: 30 * time.Second,
+		}),
+		models.ProviderGitLab: gitlab.NewGitLabService(gitlab.GitLabServiceConfig{
+			HTTPClient:     scmHTTPClient,
+			DefaultTimeout: 30 * time.Second,
+		}),
+		models.ProviderBitbucket: bitbucket.NewBitbucketService(nil, nil),
+	}
+
 	r := api.BuildRouter(api.RouterConfig{
 		Repo:                     repo,
 		AuthService:              authenticator,
@@ -217,6 +243,7 @@ func main() {
 		RequireEmailVerification: cfg.RequireEmailVerification,
 		BlockedEmailDomains:      cfg.BlockedEmailDomains,
 		TurnstileSecretKey:       cfg.TurnstileSecretKey,
+		SCMProviders:              scmProviders,
 	})
 
 	server := &http.Server{

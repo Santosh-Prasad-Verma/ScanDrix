@@ -17,6 +17,34 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
+// GetTrackedRepositoryByID returns one tracked repository scoped to its workspace.
+//
+// The workspace id is part of the predicate, not merely the row id, so a caller
+// cannot read a repository belonging to another workspace by guessing its id.
+func (r *Repository) GetTrackedRepositoryByID(ctx context.Context, wsID, repositoryID uuid.UUID) (*models.TrackedRepository, error) {
+	if r == nil || r.client == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	query := `
+		SELECT id, workspace_id, provider, external_id, namespace_path, default_branch, is_active, created_at, updated_at
+		FROM tracked_repositories
+		WHERE workspace_id = $1 AND id = $2
+		LIMIT 1;
+	`
+	var tr models.TrackedRepository
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, wsID, repositoryID).Scan(
+			&tr.ID, &tr.WorkspaceID, &tr.Provider, &tr.ExternalID, &tr.NamespacePath,
+			&tr.DefaultBranch, &tr.IsActive, &tr.CreatedAt, &tr.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &tr, nil
+}
+
 // ListTrackedRepositories lists all monitored repositories for a workspace.
 // GetTrackedRepositoryByNamespace resolves a provider + namespace to its
 // tracked repository row.
@@ -317,6 +345,42 @@ func (r *Repository) GetIntegrationConnection(ctx context.Context, wsID uuid.UUI
 	var c models.IntegrationConnection
 	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, query, wsID, string(provider))
+		return row.Scan(
+			&c.ID, &c.WorkspaceID, &c.Provider, &c.AccountName, &c.IsConnected,
+			&c.AccessTokenEnc, &c.RepoCount, &c.LastSyncedAt, &c.CreatedAt, &c.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if c.AccessTokenEnc != "" {
+		c.AccessTokenEnc = decryptStoredSecret(ctx, wsID, c.AccessTokenEnc)
+	}
+	return &c, nil
+}
+
+// GetIntegrationConnectionByID returns one SCM connection by its identifier with
+// a decrypted token.
+//
+// Lookup by id (rather than by provider) is what destructive operations need: the
+// caller names the exact connection it wants removed, and the row's own provider
+// column decides what gets deleted. Resolving the provider from the stored row
+// rather than from a client-supplied string means a request cannot name a
+// provider it does not own.
+func (r *Repository) GetIntegrationConnectionByID(ctx context.Context, wsID, connectionID uuid.UUID) (*models.IntegrationConnection, error) {
+	if r == nil || r.client == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	query := `
+		SELECT id, workspace_id, provider, account_name, is_connected, access_token_enc, repo_count, last_synced_at, created_at, updated_at
+		FROM integration_connections
+		WHERE workspace_id = $1 AND id = $2;
+	`
+
+	var c models.IntegrationConnection
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, query, wsID, connectionID)
 		return row.Scan(
 			&c.ID, &c.WorkspaceID, &c.Provider, &c.AccountName, &c.IsConnected,
 			&c.AccessTokenEnc, &c.RepoCount, &c.LastSyncedAt, &c.CreatedAt, &c.UpdatedAt,

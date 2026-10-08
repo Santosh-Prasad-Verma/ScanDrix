@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/scandrix/backend/internal/api/dtos"
 	"github.com/scandrix/backend/internal/auth"
 	"github.com/scandrix/backend/internal/auth/oauth"
@@ -23,6 +25,7 @@ import (
 type CodeManagementRepository interface {
 	ListTrackedRepositories(ctx context.Context, wsID uuid.UUID) ([]models.TrackedRepository, error)
 	GetIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider) (*models.IntegrationConnection, error)
+	GetIntegrationConnectionByID(ctx context.Context, wsID, connectionID uuid.UUID) (*models.IntegrationConnection, error)
 	TrackRepository(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, externalID, namespacePath, defaultBranch string) (*models.TrackedRepository, error)
 	UpdateIntegrationRepoCount(ctx context.Context, wsID uuid.UUID, count int) error
 	UpsertIntegrationConnection(ctx context.Context, wsID uuid.UUID, provider models.SCMProvider, accountName, tokenPlain string, isConnected bool, repoCount int) error
@@ -409,7 +412,18 @@ func (c *CodeManagementController) handleFinishOnboarding(w http.ResponseWriter,
 	})
 }
 
-// handleDeleteIntegration removes the integration and all associated tracked repositories.
+// handleDeleteIntegration removes one SCM connection and its tracked repositories.
+//
+// The connection to remove is named by `connectionId`, and the provider that
+// gets deleted is read from the stored row rather than taken from the request.
+// This handler previously ignored its input entirely and unconditionally deleted
+// both the GitHub and the GitLab connection plus every repository tracked under
+// them, then reported success — so disconnecting a Bitbucket credential destroyed
+// the workspace's GitHub integration.
+//
+// A missing or unknown connectionId is now a 400 or 404. It is never treated as
+// success, because a silent 200 on an ignored parameter is how the old
+// behaviour stayed invisible.
 func (c *CodeManagementController) handleDeleteIntegration(w http.ResponseWriter, r *http.Request) {
 	wsID, err := auth.WorkspaceFromContext(r.Context())
 	if err != nil {
@@ -417,18 +431,60 @@ func (c *CodeManagementController) handleDeleteIntegration(w http.ResponseWriter
 		return
 	}
 
-	if c.repo != nil {
-		_ = c.repo.DeleteIntegrationConnection(r.Context(), wsID, models.ProviderGitHub)
-		_ = c.repo.DeleteIntegrationConnection(r.Context(), wsID, models.ProviderGitLab)
-		_ = c.repo.UntrackAllRepositories(r.Context(), wsID, models.ProviderGitHub)
-		_ = c.repo.UntrackAllRepositories(r.Context(), wsID, models.ProviderGitLab)
+	if c.repo == nil {
+		http.Error(w, `{"error":"integration repository unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	connectionIDRaw := strings.TrimSpace(r.URL.Query().Get("connectionId"))
+	if connectionIDRaw == "" {
+		http.Error(w, `{"error":"connectionId is required"}`, http.StatusBadRequest)
+		return
+	}
+	connectionID, err := uuid.Parse(connectionIDRaw)
+	if err != nil {
+		http.Error(w, `{"error":"invalid connectionId parameter"}`, http.StatusBadRequest)
+		return
+	}
+
+	connection, err := c.repo.GetIntegrationConnectionByID(r.Context(), wsID, connectionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, `{"error":"integration connection not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"failed to resolve integration connection"}`, http.StatusInternalServerError)
+		return
+	}
+	if connection == nil {
+		http.Error(w, `{"error":"integration connection not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Scope the delete to this connection's own provider.
+	if err := c.repo.DeleteIntegrationConnection(r.Context(), wsID, connection.Provider); err != nil {
+		http.Error(w, `{"error":"failed to delete integration connection"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := c.repo.UntrackAllRepositories(r.Context(), wsID, connection.Provider); err != nil {
+		http.Error(w, `{"error":"integration removed but its repositories could not be untracked"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if auditErr := c.repo.InsertAuditLog(
+		r.Context(), wsID, "", "", "", "code_management.integration_disconnect",
+		"integration_connection", connection.ID.String(), nil,
+	); auditErr != nil {
+		// The disconnect already succeeded; record the gap rather than undoing it.
+		slog.Warn("audit log write failed for integration disconnect", "connectionId", connection.ID, "error", auditErr)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
-			"success": true,
+			"success":  true,
+			"provider": connection.Provider,
 		},
 	})
 }

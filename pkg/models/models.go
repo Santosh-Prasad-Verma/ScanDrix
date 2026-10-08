@@ -362,6 +362,13 @@ type PlanConfiguration struct {
 	DisplayName          string `json:"display_name" db:"display_name"`
 	AmountINR            int64  `json:"amount_inr" db:"amount_inr"`
 	AmountUSD            int64  `json:"amount_usd" db:"amount_usd"`
+	// AnnualAmountINR and AnnualAmountUSD are pointers because a tier may have no
+	// annual price. Tiers that cannot be sold through checkout, and the free tier,
+	// leave them nil, and the client renders "not offered" for that term. They are
+	// never derived from the monthly amount: a guessed annual figure would be a
+	// fabricated price that a customer could be charged.
+	AnnualAmountINR *int64 `json:"annual_amount_inr" db:"annual_amount_inr"`
+	AnnualAmountUSD *int64 `json:"annual_amount_usd" db:"annual_amount_usd"`
 	MonthlyTokens        int64  `json:"monthly_tokens" db:"monthly_tokens"`
 	BurstLimitPerMin     int64  `json:"burst_limit_per_min" db:"burst_limit_per_min"`
 	MaxSeats             int    `json:"max_seats" db:"max_seats"`
@@ -561,14 +568,40 @@ type AwaitingPullRequest struct {
 	URL               string    `json:"url"`
 }
 
-// PullRequestChangedFile represents a file modified in a PR with diff patches.
+// PullRequestChangedFile is one file touched by a pull request.
+//
+// Only FilePath is derivable from stored review data: findings are persisted per
+// file path, so the set of paths a review touched is known. Change status, line
+// counts and the unified patch exist only in the SCM provider's response and are
+// not stored, so those fields are pointers and stay nil until the backend fetches
+// them live.
+//
+// A nil means "not measured". It must never be rendered as a zero or as a
+// placeholder value — a client cannot tell an invented 0 additions from a real
+// one, which is why these are nullable rather than defaulted. The reason each
+// field is absent is reported alongside the payload in
+// PullRequestChangedFilesResponse.Unavailable.
 type PullRequestChangedFile struct {
-	FilePath  string `json:"file_path"`
-	OldPath   string `json:"old_path,omitempty"`
-	Status    string `json:"status"` // "added", "modified", "deleted"
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Patch     string `json:"patch,omitempty"`
+	FilePath string `json:"file_path"`
+	OldPath  string `json:"old_path,omitempty"`
+
+	// Status is "added", "modified" or "removed" when known.
+	Status    *string `json:"status"`
+	Additions *int    `json:"additions"`
+	Deletions *int    `json:"deletions"`
+	// Patch is a unified diff. Providers omit it for binary files and for very
+	// large diffs, so an empty string is a real provider answer and is distinct
+	// from nil, which means the provider was never asked.
+	Patch *string `json:"patch"`
+}
+
+// PullRequestChangedFilesResponse is the payload for GET /pull-requests/files.
+//
+// Unavailable names each field that is absent for every file and why, following
+// the same contract as the analytics endpoints.
+type PullRequestChangedFilesResponse struct {
+	Data        []PullRequestChangedFile `json:"data"`
+	Unavailable []AnalyticsUnavailable   `json:"unavailable"`
 }
 
 // PullRequestMessageStatus defines the active/inactive state of a comment message template.

@@ -6,6 +6,11 @@ import "time"
 type CreateOrderDTO struct {
 	Plan     string `json:"plan"`     // "PRO", "TEAM", "ENTERPRISE"
 	Currency string `json:"currency"` // "INR", "USD"
+	// BillingInterval is the subscription term: "monthly" or "annual".
+	//
+	// This was absent, so an annual selection was charged at the monthly price
+	// with no error anywhere. Empty is treated as monthly.
+	BillingInterval string `json:"billing_interval"` // "monthly", "annual"
 }
 
 // VerifyPaymentDTO passes frontend checkout cryptographic proof.

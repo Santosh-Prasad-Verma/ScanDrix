@@ -164,7 +164,9 @@ func (c *BillingController) handleCreateOrder(w http.ResponseWriter, r *http.Req
 		planTier = license.TierTeam
 	}
 
-	orderResp, err := c.billingSvc.CreateSubscriptionOrder(r.Context(), wsID, planTier, req.Currency)
+	// An annual selection must be priced as annual. The term was previously
+	// dropped here, so the UI's annual option was charged at the monthly rate.
+	orderResp, err := c.billingSvc.CreateSubscriptionOrder(r.Context(), wsID, planTier, req.Currency, req.BillingInterval)
 	if err != nil {
 		slog.Error("Failed creating subscription order", "workspace_id", wsID, "plan", planTier, "error", err)
 		http.Error(w, `{"error":"failed creating subscription order"}`, http.StatusInternalServerError)

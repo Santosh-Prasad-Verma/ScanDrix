@@ -18,6 +18,10 @@ type RepositoryReviewSettings struct {
 	BranchesMonitored []string `json:"branchesMonitored"`
 	IgnoredPaths      []string `json:"ignoredPaths"`
 	ModelOverride     string   `json:"modelOverride"`
+	// CodeReviewConfig is the dashboard's per-repository review configuration.
+	// Always non-nil so a caller never has to distinguish "no configuration" from
+	// "an absent value"; an empty map means nothing has been configured yet.
+	CodeReviewConfig map[string]any `json:"codeReviewConfig"`
 }
 
 type RepositoryReviewSettingsPatch struct {
@@ -28,6 +32,14 @@ type RepositoryReviewSettingsPatch struct {
 	BranchesMonitored *[]string `json:"branchesMonitored,omitempty"`
 	IgnoredPaths      *[]string `json:"ignoredPaths,omitempty"`
 	ModelOverride     *string   `json:"modelOverride,omitempty"`
+	// CodeReviewConfig is the dashboard's per-repository review configuration as a
+	// document: custom messages, PR summary, review categories, suggestion
+	// control, ignored title keywords, prompt overrides and so on.
+	//
+	// It is stored in its own column rather than in workspace_parameters because
+	// that table is keyed by workspace alone: saving one repository's settings
+	// through it would overwrite every other repository's.
+	CodeReviewConfig *map[string]any `json:"codeReviewConfig,omitempty"`
 }
 
 func (p *RepositoryReviewSettingsPatch) UnmarshalJSON(data []byte) error {
@@ -46,8 +58,18 @@ func (p *RepositoryReviewSettingsPatch) UnmarshalJSON(data []byte) error {
 	return decoder.Decode((*patch)(p))
 }
 
-func DecodeRepositoryReviewSettings(raw []byte, active bool) (RepositoryReviewSettings, error) {
-	cfg := RepositoryReviewSettings{Active: active, AutoReviewEnabled: true, BranchesMonitored: []string{}, IgnoredPaths: []string{}}
+// DecodeRepositoryReviewSettings builds the settings from the two per-repository
+// columns. configRaw is the code_review_config document and may be empty.
+func DecodeRepositoryReviewSettings(raw []byte, active bool, configRaw ...[]byte) (RepositoryReviewSettings, error) {
+	cfg := RepositoryReviewSettings{Active: active, AutoReviewEnabled: true, BranchesMonitored: []string{}, IgnoredPaths: []string{}, CodeReviewConfig: map[string]any{}}
+	for _, document := range configRaw {
+		if len(document) > 2 {
+			var decoded map[string]any
+			if err := json.Unmarshal(document, &decoded); err == nil && decoded != nil {
+				cfg.CodeReviewConfig = decoded
+			}
+		}
+	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return cfg, err

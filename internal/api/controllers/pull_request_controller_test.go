@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func unavailableMetrics(entries []models.AnalyticsUnavailable) []string {
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Metric)
+	}
+	return names
+}
 
 type mockPullRequestRepo struct {
 	executions models.PaginatedEnrichedPullRequests
@@ -103,7 +112,9 @@ func TestPullRequestController_Endpoints(t *testing.T) {
 			{RepositoryID: repoID.String(), PullRequestNumber: 43, PullRequestTitle: "fix: memory leak"},
 		},
 		files: []models.PullRequestChangedFile{
-			{FilePath: "auth/jwt.go", Status: "modified", Additions: 25, Deletions: 5},
+			// Only the path is known from stored findings. Diff fields stay nil so
+			// the response reports them as unavailable instead of inventing them.
+			{FilePath: "auth/jwt.go"},
 		},
 		findings: []models.CodeFinding{
 			{
@@ -173,6 +184,25 @@ func TestPullRequestController_Endpoints(t *testing.T) {
 	r.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "auth/jwt.go")
+
+	// The diff fields are not derivable from stored findings. They must be
+	// reported as absent with a reason rather than filled with a plausible
+	// constant, so a client can tell "not measured" from "no changes".
+	var filesResponse models.PullRequestChangedFilesResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &filesResponse))
+	require.Len(t, filesResponse.Data, 1)
+	assert.Equal(t, "auth/jwt.go", filesResponse.Data[0].FilePath)
+	assert.Nil(t, filesResponse.Data[0].Status, "status must not be invented")
+	assert.Nil(t, filesResponse.Data[0].Additions, "additions must not be invented")
+	assert.Nil(t, filesResponse.Data[0].Deletions, "deletions must not be invented")
+	assert.Nil(t, filesResponse.Data[0].Patch, "patch must not be invented")
+	for _, metric := range []string{"status", "additions", "deletions", "patch"} {
+		assert.Contains(t, unavailableMetrics(filesResponse.Unavailable), metric,
+			"%s must be named in unavailable", metric)
+	}
+	for _, u := range filesResponse.Unavailable {
+		assert.Equal(t, models.ReasonNoDataSource, u.Reason)
+	}
 
 	// 7. Test /pull-requests/suggestions (json format)
 	req = httptest.NewRequest("GET", "/pull-requests/suggestions?prNumber=42", nil)

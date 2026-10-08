@@ -1213,7 +1213,14 @@ func (r *Repository) GetAwaitingPullRequests(ctx context.Context, wsID uuid.UUID
 	return awaiting, err
 }
 
-// GetPullRequestChangedFiles returns files modified in a pull request with diff patches.
+// GetPullRequestChangedFiles returns the files a pull request's review touched.
+//
+// The paths come from persisted findings. Change status, line counts and the
+// unified patch are only available from the SCM provider and are not stored, so
+// they are left nil here and reported as unavailable by the controller. This
+// function previously returned a fixed +10/-2 and a hardcoded "modified" status
+// for every file; that made an unmeasured diff indistinguishable from a measured
+// one in the UI, which is why those fields are nullable now.
 func (r *Repository) GetPullRequestChangedFiles(ctx context.Context, wsID, repoID uuid.UUID, prNumber int) ([]models.PullRequestChangedFile, error) {
 	if r == nil || r.client == nil || r.client.Pool == nil {
 		return nil, errors.New("database repository unavailable")
@@ -1241,9 +1248,10 @@ func (r *Repository) GetPullRequestChangedFiles(ctx context.Context, wsID, repoI
 			if err := rows.Scan(&f.FilePath); err != nil {
 				return err
 			}
-			f.Status = "modified"
-			f.Additions = 10
-			f.Deletions = 2
+			// Status, Additions, Deletions and Patch intentionally stay nil: the
+			// stored findings do not carry them. The controller names them in the
+			// response's `unavailable` list so clients render "not reported"
+			// instead of a fabricated value.
 			files = append(files, f)
 		}
 		return rows.Err()

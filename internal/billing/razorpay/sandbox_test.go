@@ -67,7 +67,7 @@ func TestBillingSandbox(t *testing.T) {
 		require.NotNil(t, plan.ExpiresAt)
 		return
 	}
-	order, err := service.CreateSubscriptionOrder(ctx, workspace, "DEVELOPER", "INR")
+	order, err := service.CreateSubscriptionOrder(ctx, workspace, "DEVELOPER", "INR", "monthly")
 	require.NoError(t, err)
 	stored, err := repository.GetBillingTransaction(ctx, workspace, order.OrderID)
 	require.NoError(t, err)

@@ -52,6 +52,8 @@ import (
 	drixyModules "github.com/scandrix/backend/internal/rules/drixy/modules"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
+	apiservices "github.com/scandrix/backend/internal/api/services"
+	cmcontracts "github.com/scandrix/backend/internal/platform/domain/contracts"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -84,6 +86,13 @@ type RouterConfig struct {
 	CliEngine          *clireview.Engine
 	CliDashboard       *clireview.DashboardStore
 	LicenseManager     *license.LicenseManager
+
+	// SCMProviders holds one code-management adapter per provider, used to read
+	// live pull request diffs. Adapters are stateless: credentials travel per
+	// request, so a single instance serves every workspace. A provider absent from
+	// the map is reported as unavailable rather than being served an empty file
+	// list.
+	SCMProviders map[models.SCMProvider]cmcontracts.ICodeManagementService
 
 	licenseResolver *license.Resolver
 
@@ -526,6 +535,22 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 	// PR Dashboard & Management Controllers
 	prCtrl := controllers.NewPullRequestController(cfg.Repo, cfg.StreamHub)
+
+	// Live diff reads. Without this the /files endpoint reports only the paths a
+	// review touched and names every diff field unavailable, rather than
+	// inventing line counts.
+	if cfg.Repo != nil && len(cfg.SCMProviders) > 0 {
+		// Narrow the full adapters to the one method the bridge uses.
+		filesProviders := make(map[models.SCMProvider]apiservices.PullRequestFilesProvider, len(cfg.SCMProviders))
+		for provider, adapter := range cfg.SCMProviders {
+			if adapter != nil {
+				filesProviders[provider] = adapter
+			}
+		}
+		prCtrl = prCtrl.WithPullRequestFileFetcher(
+			apiservices.NewSCMPullRequestFileFetcher(cfg.Repo, filesProviders),
+		)
+	}
 	if cfg.Repo != nil && cfg.Repo.Client() != nil && cfg.Repo.Client().Pool != nil {
 		platformPRRepo := platformRepo.NewPostgresPullRequestsRepository(cfg.Repo.Client().Pool)
 		backfillUC := usecases.NewBackfillHistoricalPRsUseCase(platformPRRepo, nil, nil)

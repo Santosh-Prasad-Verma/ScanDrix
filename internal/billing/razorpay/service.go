@@ -76,6 +76,10 @@ type CreateOrderResponse struct {
 	KeyID    string `json:"key_id"`
 	Receipt  string `json:"receipt"`
 	PlanTier string `json:"plan_tier"`
+	// BillingInterval is the term this amount was priced for. The client validates
+	// it, so an order that was silently priced monthly cannot be presented as
+	// annual.
+	BillingInterval string `json:"billing_interval"`
 }
 
 // VerifyPaymentRequest contains client-side cryptographic proof of payment.
@@ -109,21 +113,56 @@ func SubscriptionAmount(baseAmount int64, interval string) (int64, error) {
 }
 
 // CreateSubscriptionOrder generates a Razorpay order and saves a pending transaction record.
-func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.UUID, plan license.LicenseTier, currency string) (*CreateOrderResponse, error) {
+//
+// billingInterval is "monthly" or "annual". Annual prefers the tier's own stored
+// annual price and otherwise applies the documented 10x multiplier to the monthly
+// price. This previously took no term at all, so an annual selection was charged
+// the monthly amount with nothing reporting the mismatch.
+func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.UUID, plan license.LicenseTier, currency, billingInterval string) (*CreateOrderResponse, error) {
 	normTier := license.NormalizeTier(plan)
 	curr := strings.ToUpper(strings.TrimSpace(currency))
 	if curr == "" {
 		curr = "INR"
 	}
+	interval := strings.ToLower(strings.TrimSpace(billingInterval))
+	if interval == "" {
+		interval = "monthly"
+	}
+	if interval != "monthly" && interval != "annual" {
+		return nil, fmt.Errorf("unsupported billing interval: %s", billingInterval)
+	}
 
 	var amount int64
 	if s.repo != nil {
-		dbPlan, _ := s.repo.GetPlanConfiguration(ctx, string(normTier))
+		dbPlan, err := s.repo.GetPlanConfiguration(ctx, string(normTier))
+		if err != nil {
+			return nil, fmt.Errorf("could not read plan pricing: %w", err)
+		}
 		if dbPlan != nil {
 			if curr == "USD" {
 				amount = dbPlan.AmountUSD
 			} else {
 				amount = dbPlan.AmountINR
+			}
+			// Prefer the tier's own annual price. Falling back to a multiplier is
+			// a pricing policy, not a measurement, so it is only used when the
+			// tier has no stored annual price.
+			if interval == "annual" {
+				var annual *int64
+				if curr == "USD" {
+					annual = dbPlan.AnnualAmountUSD
+				} else {
+					annual = dbPlan.AnnualAmountINR
+				}
+				if annual != nil {
+					amount = *annual
+				} else {
+					scaled, err := SubscriptionAmount(amount, interval)
+					if err != nil {
+						return nil, err
+					}
+					amount = scaled
+				}
 			}
 		}
 	}
@@ -157,6 +196,13 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 				amount = 149900 // ₹1,499.00
 			}
 		}
+		if interval == "annual" {
+			scaled, err := SubscriptionAmount(amount, interval)
+			if err != nil {
+				return nil, err
+			}
+			amount = scaled
+		}
 	}
 
 	receipt := fmt.Sprintf("rcpt_%s_%d", wsID.String()[:8], time.Now().Unix())
@@ -189,10 +235,14 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 		Amount:      amount,
 		Currency:    curr,
 		PlanTier:    string(normTier),
-		Status:      "created",
-		Receipt:     receipt,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		// Persisted so the webhook and verification paths know which term was
+		// actually charged. Without this an annual purchase reads back as monthly
+		// and the entitlement is provisioned for the wrong term.
+		BillingInterval: interval,
+		Status:          "created",
+		Receipt:         receipt,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
 	}
 
 	if s.repo != nil {
@@ -200,12 +250,13 @@ func (s *BillingService) CreateSubscriptionOrder(ctx context.Context, wsID uuid.
 	}
 
 	return &CreateOrderResponse{
-		OrderID:  orderID,
-		Amount:   amount,
-		Currency: curr,
-		KeyID:    s.keyID,
-		Receipt:  receipt,
-		PlanTier: string(normTier),
+		OrderID:         orderID,
+		Amount:          amount,
+		Currency:        curr,
+		KeyID:           s.keyID,
+		Receipt:         receipt,
+		PlanTier:        string(normTier),
+		BillingInterval: interval,
 	}, nil
 }
 

@@ -117,3 +117,73 @@ func TestRepositorySettingsUnavailable(t *testing.T) {
 	router.ServeHTTP(w, request.WithContext(ctx))
 	require.Equal(t, 503, w.Code)
 }
+
+/**
+ * The per-repository settings tabs edited fourteen fields that the write path then
+ * discarded, and the UI reported a successful save. This pins the contract: the
+ * full configuration document must reach the store instead of being filtered down
+ * to the handful of fields that happen to have fixed backend columns.
+ */
+func TestRepositorySettingsPersistTheFullConfigurationDocument(t *testing.T) {
+	ws, repo := uuid.New(), uuid.New()
+	store := &settingsTransportStore{}
+
+	ctrl := controllers.NewParametersController(store)
+	cliRoutes := controllers.NewCodeManagementController(nil).CLIRepositoriesConfigRoutes(ctrl)
+
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req = req.WithContext(context.WithValue(req.Context(), auth.WorkspaceContextKey, ws))
+			req = req.WithContext(auth.WithAccountContext(req.Context(), &models.AccountProfile{WorkspaceID: ws, Role: models.RoleOwner}))
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Mount("/repositories", cliRoutes)
+
+	body := `{"configValue":{
+		"codeReviewConfig":{
+			"customMessages":{"enabled":true,"welcomeComment":"hi","footerDisclaimer":"d","customPrompt":"p"},
+			"summary":{"generatePRSummary":true,"behaviourForExistingDescription":"append","includeWalkthrough":true,"includeDiagrams":true},
+			"suggestionControl":{"groupingMode":"by_file","limitationType":"file","maxSuggestions":40,"severityLevelFilter":"high","applyFiltersToDrixyRules":false},
+			"reviewOptions":{"security":true,"performance":false,"maintainability":true,"style":true},
+			"linkedRepositories":["acme/other"],
+			"ignoredTitleKeywords":["[WIP]","[DO NOT MERGE]"],
+			"runOnDraft":true,
+			"isRequestChangesActive":true,
+			"pullRequestApprovalActive":true,
+			"enableCommittableSuggestions":false,
+			"ideRulesSyncEnabled":false,
+			"codeReviewVersion":"v2"
+		}}}`
+
+	req := httptest.NewRequest("PATCH", "/repositories/"+repo.String()+"/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code, w.Body.String())
+
+	require.NotNil(t, store.patch.CodeReviewConfig, "the configuration document must reach the store")
+	doc := *store.patch.CodeReviewConfig
+
+	// Spot-check one value from each previously-dropped group.
+	require.Equal(t, map[string]any{"enabled": true, "welcomeComment": "hi", "footerDisclaimer": "d", "customPrompt": "p"}, doc["customMessages"])
+	require.Equal(t, true, doc["runOnDraft"])
+	require.Equal(t, true, doc["isRequestChangesActive"])
+	require.Equal(t, true, doc["pullRequestApprovalActive"])
+	require.Equal(t, false, doc["enableCommittableSuggestions"])
+	require.Equal(t, false, doc["ideRulesSyncEnabled"])
+	require.Equal(t, []any{"acme/other"}, doc["linkedRepositories"])
+	require.Equal(t, []any{"[WIP]", "[DO NOT MERGE]"}, doc["ignoredTitleKeywords"])
+
+	suggestion, ok := doc["suggestionControl"].(map[string]any)
+	require.True(t, ok, "suggestionControl must survive as a nested document")
+	require.Equal(t, "by_file", suggestion["groupingMode"])
+	require.Equal(t, float64(40), suggestion["maxSuggestions"])
+
+	// The repository must stay the one that was addressed: the workspace-wide
+	// parameters endpoint ignores repositoryId, which is why this document does not
+	// travel that way.
+	require.Equal(t, repo, store.repository)
+	require.Equal(t, ws, store.workspace)
+}

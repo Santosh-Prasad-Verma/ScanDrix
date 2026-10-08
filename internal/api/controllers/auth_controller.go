@@ -962,8 +962,12 @@ func (c *AuthController) handleResetPassword(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if len(req.NewPassword) < 8 {
-		http.Error(w, `{"error":"password must be at least 8 characters"}`, http.StatusBadRequest)
+	// Same floor as registration. This was a hardcoded 8 while sign-up enforced
+	// auth.MinPasswordLength (12), so a password rejected at sign-up was accepted
+	// during reset. Only the length is checked here; the account email is not
+	// known until the token is parsed below.
+	if len([]rune(req.NewPassword)) < auth.MinPasswordLength {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("password must be at least %d characters", auth.MinPasswordLength)), http.StatusBadRequest)
 		return
 	}
 
@@ -1025,8 +1029,17 @@ func (c *AuthController) handleResetPassword(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if len(req.NewPassword) < 8 {
-		http.Error(w, `{"error":"password must be at least 8 characters long"}`, http.StatusBadRequest)
+	// The shared policy, matching registration: length floor, maximum, breached
+	// and predictable values. The account email is supplied as an identifier so
+	// a reset cannot set the password to the address it belongs to. The client is
+	// told the minimum length but not which rule fired, so the blocklist cannot be
+	// used as an oracle.
+	if err := auth.ValidatePassword(req.NewPassword, userEmail); err != nil {
+		msg := err.Error()
+		if errors.Is(err, auth.ErrPasswordTooShort) {
+			msg = fmt.Sprintf("password must be at least %d characters long", auth.MinPasswordLength)
+		}
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 		return
 	}
 	if len(req.NewPassword) > auth.MaxBcryptPasswordLength {

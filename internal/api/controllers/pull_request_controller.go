@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
+	domainTypes "github.com/scandrix/backend/internal/platform/domain/types"
 	"github.com/scandrix/backend/internal/platformdata/application/usecases"
 	"github.com/scandrix/backend/internal/review"
 	"github.com/scandrix/backend/pkg/models"
@@ -29,11 +31,21 @@ type PullRequestRepository interface {
 	GetReviewFindings(ctx context.Context, reviewID uuid.UUID, optionalWsID ...uuid.UUID) ([]models.CodeFinding, error)
 }
 
+// PullRequestFileFetcher reads a pull request's diff from the SCM provider.
+//
+// The stored review findings record which paths were reviewed, not how they
+// changed, so the diff, change status and line counts are only available by
+// asking the provider. Implemented by services.SCMPullRequestFileFetcher.
+type PullRequestFileFetcher interface {
+	GetPullRequestFiles(ctx context.Context, wsID, repoID uuid.UUID, prNumber int) ([]*domainTypes.PullRequestFile, error)
+}
+
 // PullRequestController manages PR review executions, facets, digests, and SSE streaming.
 type PullRequestController struct {
 	repo       PullRequestRepository
 	streamHub  *review.StreamHub
 	backfillUC *usecases.BackfillHistoricalPRsUseCase
+	fileFetch  PullRequestFileFetcher
 }
 
 // NewPullRequestController initializes the pull request controller.
@@ -45,6 +57,15 @@ func NewPullRequestController(repo PullRequestRepository, streamHub *review.Stre
 		repo:      repo,
 		streamHub: streamHub,
 	}
+}
+
+// WithPullRequestFileFetcher enables live diff reads from the SCM provider.
+//
+// Without one the /files endpoint reports its absence rather than inventing
+// line counts, which is the honest degraded state.
+func (c *PullRequestController) WithPullRequestFileFetcher(f PullRequestFileFetcher) *PullRequestController {
+	c.fileFetch = f
+	return c
 }
 
 // WithBackfillUseCase configures the historical PR backfill use case.
@@ -437,14 +458,86 @@ func (c *PullRequestController) handleGetFiles(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	files, err := c.repo.GetPullRequestChangedFiles(r.Context(), wsID, repoID, prNum)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed fetching changed files: %s"}`, err.Error()), http.StatusInternalServerError)
+	/**
+	 * Prefer the provider's own view of the diff: it carries the unified patch,
+	 * change status and line counts that stored findings cannot supply.
+	 */
+	if c.fileFetch != nil {
+		providerFiles, fetchErr := c.fileFetch.GetPullRequestFiles(r.Context(), wsID, repoID, prNum)
+		if fetchErr != nil {
+			slog.WarnContext(r.Context(), "SCM diff read failed; reporting reviewed paths without diff detail",
+				"repositoryId", repoID, "pullRequestNumber", prNum, "error", fetchErr)
+			c.writeChangedFilesDegraded(w, wsID, repoID, prNum, "the SCM provider could not be read")
+			return
+		}
+		writeChangedFilesFromProvider(w, providerFiles)
 		return
 	}
 
+	// No fetcher is wired in this deployment. Report what is actually known and
+	// name the absent fields, rather than substituting line counts.
+	slog.Warn("no SCM file fetcher configured; changed files degrade to reviewed paths only")
+	c.writeChangedFilesDegraded(w, wsID, repoID, prNum, "no SCM provider adapter is configured")
+}
+
+// writeChangedFilesFromProvider encodes the provider's real diff data.
+//
+// A file with no patch is reported as an empty string, not as a null: providers
+// legitimately omit patches for binary files and oversized diffs, and that is a
+// real answer rather than an unmeasured field.
+func writeChangedFilesFromProvider(w http.ResponseWriter, files []*domainTypes.PullRequestFile) {
+	out := make([]models.PullRequestChangedFile, 0, len(files))
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		file := models.PullRequestChangedFile{FilePath: f.Filename}
+		if f.Status != "" {
+			status := f.Status
+			file.Status = &status
+		}
+		additions, deletions := f.Additions, f.Deletions
+		file.Additions = &additions
+		file.Deletions = &deletions
+		patch := f.Patch
+		file.Patch = &patch
+		out = append(out, file)
+	}
+	writeChangedFiles(w, models.PullRequestChangedFilesResponse{Data: out, Unavailable: []models.AnalyticsUnavailable{}})
+}
+
+// writeChangedFilesDegraded reports only the paths a review touched, naming each
+// diff field as unavailable. The stored findings do contain the path set, so this
+// is a real partial result rather than an empty one.
+func (c *PullRequestController) writeChangedFilesDegraded(w http.ResponseWriter, wsID, repoID uuid.UUID, prNumber int, detail string) {
+	files := []models.PullRequestChangedFile{}
+	if c.repo != nil {
+		stored, err := c.repo.GetPullRequestChangedFiles(context.Background(), wsID, repoID, prNumber)
+		if err != nil {
+			slog.WarnContext(context.Background(), "stored changed-file lookup failed during degradation",
+				"repositoryId", repoID, "pullRequestNumber", prNumber, "error", err)
+		} else if stored != nil {
+			files = stored
+		}
+	}
+	writeChangedFiles(w, models.PullRequestChangedFilesResponse{
+		Data: files,
+		Unavailable: []models.AnalyticsUnavailable{
+			{Metric: "status", Reason: models.ReasonNoDataSource, Detail: detail},
+			{Metric: "additions", Reason: models.ReasonNoDataSource, Detail: detail},
+			{Metric: "deletions", Reason: models.ReasonNoDataSource, Detail: detail},
+			{Metric: "patch", Reason: models.ReasonNoDataSource, Detail: detail},
+		},
+	})
+}
+
+func writeChangedFiles(w http.ResponseWriter, response models.PullRequestChangedFilesResponse) {
+	if response.Data == nil {
+		response.Data = []models.PullRequestChangedFile{}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(files)
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (c *PullRequestController) handleBackfillHistoricalPRs(w http.ResponseWriter, r *http.Request) {

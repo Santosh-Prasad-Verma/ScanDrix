@@ -105,7 +105,7 @@ func TestBillingServiceOrderCreationAndUpgrade(t *testing.T) {
 	svc.SetClient(client)
 
 	// 1. Create Order
-	orderResp, err := svc.CreateSubscriptionOrder(ctx, wsID, license.TierTeam, "INR")
+	orderResp, err := svc.CreateSubscriptionOrder(ctx, wsID, license.TierTeam, "INR", "monthly")
 	if err != nil {
 		t.Fatalf("failed creating order: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestBillingServiceDeveloperOrderAndUpgrade(t *testing.T) {
 	svc := razorpay.NewBillingService(nil, limiter, noopMailer, "https://app.scandrix.dev", "rzp_test_key", secret, "wh_sec_123")
 	svc.SetClient(client)
 
-	orderResp, err := svc.CreateSubscriptionOrder(ctx, wsID, license.TierDeveloper, "INR")
+	orderResp, err := svc.CreateSubscriptionOrder(ctx, wsID, license.TierDeveloper, "INR", "monthly")
 	if err != nil {
 		t.Fatalf("failed creating order: %v", err)
 	}

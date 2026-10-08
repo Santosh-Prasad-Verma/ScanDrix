@@ -398,26 +398,23 @@ func (c *IntegrationController) handleTestConnection(w http.ResponseWriter, r *h
 		req.Provider = models.ProviderGitHub
 	}
 
-	account := "scandrix-bot[app]"
-	success := true
-	message := fmt.Sprintf("Successfully verified connection with %s API", req.Provider)
+	account := ""
+	success := false
+	message := fmt.Sprintf("No active credentials found for %s in workspace", req.Provider)
 
 	if c.repo != nil && wsID != uuid.Nil {
 		conns, err := c.repo.ListIntegrationConnections(r.Context(), wsID)
 		if err == nil {
-			found := false
 			for _, conn := range conns {
 				if conn.Provider == req.Provider && conn.IsConnected {
-					found = true
-					if conn.AccountName != "" {
-						account = conn.AccountName
+					success = true
+					account = conn.AccountName
+					if account == "" {
+						account = "scandrix-bot[app]"
 					}
+					message = fmt.Sprintf("Successfully verified connection with %s API", req.Provider)
 					break
 				}
-			}
-			if !found && len(conns) > 0 {
-				success = false
-				message = fmt.Sprintf("No active credentials found for %s in workspace", req.Provider)
 			}
 		}
 	}
