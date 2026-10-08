@@ -32,6 +32,8 @@ jobs:
             --exclude 'node_modules' \
             --exclude '.github' \
             --exclude 'scandrix-website' \
+            --exclude 'scandrix-dashboard' \
+            --exclude '.agents' \
             ./ /home/ubuntu/ScanDrix/
 
           cd /home/ubuntu/ScanDrix
