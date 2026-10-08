@@ -60,7 +60,11 @@ func TestRepositorySettingsPostgres(t *testing.T) {
 	setup, err := pgxpool.NewWithConfig(ctx, config.Copy())
 	require.NoError(t, err)
 	defer setup.Close()
-	for _, filename := range []string{"../../../migrations/001_initial_schema.sql", "../../../migrations/044_repository_review_settings.sql"} {
+	for _, filename := range []string{
+		"../../../migrations/001_initial_schema.sql",
+		"../../../migrations/044_repository_review_settings.sql",
+		"../../../migrations/048_repository_code_review_config.sql",
+	} {
 		migration, err := os.ReadFile(filename)
 		require.NoError(t, err)
 		_, err = setup.Exec(ctx, string(migration))
