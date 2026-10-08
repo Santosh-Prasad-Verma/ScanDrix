@@ -25,52 +25,52 @@ func RenderInvoiceReceipt(inv InvoiceDetails) (subject, htmlBody string) {
 		<p>We have successfully processed your payment. Here is the itemized tax invoice and receipt for your records.</p>
 
 		<!-- Receipt Header Metadata -->
-		<table border="0" cellpadding="4" cellspacing="0" width="100%%" style="margin: 20px 0; font-size: 13px; color: #4b5563;">
+		<table border="0" cellpadding="4" cellspacing="0" width="100%%" style="margin: 20px 0; font-size: 13px; color: #a1a1aa;">
 			<tr>
 				<td style="width: 50%%;">
-					<strong>Invoice Number:</strong> %s<br>
-					<strong>Date of Issue:</strong> %s<br>
-					<strong>Payment Status:</strong> <span style="color: #059669; font-weight: 700;">PAID</span>
+					<strong style="color: #ffffff;">Invoice Number:</strong> %s<br>
+					<strong style="color: #ffffff;">Date of Issue:</strong> %s<br>
+					<strong style="color: #ffffff;">Payment Status:</strong> <span style="display: inline-block; background-color: rgba(201, 243, 107, 0.15); color: #c9f36b; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(201, 243, 107, 0.3); font-size: 11px;">PAID</span>
 				</td>
 				<td style="width: 50%%; text-align: right;">
-					<strong>Billed To:</strong> %s<br>
-					<strong>Workspace:</strong> %s<br>
-					<strong>Payment ID:</strong> %s
+					<strong style="color: #ffffff;">Billed To:</strong> %s<br>
+					<strong style="color: #ffffff;">Workspace:</strong> %s<br>
+					<strong style="color: #ffffff;">Payment ID:</strong> %s
 				</td>
 			</tr>
 		</table>
 
 		<!-- Itemized Charges Table -->
-		<table border="0" cellpadding="10" cellspacing="0" width="100%%" style="margin: 20px 0; border-collapse: collapse; border: 1px solid #e5e7eb; font-size: 14px;">
+		<table border="0" cellpadding="10" cellspacing="0" width="100%%" style="margin: 20px 0; border-collapse: collapse; border: 1px solid #26282f; font-size: 14px; background-color: #121316;">
 			<thead>
-				<tr style="background-color: #f9fafb; border-bottom: 1px solid #e5e7eb; color: #374151; font-weight: 600;">
+				<tr style="background-color: #16171b; border-bottom: 1px solid #26282f; color: #ffffff; font-weight: 600;">
 					<th align="left" style="padding: 10px 12px;">Description</th>
 					<th align="center" style="padding: 10px 12px; width: 60px;">Qty</th>
 					<th align="right" style="padding: 10px 12px; width: 120px;">Amount</th>
 				</tr>
 			</thead>
 			<tbody>
-				<tr style="border-bottom: 1px solid #f3f4f6;">
-					<td style="padding: 12px;">
-						<strong>ScanDrix %s Subscription</strong><br>
-						<span style="font-size: 12px; color: #6b7280;">10,000,000 monthly tokens, automated AI code reviews, multi-provider routing</span>
+				<tr style="border-bottom: 1px solid #1f2026;">
+					<td style="padding: 12px; color: #d4d4d8;">
+						<strong style="color: #ffffff;">ScanDrix %s Subscription</strong><br>
+						<span style="font-size: 12px; color: #a1a1aa;">10,000,000 monthly tokens, automated AI code reviews, multi-provider routing</span>
 					</td>
-					<td align="center" style="padding: 12px;">1</td>
-					<td align="right" style="padding: 12px; font-weight: 600;">%s</td>
+					<td align="center" style="padding: 12px; color: #d4d4d8;">1</td>
+					<td align="right" style="padding: 12px; font-weight: 700; color: #ffffff;">%s</td>
 				</tr>
-				<tr style="background-color: #f9fafb; font-weight: 700; color: #111827;">
+				<tr style="background-color: #16171b; font-weight: 700; color: #ffffff;">
 					<td colspan="2" align="right" style="padding: 12px;">Total Paid (%s):</td>
-					<td align="right" style="padding: 12px; color: #111827; font-size: 16px;">%s</td>
+					<td align="right" style="padding: 12px; color: #c9f36b; font-size: 16px;">%s</td>
 				</tr>
 			</tbody>
 		</table>
 
-		<div style="background-color: #f9fafb; border-radius: 6px; padding: 14px 16px; margin: 20px 0; font-size: 12px; color: #6b7280;">
-			<strong>Payment Information:</strong><br>
+		<div style="background-color: #16171b; border: 1px solid #26282f; border-radius: 6px; padding: 14px 16px; margin: 20px 0; font-size: 12px; color: #a1a1aa;">
+			<strong style="color: #ffffff;">Payment Information:</strong><br>
 			Processed securely via %s (Order: %s). Next renewal scheduled for %s.
 		</div>
 
-		<p style="font-size: 13px; color: #6b7280;">
+		<p style="font-size: 13px; color: #71717a;">
 			You can manage your subscription, add seats, or download VAT/GST breakdown PDFs at any time through the ScanDrix Billing Portal.
 		</p>
 	`,

@@ -5,19 +5,19 @@ import (
 	"time"
 )
 
-// Brand Color Palette (ScanDrix enterprise brand system)
+// Brand Color Palette (ScanDrix obsidian dark & neon lime system)
 const (
-	ColorPrimaryLight = "#f8b76d" // Brand primary light accent / buttons
-	ColorPrimaryDark  = "#443024" // Button text contrast on primary-light
-	ColorHeaderBG     = "#101019" // Dark header banner background
-	ColorPageBG       = "#f4f4f5" // Neutral light page background
-	ColorCardBG       = "#ffffff" // White card container background
-	ColorTextPrimary  = "#1f2937" // Dark slate primary text
-	ColorTextMuted    = "#6b7280" // Muted secondary text
-	ColorBorder       = "#e5e7eb" // Subtle divider and table borders
-	ColorSuccess      = "#10b981" // Green status accent
-	ColorDanger       = "#ef4444" // Red alert accent
-	ColorWarning      = "#f59e0b" // Amber warning accent
+	ColorPrimaryLight = "#c9f36b" // Brand neon lime accent / buttons
+	ColorPrimaryDark  = "#080807" // Pitch black button text on neon lime
+	ColorHeaderBG     = "#0a0a0d" // Deep obsidian header background
+	ColorPageBG       = "#050505" // Pitch dark page background
+	ColorCardBG       = "#0e0f12" // Sleek dark card container background
+	ColorTextPrimary  = "#ffffff" // Crisp pure white headings & text
+	ColorTextMuted    = "#9ca3af" // Clean muted gray text
+	ColorBorder       = "#222428" // Sleek 1px dark border
+	ColorSuccess      = "#c9f36b" // Neon lime status accent
+	ColorDanger       = "#f87171" // Red alert accent
+	ColorWarning      = "#fbbf24" // Amber warning accent
 )
 
 // InvoiceDetails encapsulates full tax and itemized subscription billing data.

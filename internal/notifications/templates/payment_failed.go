@@ -20,15 +20,15 @@ func RenderPaymentFailed(subscriberName, orgName, planTier, orderID, failureReas
 		<p>Hi <strong>%s</strong>,</p>
 		<p>We recently attempted to process payment for your <strong>%s</strong> subscription for workspace <strong>%s</strong>, but the transaction was declined.</p>
 
-		<div style="background-color: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; padding: 16px 20px; margin: 24px 0;">
-			<h4 style="margin: 0 0 8px 0; color: #991b1b; font-size: 14px; font-weight: 700;">Transaction Details:</h4>
-			<ul style="margin: 0; padding-left: 20px; color: #7f1d1d; font-size: 13px;">
+		<div style="background-color: #1a1415; border: 1px solid #3b1d22; border-left: 4px solid #ef4444; border-radius: 0 8px 8px 0; padding: 18px 20px; margin: 24px 0;">
+			<h4 style="margin: 0 0 10px 0; color: #f87171; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">Transaction Details:</h4>
+			<ul style="margin: 0; padding-left: 20px; color: #fca5a5; font-size: 13px; line-height: 1.6;">
 				<li><strong>Order ID:</strong> %s</li>
 				<li><strong>Reason:</strong> %s</li>
 			</ul>
 		</div>
 
-		<p style="color: #4b5563;">
+		<p style="color: #a1a1aa; font-size: 14px;">
 			To prevent disruption to your team's pull request reviews and to maintain access to frontier AI models, please update your payment method or retry the checkout below.
 		</p>
 	`, safeSubscriber, safeTier, safeOrg, safeOrderID, safeReason)

@@ -22,33 +22,39 @@ func RenderNewUserWelcome(recipientName, dashboardURL string) (subject, htmlBody
 			Your <strong>ScanDrix</strong> account is officially verified and active! You're ready to bring autonomous, multi-agent AI code reviews and continuous AST security scanning directly to your pull requests.
 		</p>
 
-		<div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 24px 0;">
-			<h3 style="margin: 0 0 14px 0; color: #1e293b; font-size: 16px; font-weight: 700;">Quickstart Guide:</h3>
+		<div style="background-color: #16171b; border: 1px solid #26282f; border-radius: 8px; padding: 22px; margin: 24px 0;">
+			<h3 style="margin: 0 0 16px 0; color: #ffffff; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">Quickstart Guide:</h3>
 			<table border="0" cellpadding="0" cellspacing="0" width="100%%" style="font-size: 14px; line-height: 1.6;">
 				<tr>
-					<td style="vertical-align: top; width: 28px; padding-bottom: 14px; font-weight: 700; color: #f8b76d;">1.</td>
-					<td style="padding-bottom: 14px; color: #334155;">
-						<strong>Connect Your Repositories:</strong> Link your GitHub, GitLab, Bitbucket, or Azure DevOps repos in your workspace settings for automatic PR review bots.
+					<td style="vertical-align: top; width: 32px; padding-bottom: 14px;">
+						<span style="display:inline-block; width:22px; height:22px; line-height:22px; text-align:center; background-color:rgba(201,243,107,0.15); color:#c9f36b; font-weight:700; border-radius:4px; border:1px solid rgba(201,243,107,0.3); font-size:12px;">1</span>
+					</td>
+					<td style="padding-bottom: 14px; color: #d4d4d8;">
+						<strong style="color: #ffffff;">Connect Your Repositories:</strong> Link your GitHub, GitLab, Bitbucket, or Azure DevOps repos in your workspace settings for automatic PR review bots.
 					</td>
 				</tr>
 				<tr>
-					<td style="vertical-align: top; width: 28px; padding-bottom: 14px; font-weight: 700; color: #f8b76d;">2.</td>
-					<td style="padding-bottom: 14px; color: #334155;">
-						<strong>Install the ScanDrix CLI:</strong> Run security audits directly in your terminal before pushing:<br>
-						<code style="display: inline-block; background-color: #0f172a; color: #f8fafc; padding: 5px 10px; border-radius: 4px; font-family: monospace; font-size: 13px; margin-top: 6px;">curl -fsSL https://app.scandrix.dev/install | sh</code>
+					<td style="vertical-align: top; width: 32px; padding-bottom: 14px;">
+						<span style="display:inline-block; width:22px; height:22px; line-height:22px; text-align:center; background-color:rgba(201,243,107,0.15); color:#c9f36b; font-weight:700; border-radius:4px; border:1px solid rgba(201,243,107,0.3); font-size:12px;">2</span>
+					</td>
+					<td style="padding-bottom: 14px; color: #d4d4d8;">
+						<strong style="color: #ffffff;">Install the ScanDrix CLI:</strong> Run security audits directly in your terminal before pushing:<br>
+						<code style="display: inline-block; background-color: #080807; color: #c9f36b; padding: 6px 12px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 6px; border: 1px solid #26282f;">curl -fsSL https://get.scandrix.dev/install | sh</code>
 					</td>
 				</tr>
 				<tr>
-					<td style="vertical-align: top; width: 28px; font-weight: 700; color: #f8b76d;">3.</td>
-					<td style="color: #334155;">
-						<strong>Define Drixy Rules:</strong> Enforce custom AST policy-as-code rules, architecture boundaries, and taint flow analysis.
+					<td style="vertical-align: top; width: 32px;">
+						<span style="display:inline-block; width:22px; height:22px; line-height:22px; text-align:center; background-color:rgba(201,243,107,0.15); color:#c9f36b; font-weight:700; border-radius:4px; border:1px solid rgba(201,243,107,0.3); font-size:12px;">3</span>
+					</td>
+					<td style="color: #d4d4d8;">
+						<strong style="color: #ffffff;">Define Drixy Rules:</strong> Enforce custom AST policy-as-code rules, architecture boundaries, and taint flow analysis.
 					</td>
 				</tr>
 			</table>
 		</div>
 
-		<p style="color: #475569; font-size: 14px;">
-			Have questions or need enterprise onboarding support? Explore our <a href="https://scandrix.dev/docs" style="color: #2563eb; text-decoration: underline;">documentation</a> or reply directly to this email to reach our team.
+		<p style="color: #a1a1aa; font-size: 14px;">
+			Have questions or need enterprise onboarding support? Explore our <a href="https://scandrix.dev/docs" style="color: #c9f36b; text-decoration: underline;">documentation</a> or reply directly to this email to reach our team.
 		</p>
 	`, safeName)
 
