@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScanDrix Email Templates Previewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; color: #111827; display: flex; height: 100vh; overflow: hidden; }
+    #sidebar { width: 320px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; }
+    .header { padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
+    .logo-text { font-size: 18px; font-weight: 800; color: #000000; letter-spacing: -0.5px; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #f3f4f6; color: #374151; font-weight: 600; border: 1px solid #e5e7eb; }
+    .nav-list { list-style: none; overflow-y: auto; flex: 1; padding: 12px; }
+    .nav-item { padding: 12px 16px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s ease; border: 1px solid transparent; }
+    .nav-item:hover { background: #f9fafb; border-color: #e5e7eb; }
+    .nav-item.active { background: #000000; border-color: #000000; }
+    .nav-item.active .nav-title { color: #ffffff; }
+    .nav-item.active .nav-subject { color: #9ca3af; }
+    .nav-title { font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 3px; }
+    .nav-subject { font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #main { flex: 1; display: flex; flex-direction: column; background: #f9fafb; }
+    #topbar { padding: 12px 24px; background: #ffffff; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
+    .topbar-info { display: flex; flex-direction: column; }
+    .active-subject { font-size: 14px; font-weight: 600; color: #111827; }
+    .viewport-controls { display: flex; gap: 8px; }
+    .viewport-btn { background: #ffffff; border: 1px solid #e5e7eb; color: #4b5563; padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.2s; font-weight: 500; }
+    .viewport-btn.active, .viewport-btn:hover { color: #ffffff; background: #000000; border-color: #000000; }
+    #preview-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 24px; overflow: auto; background: #f3f4f6; }
+    #preview-frame { border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08); background: #ffffff; transition: width 0.2s ease; height: 100%; width: 100%; max-width: 600px; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div class="header">
+      <div class="logo-text">ScanDrix</div>
+      <div class="badge">Clean White &amp; Black</div>
+    </div>
+    <ul class="nav-list" id="nav-list"></ul>
+  </div>
+  <div id="main">
+    <div id="topbar">
+      <div class="topbar-info">
+        <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280;">Subject Line</span>
+        <span class="active-subject" id="active-subject">...</span>
+      </div>
+      <div class="viewport-controls">
+        <button class="viewport-btn active" onclick="setMode('desktop')">Desktop (600px)</button>
+        <button class="viewport-btn" onclick="setMode('mobile')">Mobile (390px)</button>
+        <button class="viewport-btn" onclick="openRaw()">Open HTML ↗</button>
+      </div>
+    </div>
+    <div id="preview-container">
+      <iframe id="preview-frame" src=""></iframe>
+    </div>
+  </div>
+
+  <script>
+    const emailData = [
+      { id: "email_verification", name: "Email Verification", subject: "Verify your email to activate ScanDrix", file: "email_verification.html" },
+      { id: "user_welcome", name: "New User Welcome", subject: "Welcome to ScanDrix — Let's secure your code! 🚀", file: "user_welcome.html" },
+      { id: "subscription_welcome", name: "Subscription Welcome", subject: "Welcome to ScanDrix Pro Team Plan! Your frontier AI models are now unlocked", file: "subscription_welcome.html" },
+      { id: "team_invite", name: "Team Invitation", subject: "Sarah Chen invited you to join Acme Engineering on ScanDrix", file: "team_invite.html" },
+      { id: "password_reset", name: "Password Reset", subject: "Reset your ScanDrix Password", file: "password_reset.html" },
+      { id: "invoice_receipt", name: "Invoice Receipt", subject: "Your ScanDrix Invoice INV-2026-0042 ($149.00 USD)", file: "invoice_receipt.html" },
+      { id: "payment_failed", name: "Payment Failed Alert", subject: "Action Required: Payment failed for ScanDrix Acme Engineering", file: "payment_failed.html" },
+      { id: "spend_limit_alert", name: "Spend Limit Alert (85%)", subject: "Alert: Workspace Acme Engineering has approaching its monthly token quota (85%)", file: "spend_limit_alert.html" },
+    ];
+
+    let current = emailData[0];
+    const navList = document.getElementById("nav-list");
+    const frame = document.getElementById("preview-frame");
+    const subjectEl = document.getElementById("active-subject");
+
+    emailData.forEach((item, idx) => {
+      const li = document.createElement("li");
+      li.className = "nav-item" + (idx === 0 ? " active" : "");
+      li.innerHTML = '<div class="nav-title">' + item.name + '</div><div class="nav-subject">' + item.subject + '</div>';
+      li.onclick = () => selectEmail(item, li);
+      navList.appendChild(li);
+    });
+
+    function selectEmail(item, el) {
+      current = item;
+      document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+      el.classList.add("active");
+      subjectEl.textContent = item.subject;
+      frame.src = item.file;
+    }
+
+    function setMode(mode) {
+      document.querySelectorAll(".viewport-btn").forEach(b => b.classList.remove("active"));
+      if (mode === "desktop") {
+        frame.style.maxWidth = "680px";
+        event.target.classList.add("active");
+      } else if (mode === "mobile") {
+        frame.style.maxWidth = "390px";
+        event.target.classList.add("active");
+      }
+    }
+
+    function openRaw() {
+      if (current) window.open(current.file, "_blank");
+    }
+
+    selectEmail(emailData[0], navList.firstChild);
+  </script>
+</body>
+</html>

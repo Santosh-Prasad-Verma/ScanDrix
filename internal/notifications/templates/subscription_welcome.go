@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// RenderSubscriptionWelcome renders the onboarding email sent immediately upon plan upgrade.
+// RenderSubscriptionWelcome renders the clean white-and-black onboarding email sent immediately upon plan upgrade.
 func RenderSubscriptionWelcome(subscriberName, orgName, planTier string, monthlyTokens int64, allocatedModels []string, dashboardURL string) (subject, htmlBody string) {
 	normTier := strings.ToUpper(strings.TrimSpace(planTier))
 	if normTier == "PRO" {
@@ -23,66 +23,40 @@ func RenderSubscriptionWelcome(subscriberName, orgName, planTier string, monthly
 	safePlanTitle := html.EscapeString(planTitle)
 
 	subject = fmt.Sprintf("Welcome to ScanDrix %s! Your frontier AI models are now unlocked", safePlanTitle)
-	preview := fmt.Sprintf("Your %s subscription for %s is now active. Enjoy frontier model access and elevated token limits.", safePlanTitle, safeOrg)
+	preview := fmt.Sprintf("Your %s subscription for %s is now active.", safePlanTitle, safeOrg)
 
 	var modelPills strings.Builder
 	for _, m := range allocatedModels {
 		modelPills.WriteString(fmt.Sprintf(
-			`<span style="display: inline-block; background-color: #16171b; color: #ffffff; font-size: 12px; font-weight: 600; padding: 6px 12px; margin: 4px 6px 4px 0; border-radius: 6px; border: 1px solid #26282f;"><span style="color: #c9f36b; margin-right: 4px;">&#9679;</span>%s</span>`,
+			`<span style="display: inline-block; background-color: #f3f4f6; color: #111827; font-size: 12px; font-weight: 500; padding: 4px 10px; margin: 3px 6px 3px 0; border-radius: 4px;">%s</span>`,
 			html.EscapeString(m),
 		))
 	}
 
-	content := fmt.Sprintf(`
-		<p>Hi <strong>%s</strong>,</p>
-		<p>Thank you for subscribing! Your workspace <strong>%s</strong> has been successfully upgraded to the <strong>%s</strong>.</p>
+	tokensStr := formatNumber(monthlyTokens)
 
-		<div style="background-color: #16171b; border: 1px solid #26282f; border-radius: 8px; padding: 22px; margin: 24px 0;">
-			<h3 style="margin: 0 0 14px 0; color: #ffffff; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">
-				Plan Entitlements &amp; Capabilities
-			</h3>
-			<table border="0" cellpadding="6" cellspacing="0" width="100%%" style="font-size: 14px;">
+	content := fmt.Sprintf(`
+		<p style="margin: 0 0 16px 0;">Hi <strong>%s</strong>,</p>
+		<p style="margin: 0 0 20px 0;">Thank you for subscribing! Your workspace <strong>%s</strong> is now active on the <strong>%s</strong>.</p>
+
+		<div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 18px 20px; margin: 24px 0;">
+			<table border="0" cellpadding="4" cellspacing="0" width="100%%" style="font-size: 14px; color: #374151;">
 				<tr>
-					<td style="color: #a1a1aa; width: 45%%;">Monthly Token Quota:</td>
-					<td style="color: #ffffff; font-weight: 700;">%s Tokens</td>
+					<td style="color: #6b7280; width: 45%%; padding-bottom: 8px;">Monthly Quota:</td>
+					<td style="font-weight: 600; color: #111827; padding-bottom: 8px;">%s Tokens</td>
 				</tr>
 				<tr>
-					<td style="color: #a1a1aa;">High-Speed Burst Limit:</td>
-					<td style="color: #ffffff; font-weight: 600;">500,000 Tokens / min</td>
-				</tr>
-				<tr>
-					<td style="color: #a1a1aa;">Concurrent PR Reviews:</td>
-					<td style="color: #ffffff; font-weight: 600;">10 Parallel Workers</td>
-				</tr>
-				<tr>
-					<td style="color: #a1a1aa;">Enterprise Features:</td>
-					<td style="color: #c9f36b; font-weight: 600;">SAML SSO, SCIM, Custom Rules, Proof-of-Fix</td>
+					<td style="color: #6b7280; vertical-align: top;">Unlocked Models:</td>
+					<td>%s</td>
 				</tr>
 			</table>
 		</div>
 
-		<h4 style="margin: 20px 0 10px 0; color: #ffffff; font-size: 14px; font-weight: 700;">Unlocked Frontier AI Models:</h4>
-		<div style="margin-bottom: 24px;">
-			%s
-		</div>
-
-		<p style="color: #a1a1aa; font-size: 14px;">
-			All team pull requests submitted to your connected GitHub, GitLab, Bitbucket, and Azure DevOps repositories will now automatically leverage these frontier review engines.
+		<p style="margin: 0; font-size: 14px; color: #6b7280;">
+			Your team can now run automated reviews and enforce custom AST guardrails. If you have any questions, our engineering team is here to help.
 		</p>
-	`, safeSubscriber, safeOrg, safePlanTitle, formatNumber(monthlyTokens), modelPills.String())
+	`, safeSubscriber, safeOrg, safePlanTitle, tokensStr, modelPills.String())
 
-	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("Welcome to ScanDrix %s", safePlanTitle), content, "Open Developer Dashboard", dashboardURL)
+	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("Your %s is Active", safePlanTitle), content, "Open Workspace Dashboard", dashboardURL)
 	return subject, htmlBody
-}
-
-func formatNumber(n int64) string {
-	in := fmt.Sprintf("%d", n)
-	var out []rune
-	for i, r := range in {
-		if i > 0 && (len(in)-i)%3 == 0 {
-			out = append(out, ',')
-		}
-		out = append(out, r)
-	}
-	return string(out)
 }

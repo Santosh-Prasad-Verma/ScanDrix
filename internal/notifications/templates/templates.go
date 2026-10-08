@@ -5,19 +5,19 @@ import (
 	"time"
 )
 
-// Brand Color Palette (ScanDrix obsidian dark & neon lime system)
+// Brand Color Palette (ScanDrix clean white and black minimalist system)
 const (
-	ColorPrimaryLight = "#c9f36b" // Brand neon lime accent / buttons
-	ColorPrimaryDark  = "#080807" // Pitch black button text on neon lime
-	ColorHeaderBG     = "#0a0a0d" // Deep obsidian header background
-	ColorPageBG       = "#050505" // Pitch dark page background
-	ColorCardBG       = "#0e0f12" // Sleek dark card container background
-	ColorTextPrimary  = "#ffffff" // Crisp pure white headings & text
-	ColorTextMuted    = "#9ca3af" // Clean muted gray text
-	ColorBorder       = "#222428" // Sleek 1px dark border
-	ColorSuccess      = "#c9f36b" // Neon lime status accent
-	ColorDanger       = "#f87171" // Red alert accent
-	ColorWarning      = "#fbbf24" // Amber warning accent
+	ColorPrimaryLight = "#000000" // Crisp black CTA button
+	ColorPrimaryDark  = "#ffffff" // Pure white text on CTA button
+	ColorHeaderBG     = "#ffffff" // Pure white header
+	ColorPageBG       = "#f9fafb" // Crisp light page background
+	ColorCardBG       = "#ffffff" // Pure white card container
+	ColorTextPrimary  = "#111827" // Deep black headings and primary text
+	ColorTextMuted    = "#6b7280" // Refined slate gray secondary text
+	ColorBorder       = "#e5e7eb" // Subtle clean 1px border
+	ColorSuccess      = "#10b981" // Emerald green status accent
+	ColorDanger       = "#ef4444" // Red alert accent
+	ColorWarning      = "#f59e0b" // Amber warning accent
 )
 
 // InvoiceDetails encapsulates full tax and itemized subscription billing data.
@@ -47,3 +47,27 @@ func GenerateInvoiceNumber(orderID string) string {
 	}
 	return fmt.Sprintf("INV-%d-%s", time.Now().Year(), suffix)
 }
+
+// formatNumber formats an integer with comma separators (e.g. 10,000,000).
+func formatNumber(n int64) string {
+	in := fmt.Sprintf("%d", n)
+	if len(in) <= 3 {
+		return in
+	}
+	var out []byte
+	rem := len(in) % 3
+	if rem > 0 {
+		out = append(out, in[:rem]...)
+		if len(in) > rem {
+			out = append(out, ',')
+		}
+	}
+	for i := rem; i < len(in); i += 3 {
+		out = append(out, in[i:i+3]...)
+		if i+3 < len(in) {
+			out = append(out, ',')
+		}
+	}
+	return string(out)
+}
+
