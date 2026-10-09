@@ -32,7 +32,7 @@ jobs:
             output_name: scandrix-cli-windows-amd64.exe
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -80,7 +80,7 @@ jobs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download All Release Binaries
         uses: actions/download-artifact@v4
