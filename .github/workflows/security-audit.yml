@@ -61,7 +61,7 @@ jobs:
           gosec -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test -exclude-dir=.agents ./...
 
       - name: Upload SARIF Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: gosec-security-report
