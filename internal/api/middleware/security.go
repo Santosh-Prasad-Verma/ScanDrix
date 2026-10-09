@@ -212,6 +212,12 @@ func CSRFProtection(allowedOrigins []string) func(http.Handler) http.Handler {
 					next.ServeHTTP(w, r)
 					return
 				}
+				// Allow official domain and Vercel preview environments
+				if strings.HasSuffix(originNorm, ".scandrix.dev") || originNorm == "https://scandrix.dev" ||
+					strings.HasSuffix(originNorm, ".vercel.app") {
+					next.ServeHTTP(w, r)
+					return
+				}
 				if len(allowedOrigins) > 0 && !allowedMap[originNorm] {
 					http.Error(w, `{"error":"forbidden: invalid request origin for state-changing request"}`, http.StatusForbidden)
 					return
