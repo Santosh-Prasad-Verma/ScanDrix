@@ -10,9 +10,16 @@ import (
 )
 
 func main() {
+	_ = os.Setenv("EXPORT_LOCAL_PREVIEWS", "true")
+	repoRoot := "."
+	if _, err := os.Stat("email_previews"); os.IsNotExist(err) {
+		if _, err := os.Stat("../email_previews"); err == nil {
+			repoRoot = ".."
+		}
+	}
 	outDirs := []string{
-		"/home/tarun/Videos/kodus-ai/ScanDrix/email_previews",
-		"/home/tarun/Videos/kodus-ai/ScanDrix/scandrix-website/public/email-previews",
+		filepath.Join(repoRoot, "email_previews"),
+		filepath.Join(repoRoot, "scandrix-website/public/email-previews"),
 	}
 
 	for _, dir := range outDirs {
@@ -206,46 +213,139 @@ func main() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ScanDrix Email Templates Previewer</title>
+  <title>ScanDrix Email Templates · Brand Theme & Noise Effect</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; color: #111827; display: flex; height: 100vh; overflow: hidden; }
-    #sidebar { width: 340px; background: #ffffff; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; }
-    .header { padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
-    .logo-text { font-size: 18px; font-weight: 800; color: #000000; letter-spacing: -0.5px; }
-    .badge { font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #f3f4f6; color: #374151; font-weight: 600; border: 1px solid #e5e7eb; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      background: #060812; 
+      color: #f8fafc; 
+      display: flex; 
+      height: 100vh; 
+      overflow: hidden; 
+    }
+    #sidebar { 
+      width: 350px; 
+      background: #0a0e1c; 
+      border-right: 1px solid rgba(255, 255, 255, 0.08); 
+      display: flex; 
+      flex-direction: column; 
+    }
+    .header { 
+      padding: 20px 24px; 
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
+      display: flex; 
+      align-items: center; 
+      justify-content: space-between; 
+      background: linear-gradient(180deg, #0d152a 0%, #0a0e1c 100%);
+    }
+    .logo-container { display: flex; align-items: center; gap: 10px; }
+    .logo-text { font-size: 18px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }
+    .badge { 
+      font-size: 10px; 
+      padding: 3px 8px; 
+      border-radius: 9999px; 
+      background: rgba(239, 133, 87, 0.15); 
+      color: #fdba74; 
+      font-weight: 700; 
+      border: 1px solid rgba(239, 133, 87, 0.35); 
+      text-transform: uppercase; 
+      letter-spacing: 0.05em; 
+    }
     .nav-list { list-style: none; overflow-y: auto; flex: 1; padding: 12px; }
-    .category-header { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #9ca3af; padding: 12px 16px 4px 16px; }
-    .nav-item { padding: 10px 16px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s ease; border: 1px solid transparent; }
-    .nav-item:hover { background: #f9fafb; border-color: #e5e7eb; }
-    .nav-item.active { background: #000000; border-color: #000000; }
+    .category-header { 
+      font-size: 10.5px; 
+      font-weight: 700; 
+      text-transform: uppercase; 
+      letter-spacing: 0.06em; 
+      color: #ef8557; 
+      padding: 14px 14px 6px 14px; 
+    }
+    .nav-item { 
+      padding: 11px 14px; 
+      border-radius: 8px; 
+      margin-bottom: 4px; 
+      cursor: pointer; 
+      transition: all 0.15s ease; 
+      border: 1px solid transparent; 
+    }
+    .nav-item:hover { background: #11182c; border-color: rgba(255, 255, 255, 0.06); }
+    .nav-item.active { 
+      background: linear-gradient(135deg, rgba(239, 133, 87, 0.18) 0%, rgba(37, 99, 235, 0.22) 100%); 
+      border-color: rgba(239, 133, 87, 0.4); 
+    }
     .nav-item.active .nav-title { color: #ffffff; }
-    .nav-item.active .nav-subject { color: #9ca3af; }
-    .nav-title { font-size: 13px; font-weight: 600; color: #111827; margin-bottom: 2px; }
-    .nav-subject { font-size: 11px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #main { flex: 1; display: flex; flex-direction: column; background: #f9fafb; }
-    #topbar { padding: 12px 24px; background: #ffffff; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; }
-    .topbar-info { display: flex; flex-direction: column; }
-    .active-subject { font-size: 14px; font-weight: 600; color: #111827; }
+    .nav-item.active .nav-subject { color: #fdba74; }
+    .nav-title { font-size: 13.5px; font-weight: 600; color: #e2e8f0; margin-bottom: 3px; }
+    .nav-subject { font-size: 11.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #main { flex: 1; display: flex; flex-direction: column; background: #060812; }
+    #topbar { 
+      padding: 14px 24px; 
+      background: #0a0e1c; 
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
+      display: flex; 
+      align-items: center; 
+      justify-content: space-between; 
+    }
+    .topbar-info { display: flex; flex-direction: column; max-width: 65%; }
+    .active-subject { font-size: 14px; font-weight: 600; color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .viewport-controls { display: flex; gap: 8px; }
-    .viewport-btn { background: #ffffff; border: 1px solid #e5e7eb; color: #4b5563; padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.2s; font-weight: 500; }
-    .viewport-btn.active, .viewport-btn:hover { color: #ffffff; background: #000000; border-color: #000000; }
-    #preview-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 24px; overflow: auto; background: #f3f4f6; }
-    #preview-frame { border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08); background: #ffffff; transition: width 0.2s ease; height: 100%; width: 100%; max-width: 600px; }
+    .viewport-btn { 
+      background: #11182c; 
+      border: 1px solid rgba(255, 255, 255, 0.1); 
+      color: #94a3b8; 
+      padding: 7px 14px; 
+      border-radius: 6px; 
+      font-size: 12px; 
+      cursor: pointer; 
+      transition: all 0.2s; 
+      font-weight: 600; 
+    }
+    .viewport-btn.active, .viewport-btn:hover { 
+      color: #ffffff; 
+      background: #ef8557; 
+      border-color: #ef8557; 
+    }
+    #preview-container { 
+      flex: 1; 
+      display: flex; 
+      justify-content: center; 
+      align-items: center; 
+      padding: 24px; 
+      overflow: auto; 
+      background-color: #060812;
+      background-image: 
+        radial-gradient(ellipse at 50% -10%, rgba(249, 115, 22, 0.16) 0%, rgba(29, 78, 216, 0.20) 45%, rgba(6, 8, 18, 0) 80%),
+        url('assets/noise.png');
+      background-repeat: repeat;
+    }
+    #preview-frame { 
+      border: 1px solid rgba(255, 255, 255, 0.12); 
+      border-radius: 16px; 
+      box-shadow: 0 25px 70px -15px rgba(0, 0, 0, 0.9), 0 0 40px -10px rgba(29, 78, 216, 0.3); 
+      background: #060812; 
+      transition: width 0.2s ease; 
+      height: 100%; 
+      width: 100%; 
+      max-width: 600px; 
+    }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <div class="header">
-      <div class="logo-text">ScanDrix</div>
-      <div class="badge">Drixy Templates</div>
+      <div class="logo-container">
+        <img src="assets/footer_logo.png" alt="ScanDrix" width="24" height="22" style="display: block; opacity: 0.95;" />
+        <div class="logo-text">ScanDrix <span style="font-size: 12px; font-weight: 500; color: #94a3b8;">Emails</span></div>
+      </div>
+      <div class="badge">Brand Noise</div>
     </div>
     <ul class="nav-list" id="nav-list"></ul>
   </div>
   <div id="main">
     <div id="topbar">
       <div class="topbar-info">
-        <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280;">Subject Line</span>
+        <span style="font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #ef8557;">Active Email Subject</span>
         <span class="active-subject" id="active-subject">...</span>
       </div>
       <div class="viewport-controls">

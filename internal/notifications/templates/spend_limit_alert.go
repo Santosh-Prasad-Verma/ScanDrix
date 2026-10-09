@@ -5,7 +5,7 @@ import (
 	"html"
 )
 
-// RenderSpendLimitAlert alerts workspace admins when monthly token consumption hits thresholds (e.g. 80% or 100%).
+// RenderSpendLimitAlert alerts workspace admins when monthly token consumption hits thresholds without loud highlight boxes.
 func RenderSpendLimitAlert(subscriberName, orgName string, percent int, usedTokens, limitTokens int64, upgradeURL string) (subject, htmlBody string) {
 	safeSubscriber := html.EscapeString(subscriberName)
 	safeOrg := html.EscapeString(orgName)
@@ -18,16 +18,9 @@ func RenderSpendLimitAlert(subscriberName, orgName string, percent int, usedToke
 	preview := fmt.Sprintf("Workspace %s has consumed %s of %s tokens for this billing period.", safeOrg, formatNumber(usedTokens), formatNumber(limitTokens))
 
 	content := fmt.Sprintf(`
-		<p style="margin: 0 0 16px 0;">Hi <strong>%s</strong>,</p>
-		<p style="margin: 0 0 16px 0;">Your workspace <strong>%s</strong> has used <strong>%d%%</strong> of its allocated monthly token quota.</p>
-
-		<div style="background-color: #111827; border: 1px solid #1e293b; border-left: 3px solid #f59e0b; border-radius: 6px; padding: 14px 18px; margin: 20px 0; font-size: 14px; color: #fbbf24;">
-			<strong>Tokens Used:</strong> %s of %s tokens
-		</div>
-
-		<p style="margin: 0; font-size: 14px; color: #94a3b8;">
-			To prevent automated PR reviews from being paused, you can upgrade your plan or adjust your quota settings.
-		</p>
+		<p style="margin: 0 0 14px 0;">Hi <strong>%s</strong>,</p>
+		<p style="margin: 0 0 14px 0; color: #cbd5e1; line-height: 1.6;">Your workspace <strong>%s</strong> has used <strong>%d%%</strong> of its allocated monthly token quota (%s of %s tokens).</p>
+		<p style="margin: 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">To prevent code reviews from being paused, you can upgrade your plan or adjust your quota in workspace settings.</p>
 	`, safeSubscriber, safeOrg, percent, formatNumber(usedTokens), formatNumber(limitTokens))
 
 	htmlBody = RenderBrandLayoutWithHero(preview, fmt.Sprintf("%d%% of Token Quota Used", percent), content, "Manage Plan & Quota", upgradeURL, "", DrixyMascotShockedAlert, "Drixy Quota Alert")

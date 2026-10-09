@@ -19,7 +19,7 @@ type UsageThresholdDetails struct {
 	UpgradeURL    string
 }
 
-// RenderUsageThresholdWarning renders an alert when a workspace hits 80% or 100% usage capacity.
+// RenderUsageThresholdWarning renders a clean alert when a workspace hits usage thresholds.
 func RenderUsageThresholdWarning(d UsageThresholdDetails) (subject, htmlBody string) {
 	name := d.RecipientName
 	if name == "" {
@@ -30,7 +30,7 @@ func RenderUsageThresholdWarning(d UsageThresholdDetails) (subject, htmlBody str
 
 	unitName := d.UnitType
 	if unitName == "" {
-		unitName = "tokens"
+		unitName = "Tokens"
 	}
 
 	percent := d.PercentUsed
@@ -40,72 +40,31 @@ func RenderUsageThresholdWarning(d UsageThresholdDetails) (subject, htmlBody str
 
 	isExceeded := percent >= 100
 
-	badgeBg := "rgba(245, 158, 11, 0.15)"
-	badgeText := "#fbbf24"
-	badgeBorder := "rgba(245, 158, 11, 0.4)"
-	barFill := "#f59e0b"
-	badgeTitle := fmt.Sprintf("%d%% Quota Used", percent)
-
-	if isExceeded {
-		badgeBg = "rgba(239, 68, 68, 0.15)"
-		badgeText = "#f87171"
-		badgeBorder = "rgba(239, 68, 68, 0.4)"
-		barFill = "#ef4444"
-		badgeTitle = "100% Quota Exceeded"
-	}
-
-	badge := RenderBadge(badgeTitle, badgeBg, badgeText, badgeBorder)
-
 	if isExceeded {
 		subject = fmt.Sprintf("Action Required: %s has exceeded monthly review quota (100%%)", safeOrg)
 	} else {
 		subject = fmt.Sprintf("Notice: %s has reached %d%% of monthly review quota", safeOrg, percent)
 	}
 
-	preview := fmt.Sprintf("Workspace %s has consumed %s of %s %s for the current billing period.", safeOrg, formatNumber(d.UsedUnits), formatNumber(d.LimitUnits), unitName)
+	preview := fmt.Sprintf("Workspace %s has consumed %s of %s %s.", safeOrg, formatNumber(d.UsedUnits), formatNumber(d.LimitUnits), unitName)
 
 	resetStr := "the next billing cycle"
 	if !d.ResetDate.IsZero() {
 		resetStr = d.ResetDate.UTC().Format("Jan 02, 2006")
 	}
 
-	var calloutText string
-	var calloutHTML string
+	statusText := fmt.Sprintf("%d%% of monthly %s quota used (%s / %s %s).", percent, html.EscapeString(unitName), formatNumber(d.UsedUnits), formatNumber(d.LimitUnits), html.EscapeString(unitName))
 	if isExceeded {
-		calloutText = fmt.Sprintf(`
-			<strong>PR Review Queues Paused:</strong><br>
-			Your monthly %s quota has been completely used. To avoid delays in CI/CD merges and ensure Drixy continues reviewing pull requests, please upgrade your plan or purchase an additional token pack.
-		`, html.EscapeString(unitName))
-		calloutHTML = RenderCallout(calloutText, "#ef4444", "#111827", "#f87171")
-	} else {
-		calloutText = fmt.Sprintf(`
-			<strong>Approaching Monthly Limit:</strong><br>
-			You have <strong>%d%%</strong> remaining until your quota resets on <strong>%s</strong>. We recommend increasing your limits before review queues block.
-		`, 100-percent, html.EscapeString(resetStr))
-		calloutHTML = RenderCallout(calloutText, "#f59e0b", "#111827", "#fbbf24")
+		statusText = fmt.Sprintf("100%% Quota Exceeded (%s / %s %s used).", formatNumber(d.UsedUnits), formatNumber(d.LimitUnits), html.EscapeString(unitName))
 	}
 
-	progressBarHTML := RenderProgressBar(percent, barFill)
-
 	content := fmt.Sprintf(`
-		%s
 		<p style="margin: 0 0 14px 0;">Hi <strong>%s</strong>,</p>
-		<p style="margin: 0 0 16px 0;">Your workspace <strong>%s</strong> has consumed <strong>%d%%</strong> of its allocated %s quota for this billing cycle.</p>
+		<p style="margin: 0 0 14px 0; color: #cbd5e1; line-height: 1.6;">Your workspace <strong>%s</strong> status: <strong>%s</strong></p>
+		<p style="margin: 0 0 14px 0; font-size: 13px; color: #94a3b8;">Cycle resets on %s.</p>
+		<p style="margin: 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">Upgrade your plan or adjust quota settings to ensure continuous code reviews.</p>
+	`, safeName, safeOrg, statusText, html.EscapeString(resetStr))
 
-		<div style="background-color: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 18px 20px; margin: 18px 0;">
-			<div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #ffffff;">
-				<span>Usage Summary</span>
-				<span style="color: #94a3b8;">%s / %s %s</span>
-			</div>
-			%s
-			<div style="font-size: 12px; color: #94a3b8; margin-top: 6px;">
-				Cycle resets on %s
-			</div>
-		</div>
-
-		%s
-	`, badge, safeName, safeOrg, percent, html.EscapeString(unitName), formatNumber(d.UsedUnits), formatNumber(d.LimitUnits), html.EscapeString(unitName), progressBarHTML, html.EscapeString(resetStr), calloutHTML)
-
-	htmlBody = RenderBrandLayoutWithHero(preview, fmt.Sprintf("%d%% Quota Warning", percent), content, "Manage Plan & Add Quota", d.UpgradeURL, "", DrixyMascotPointingGuide, "Drixy Usage Guide")
+	htmlBody = RenderBrandLayoutWithHero(preview, fmt.Sprintf("%d%% Quota Notice", percent), content, "Manage Plan & Add Quota", d.UpgradeURL, "", DrixyMascotPointingGuide, "Drixy Usage Guide")
 	return subject, htmlBody
 }

@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 	"html"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,7 @@ type PasswordResetDetails struct {
 	LockAccountURL string    // One-click URL to lock account / invalidate active sessions
 }
 
-// RenderPasswordReset generates a clean white-and-black password reset email with default parameters.
+// RenderPasswordReset generates a clean password reset email with default parameters.
 func RenderPasswordReset(subscriberName, resetURL string) (subject, htmlBody string) {
 	return RenderPasswordResetWithDetails(PasswordResetDetails{
 		RecipientName: subscriberName,
@@ -25,7 +26,7 @@ func RenderPasswordReset(subscriberName, resetURL string) (subject, htmlBody str
 	})
 }
 
-// RenderPasswordResetWithDetails generates a high-security, 15-minute expiring password reset email.
+// RenderPasswordResetWithDetails generates a clean, uncluttered 15-minute expiring password reset email.
 func RenderPasswordResetWithDetails(d PasswordResetDetails) (subject, htmlBody string) {
 	name := d.RecipientName
 	if name == "" {
@@ -34,66 +35,35 @@ func RenderPasswordResetWithDetails(d PasswordResetDetails) (subject, htmlBody s
 	safeName := html.EscapeString(name)
 
 	subject = "Reset your ScanDrix Password"
-	preview := "A password reset request was received for your ScanDrix account. This link expires in 15 minutes."
+	preview := "Reset your ScanDrix account password. This link is valid for 15 minutes."
 
-	badge := RenderBadge("Security Notice", "#f3f4f6", "#111827", "#e5e7eb")
-
-	// Build request context table if metadata is available
-	var infoRows []InfoRow
-	if d.Device != "" {
-		infoRows = append(infoRows, InfoRow{Label: "Device & Browser", Value: html.EscapeString(d.Device)})
-	}
-	if d.IPAddress != "" {
-		infoRows = append(infoRows, InfoRow{Label: "IP Address", Value: html.EscapeString(d.IPAddress)})
-	}
-	if d.Location != "" {
-		infoRows = append(infoRows, InfoRow{Label: "Location", Value: html.EscapeString(d.Location)})
-	}
-	if !d.RequestedAt.IsZero() {
-		infoRows = append(infoRows, InfoRow{Label: "Requested At", Value: d.RequestedAt.UTC().Format("Jan 02, 2006 · 15:04 MST")})
+	var detailsLine string
+	if d.IPAddress != "" || d.Device != "" || d.Location != "" {
+		parts := []string{}
+		if d.Device != "" {
+			parts = append(parts, html.EscapeString(d.Device))
+		}
+		if d.IPAddress != "" {
+			parts = append(parts, html.EscapeString(d.IPAddress))
+		}
+		if d.Location != "" {
+			parts = append(parts, html.EscapeString(d.Location))
+		}
+		detailsLine = fmt.Sprintf(`<p style="margin: 0 0 16px 0; font-size: 13px; color: #94a3b8;">Requested from %s.</p>`, strings.Join(parts, " · "))
 	}
 
-	metadataHTML := ""
-	if len(infoRows) > 0 {
-		metadataHTML = fmt.Sprintf(`
-			<p style="margin: 20px 0 6px 0; font-size: 13px; font-weight: 600; color: #374151;">
-				Request Details:
-			</p>
-			%s
-		`, RenderInfoTable(infoRows))
-	}
-
-	// Security warning / lock account callout
-	var warningHTML string
+	lockAccountNote := "If you did not request this, you can safely ignore this email."
 	if d.LockAccountURL != "" {
-		safeLockURL := html.EscapeString(d.LockAccountURL)
-		calloutMsg := fmt.Sprintf(`<strong>Didn't make this request?</strong> If you did not request a password reset, someone may be attempting to access your account. Please <a href="%s" style="color: #991b1b; font-weight: 600; text-decoration: underline;">lock your account immediately</a> to terminate active sessions.`, safeLockURL)
-		warningHTML = RenderCallout(calloutMsg, "#fca5a5", "#fef2f2", "#991b1b")
-	} else {
-		calloutMsg := `<strong>Didn't make this request?</strong> If you did not request a password reset, you can safely ignore this email. Your password will remain unchanged.`
-		warningHTML = RenderCallout(calloutMsg, "#e5e7eb", "#f9fafb", "#4b5563")
+		lockAccountNote = fmt.Sprintf(`If you did not request this, please <a href="%s" style="color: #ef8557; text-decoration: underline;">lock your account immediately</a>.`, html.EscapeString(d.LockAccountURL))
 	}
 
 	content := fmt.Sprintf(`
-		%s
 		<p style="margin: 0 0 14px 0;">Hi <strong>%s</strong>,</p>
-		<p style="margin: 0 0 14px 0;">We received a request to reset the password for your ScanDrix account. Click the button below to set a new password:</p>
-
-		<div style="background-color: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 10px 14px; margin: 18px 0; font-size: 13px; color: #fbbf24;">
-			⏳ <strong>Note:</strong> This password reset link is valid for <strong>15 minutes</strong>.
-		</div>
-
+		<p style="margin: 0 0 14px 0; color: #cbd5e1; line-height: 1.6;">We received a request to reset your password. Click the button below to choose a new password. This link is valid for 15 minutes.</p>
 		%s
-		%s
-	`, badge, safeName, metadataHTML, warningHTML)
+		<p style="margin: 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">%s</p>
+	`, safeName, detailsLine, lockAccountNote)
 
-	footnote := fmt.Sprintf(`
-		<p style="margin: 16px 0 0 0; font-size: 12px; color: #94a3b8; word-break: break-all;">
-			If the button does not work, copy and paste this URL into your browser:<br>
-			<span style="color: #cbd5e1;">%s</span>
-		</p>
-	`, html.EscapeString(d.ResetURL))
-
-	htmlBody = RenderBrandLayoutWithHero(preview, "Reset your ScanDrix password", content, "Reset Password", d.ResetURL, footnote, DrixyMascotThinking, "Drixy Security Guard")
+	htmlBody = RenderBrandLayoutWithHero(preview, "Reset your ScanDrix password", content, "Reset Password", d.ResetURL, "", DrixyMascotThinking, "Drixy")
 	return subject, htmlBody
 }

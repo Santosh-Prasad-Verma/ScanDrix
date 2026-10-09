@@ -716,10 +716,10 @@ func (c *BillingController) handleConfirmDowngrade(w http.ResponseWriter, r *htt
 	var targetConfig *models.PlanConfiguration
 	for i := range plans {
 		p := &plans[i]
-		if strings.ToUpper(p.Tier) == strings.ToUpper(currentPlan.PlanTier) {
+		if strings.EqualFold(p.Tier, currentPlan.PlanTier) {
 			currentRate = float64(p.AmountINR) / 100.0
 		}
-		if strings.ToUpper(p.Tier) == targetTier {
+		if strings.EqualFold(p.Tier, targetTier) {
 			targetRate = float64(p.AmountINR) / 100.0
 			targetConfig = p
 		}

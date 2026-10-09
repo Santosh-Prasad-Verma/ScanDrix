@@ -80,7 +80,7 @@ func NewForgejoService(cfg ForgejoServiceConfig) *ForgejoService {
 
 	// Dedicated self-hosted client with HTTPS certificate verification bypass for private enterprise instances
 	insecureTransport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- Opt-in client for private enterprise Forgejo deployments with custom/self-signed internal CA roots
 	}
 	insecureClient := &http.Client{
 		Transport: insecureTransport,

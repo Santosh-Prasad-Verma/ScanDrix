@@ -165,17 +165,15 @@ func RenderCodeSnippet(code string) string {
 	`, safeCode)
 }
 
-// RenderDrixyMascot renders the cute 3D mascot character in an ambient glowing bubble.
+// RenderDrixyMascot renders the cute 3D mascot character directly without any enclosing circle.
 func RenderDrixyMascot(imageName, altText string) string {
 	if imageName == "" {
 		return ""
 	}
-	imgURL := fmt.Sprintf("%s/%s", DrixyAssetBaseURL, imageName)
+	imgURL := GetDrixyURL(imageName)
 	return fmt.Sprintf(`
-		<div style="text-align: center; margin: 0 0 20px 0;">
-			<div style="display: inline-block; background: radial-gradient(circle, rgba(99, 102, 241, 0.22) 0%%, rgba(13, 19, 34, 0) 70%%); border-radius: 50%%; padding: 10px;">
-				<img src="%s" alt="%s" width="92" height="92" style="width: 92px; height: 92px; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.45));" />
-			</div>
+		<div style="text-align: center; margin: 12px 0 24px 0;">
+			<img src="%s" alt="%s" width="108" height="108" border="0" style="width: 108px; height: 108px; display: block; margin: 0 auto; border: 0; outline: none; text-decoration: none;" />
 		</div>
 	`, imgURL, html.EscapeString(altText))
 }

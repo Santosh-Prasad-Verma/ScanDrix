@@ -6,18 +6,23 @@ import (
 	"time"
 )
 
-// RenderBrandLayout renders the email shell using the ambient gradients style.
+// RenderBrandLayout renders the email shell using the general banner.
 func RenderBrandLayout(previewText, title, contentHTML, ctaText, ctaURL string) string {
-	return RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL, "", "", "")
+	return RenderBrandLayoutWithBanner(previewText, title, contentHTML, ctaText, ctaURL, "", "", "", BannerGeneral)
 }
 
 // RenderBrandLayoutWithFootnote renders the email shell with an optional subtle footnote below the CTA button.
 func RenderBrandLayoutWithFootnote(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML string) string {
-	return RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML, "", "")
+	return RenderBrandLayoutWithBanner(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML, "", "", BannerGeneral)
 }
 
-// RenderBrandLayoutWithHero renders the email shell with an ambient header, optional Drixy mascot hero, and deep dark indigo palette.
+// RenderBrandLayoutWithHero renders the email shell with the general banner, optional Drixy mascot hero, and noise theme.
 func RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML, drixyImage, drixyAlt string) string {
+	return RenderBrandLayoutWithBanner(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML, drixyImage, drixyAlt, BannerGeneral)
+}
+
+// RenderBrandLayoutWithBanner renders the full email shell with a customizable header banner, noise texture background, and footer logo mark.
+func RenderBrandLayoutWithBanner(previewText, title, contentHTML, ctaText, ctaURL, footnoteHTML, drixyImage, drixyAlt, bannerImage string) string {
 	var ctaBlock string
 	safeTitle := html.EscapeString(title)
 	safePreview := html.EscapeString(previewText)
@@ -25,11 +30,15 @@ func RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL,
 		safeCtaText := html.EscapeString(ctaText)
 		safeCtaURL := html.EscapeString(ctaURL)
 		ctaBlock = fmt.Sprintf(`
-			<div style="margin: 28px 0 20px 0;">
-				<a href="%s" style="background: linear-gradient(135deg, #4338ca 0%%, #6366f1 100%%); background-color: #4f46e5; color: #ffffff; text-decoration: none; padding: 13px 30px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block; letter-spacing: -0.01em; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.45);">
-					%s
-				</a>
-			</div>
+			<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin: 28px 0 20px 0;">
+				<tr>
+					<td align="left" style="border-radius: 6px; background-color: #ef8557;">
+						<a href="%s" target="_blank" style="background-color: #ef8557; color: #ffffff; text-decoration: none; padding: 13px 28px; border-radius: 6px; font-weight: 600; font-size: 14px; display: inline-block; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+							%s
+						</a>
+					</td>
+				</tr>
+			</table>
 		`, safeCtaURL, safeCtaText)
 	}
 
@@ -37,6 +46,12 @@ func RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL,
 	if drixyImage != "" {
 		mascotHeroHTML = RenderDrixyMascot(drixyImage, drixyAlt)
 	}
+
+	if bannerImage == "" {
+		bannerImage = BannerGeneral
+	}
+	bannerURL := GetAssetURL(bannerImage)
+	footerLogoURL := GetAssetURL(FooterLogo)
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
@@ -56,78 +71,92 @@ func RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL,
 	</noscript>
 	<![endif]-->
 	<style>
-		body { margin: 0; padding: 0; background-color: #060710; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+		body { 
+			margin: 0; padding: 0; 
+			background-color: #060812; 
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+			-webkit-font-smoothing: antialiased; 
+			-webkit-text-size-adjust: 100%%;
+			-ms-text-size-adjust: 100%%;
+		}
 		table { border-collapse: separate; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
-		a { color: #6366f1; text-decoration: none; }
+		a { color: #f97316; text-decoration: none; }
 		@media only screen and (max-width: 620px) {
-			.container { width: 100%% !important; padding: 16px 10px !important; }
+			.card-table { width: 100%% !important; max-width: 100%% !important; }
 			.card-body { padding: 24px 20px !important; }
-			.card-header { padding: 24px 20px 16px 20px !important; }
+			.card-footer { padding: 22px 20px !important; }
+			.banner-img { width: 100%% !important; height: auto !important; }
 		}
 	</style>
 </head>
-<body style="background-color: #060710; margin: 0; padding: 36px 0;">
+<body style="background-color: #060812; margin: 0; padding: 0; width: 100%%; -webkit-text-size-adjust: 100%%; -ms-text-size-adjust: 100%%;">
 	<!-- Hidden Preview Text -->
-	<div style="display: none; max-height: 0px; overflow: hidden; font-size: 1px; line-height: 1px; color: #060710;">
+	<div style="display: none; max-height: 0px; overflow: hidden; font-size: 1px; line-height: 1px; color: #060812;">
 		%s
 	</div>
 
-	<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" style="background-color: #060710;">
+	<!-- Outer Canvas Wrapper -->
+	<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" bgcolor="#060812" style="background-color: #060812; width: 100%%; margin: 0; padding: 0; border-collapse: collapse;">
 		<tr>
-			<td align="center">
-				<div class="container" style="max-width: 580px; margin: 0 auto; width: 100%%; text-align: left;">
-					<!-- Ambient Gradients Card Container -->
-					<div style="background-color: #0d1322; border: 1px solid #1e293b; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 50px -15px rgba(0, 0, 0, 0.7);">
-						
-						<!-- Ambient Header Hero Gradient -->
-						<div class="card-header" style="background: #0d1527; background-image: linear-gradient(180deg, #131d36 0%%, #0d1527 60%%, #0d1322 100%%); padding: 32px 36px 18px 36px; border-bottom: 1px solid rgba(30, 41, 59, 0.6);">
-							<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%">
-								<tr>
-									<td style="vertical-align: middle;">
-										<span style="font-size: 21px; font-weight: 800; color: #ffffff; letter-spacing: -0.03em;">
-											ScanDrix
-										</span>
-										<span style="display: inline-block; background-color: rgba(99, 102, 241, 0.15); color: #c7d2fe; border: 1px solid rgba(99, 102, 241, 0.35); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle;">
-											AI Code Review
-										</span>
-									</td>
-								</tr>
-							</table>
+			<td align="center" valign="top" style="padding: 32px 12px; background-color: #060812;">
+				<!--[if (gte mso 9)|(IE)]>
+				<table align="center" border="0" cellpadding="0" cellspacing="0" width="580" style="width: 580px;">
+					<tr>
+						<td align="center" valign="top">
+				<![endif]-->
 
-							<!-- Drixy Mascot Hero (Contextual) -->
+				<!-- Main Card Table -->
+				<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" class="card-table" style="max-width: 580px; width: 100%%; margin: 0 auto; background-color: #0a0e1c; border: 1px solid #1e293b; border-top: 2px solid #ef8557; border-radius: 12px; border-collapse: separate; mso-table-lspace: 0pt; mso-table-rspace: 0pt; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);">
+					<!-- Top Hero Banner Image -->
+					<tr>
+						<td align="center" style="padding: 0; margin: 0; background-color: #0b1a42; border-bottom: 1px solid #1e293b; line-height: 0; font-size: 0; border-top-left-radius: 10px; border-top-right-radius: 10px;">
+							<img src="%s" alt="ScanDrix" width="580" border="0" class="banner-img" style="display: block; width: 100%%; max-width: 580px; height: auto; border: 0; border-top-left-radius: 10px; border-top-right-radius: 10px; outline: none; text-decoration: none;" />
+						</td>
+					</tr>
+
+					<!-- Card Body Content -->
+					<tr>
+						<td class="card-body" style="padding: 32px 32px 36px 32px; background-color: #0a0e1c; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: left;">
+							<!-- Drixy Mascot (Contextual) -->
 							%s
-						</div>
 
-						<!-- Card Body Content -->
-						<div class="card-body" style="padding: 28px 36px 36px 36px;">
 							<!-- Title -->
-							<h1 style="color: #ffffff; font-size: 20px; font-weight: 700; margin: 0 0 16px 0; line-height: 1.35; letter-spacing: -0.02em;">
+							<h1 style="color: #ffffff; font-size: 21px; font-weight: 700; margin: 0 0 16px 0; line-height: 1.35; letter-spacing: -0.02em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 								%s
 							</h1>
 
 							<!-- Content Body -->
-							<div style="color: #cbd5e1; font-size: 15px; line-height: 1.65;">
+							<div style="color: #cbd5e1; font-size: 15px; line-height: 1.65; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 								%s
 							</div>
 
 							%s
 
 							%s
-						</div>
+						</td>
+					</tr>
 
-						<!-- Divider and Dark Footer -->
-						<div style="border-top: 1px solid #1e293b; background-color: #080c16; padding: 22px 36px; text-align: center;">
-							<div style="color: #64748b; font-size: 12px; line-height: 1.55;">
-								<p style="margin: 0 0 4px 0;">
-									&copy; %d ScanDrix AI Inc. · Automated AI Code Reviews
-								</p>
-								<p style="margin: 0;">
-									Need assistance? Contact <a href="mailto:support@scandrix.dev" style="color: #818cf8; text-decoration: underline;">support@scandrix.dev</a>
-								</p>
+					<!-- Divider and Dark Footer with Brand Logo Mark -->
+					<tr>
+						<td class="card-footer" align="center" style="padding: 24px 32px 28px 32px; background-color: #060913; border-top: 1px solid #1e293b; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: center;">
+							<div style="margin-bottom: 14px;">
+								<img src="%s" alt="ScanDrix" width="44" height="42" border="0" style="width: 44px; height: 42px; display: inline-block; margin: 0 auto; border: 0; outline: none;" />
 							</div>
-						</div>
-					</div>
-				</div>
+							<p style="margin: 0 0 6px 0; color: #94a3b8; font-size: 12px; font-weight: 500; line-height: 1.5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+								&copy; %d ScanDrix AI Inc. &middot; Automated AI Code Reviews
+							</p>
+							<p style="margin: 0; color: #64748b; font-size: 12px; line-height: 1.5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+								Need assistance? Contact <a href="mailto:support@scandrix.dev" style="color: #ef8557; font-weight: 600; text-decoration: underline;">support@scandrix.dev</a>
+							</p>
+						</td>
+					</tr>
+				</table>
+
+				<!--[if (gte mso 9)|(IE)]>
+						</td>
+					</tr>
+				</table>
+				<![endif]-->
 			</td>
 		</tr>
 	</table>
@@ -135,11 +164,13 @@ func RenderBrandLayoutWithHero(previewText, title, contentHTML, ctaText, ctaURL,
 </html>`,
 		safeTitle,
 		safePreview,
+		bannerURL,
 		mascotHeroHTML,
 		safeTitle,
 		contentHTML,
 		ctaBlock,
 		footnoteHTML,
+		footerLogoURL,
 		time.Now().Year(),
 	)
 }

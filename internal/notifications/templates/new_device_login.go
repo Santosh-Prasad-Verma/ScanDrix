@@ -17,7 +17,7 @@ type NewDeviceLoginDetails struct {
 	ActivityURL    string    // URL to view active sessions in the dashboard
 }
 
-// RenderNewDeviceLogin renders an alert email for unrecognized logins with ambient gradient styling.
+// RenderNewDeviceLogin renders a clean alert email for unrecognized logins without loud highlight boxes.
 func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 	name := d.RecipientName
 	if name == "" {
@@ -32,44 +32,31 @@ func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 	safeLocation := html.EscapeString(locationStr)
 
 	subject = fmt.Sprintf("Security Alert: New login to ScanDrix from %s", safeLocation)
-	preview := fmt.Sprintf("We detected a sign-in to your ScanDrix account from a new device or IP address (%s).", safeLocation)
+	preview := fmt.Sprintf("We detected a sign-in to your ScanDrix account from %s.", safeLocation)
 
-	badge := RenderBadge("Security Alert", "rgba(245, 158, 11, 0.15)", "#fbbf24", "rgba(245, 158, 11, 0.4)")
-
-	rows := []InfoRow{
-		{Label: "Device & Client", Value: html.EscapeString(d.Device)},
-		{Label: "IP Address", Value: html.EscapeString(d.IPAddress)},
-		{Label: "Approximate Location", Value: safeLocation},
+	deviceInfo := html.EscapeString(d.Device)
+	if deviceInfo == "" {
+		deviceInfo = "Unknown device"
 	}
-	if !d.LoginTime.IsZero() {
-		rows = append(rows, InfoRow{Label: "Timestamp", Value: d.LoginTime.UTC().Format("Jan 02, 2006 · 15:04:05 MST")})
-	}
+	ipInfo := html.EscapeString(d.IPAddress)
 
-	callout := `
-		<strong>Was this you?</strong><br>
-		If you recently logged in from this device or network, you can safely disregard this alert.<br><br>
-		<strong>If this wasn't you</strong>, your password may have been exposed. Click below to instantly terminate all active sessions and protect your account.
-	`
-	calloutHTML := RenderCallout(callout, "#ef4444", "#111827", "#f87171")
+	var sessionsLink string
+	if d.ActivityURL != "" {
+		sessionsLink = fmt.Sprintf(`<p style="margin: 16px 0 0 0; font-size: 13px; color: #94a3b8;">Want to inspect all signed-in devices? <a href="%s" style="color: #ef8557; text-decoration: underline;">Review Active Sessions</a></p>`, html.EscapeString(d.ActivityURL))
+	}
 
 	content := fmt.Sprintf(`
-		%s
 		<p style="margin: 0 0 14px 0;">Hi <strong>%s</strong>,</p>
-		<p style="margin: 0 0 16px 0;">A new login was recently recorded for your ScanDrix account with the following details:</p>
-
+		<p style="margin: 0 0 14px 0; color: #cbd5e1; line-height: 1.6;">We detected a new sign-in to your ScanDrix account:</p>
+		<p style="margin: 0 0 16px 0; font-size: 14px; color: #ffffff; line-height: 1.6;">
+			<strong>Device:</strong> %s<br>
+			<strong>Location:</strong> %s<br>
+			<strong>IP Address:</strong> %s
+		</p>
+		<p style="margin: 0; font-size: 13px; color: #94a3b8; line-height: 1.5;">If this was you, you can safely ignore this email. If not, lock your account immediately to terminate all active sessions.</p>
 		%s
-		%s
-	`, badge, safeName, RenderInfoTable(rows), calloutHTML)
+	`, safeName, deviceInfo, safeLocation, ipInfo, sessionsLink)
 
-	footnote := ""
-	if d.ActivityURL != "" {
-		footnote = fmt.Sprintf(`
-			<p style="margin: 16px 0 0 0; font-size: 13px; color: #94a3b8;">
-				Want to inspect all signed-in devices? <a href="%s" style="color: #818cf8; font-weight: 600; text-decoration: underline;">Review Active Sessions</a>
-			</p>
-		`, html.EscapeString(d.ActivityURL))
-	}
-
-	htmlBody = RenderBrandLayoutWithHero(preview, "New device or location login", content, "Lock Account Immediately", d.LockAccountURL, footnote, DrixyMascotStandingReady, "Drixy Device Security")
+	htmlBody = RenderBrandLayoutWithHero(preview, "New device login detected", content, "Lock Account Immediately", d.LockAccountURL, "", DrixyMascotStandingReady, "Drixy Device Security")
 	return subject, htmlBody
 }

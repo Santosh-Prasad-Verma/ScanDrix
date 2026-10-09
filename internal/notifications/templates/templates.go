@@ -2,34 +2,45 @@ package templates
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 )
 
-// Brand Color Palette (ScanDrix Blue & Black Indigo Cream Professional Ambient Gradients Style)
+// Brand Color Palette (ScanDrix Orange-Blue Banner & Noise Theme)
 const (
-	ColorPrimaryCTA     = "#4f46e5" // Ambient indigo CTA
-	ColorPrimaryAccent  = "#6366f1" // Light indigo accent
+	ColorPrimaryCTA     = "#ef8557" // Warm coral brand CTA
+	ColorPrimaryAccent  = "#f97316" // Vibrant orange accent
 	ColorCoralAccent    = "#ef8557" // ScanDrix coral button accent
-	ColorPageBG         = "#060710" // Deep ambient dark page background
-	ColorCardBG         = "#0d1322" // Deep dark indigo card container
-	ColorCardSurface    = "#111827" // Internal container surface
-	ColorHeaderBG       = "#0d1322" // Header background
-	ColorPrimaryLight   = "#6366f1" // Button fill
+	ColorRoyalBlue      = "#2563eb" // Brand royal blue accent
+	ColorPageBG         = "#060812" // Deep ambient dark page background with noise
+	ColorCardBG         = "#0a0e1c" // Deep midnight card container
+	ColorCardSurface    = "#0e1428" // Internal container surface
+	ColorHeaderBG       = "#0b1a42" // Header background
+	ColorPrimaryLight   = "#ef8557" // Button fill
 	ColorPrimaryDark    = "#ffffff" // Button text
 	ColorTextPrimary    = "#ffffff" // Crisp white headings and titles
 	ColorTextCream      = "#ebd6ff" // Cream accent
 	ColorTextSecondary  = "#cbd5e1" // High contrast readable body text
 	ColorTextMuted      = "#94a3b8" // Slate muted metadata text
-	ColorBorder         = "#1e293b" // Subtle dark indigo-slate border
+	ColorBorder         = "#1e293b" // Subtle dark border
 	ColorBorderSubtle   = "#2e3856" // Subtle highlight border
 	ColorSuccess        = "#10b981" // Emerald green status accent
 	ColorDanger         = "#ef4444" // Red alert accent
 	ColorWarning        = "#f59e0b" // Amber warning accent
 )
 
+// Brand Banner & Asset paths
+const (
+	BannerGeneral = "assets/banner.png"
+	BannerWelcome = "assets/welcome_banner.png"
+	FooterLogo    = "assets/footer_logo.png"
+	NoiseTexture  = "assets/noise.png"
+)
+
 // Drixy Mascot Asset filenames for contextual email templates
 const (
-	DrixyAssetBaseURL           = "https://app.scandrix.dev/drixy"
+	DrixyAssetBaseURL           = "drixy"
 	DrixyMascotWavingHello      = "drixy_waving_hello.png"
 	DrixyMascotHappyCelebrating = "drixy_happy_celebrating.png"
 	DrixyMascotStandingReady    = "drixy_standing_ready.png"
@@ -49,6 +60,33 @@ const (
 	DrixyMascotInBoxUnboxing    = "drixy_in_box_unboxing.png"
 	DrixyMascotWalkingBackpack  = "drixy_walking_backpack.png"
 )
+
+// GetAssetURL returns the absolute URL for a template asset.
+func GetAssetURL(assetPath string) string {
+	base := os.Getenv("EMAIL_ASSET_BASE_URL")
+	if base == "" {
+		base = os.Getenv("ASSET_BASE_URL")
+	}
+	if base == "" {
+		base = "https://www.scandrix.dev"
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(assetPath, "/")
+}
+
+// GetDrixyURL returns the asset URL for a Drixy mascot image.
+func GetDrixyURL(imageName string) string {
+	if imageName == "" {
+		return ""
+	}
+	base := os.Getenv("EMAIL_ASSET_BASE_URL")
+	if base == "" {
+		base = os.Getenv("ASSET_BASE_URL")
+	}
+	if base == "" {
+		base = "https://www.scandrix.dev"
+	}
+	return strings.TrimRight(base, "/") + "/drixy/" + strings.TrimLeft(imageName, "/")
+}
 
 // InvoiceDetails encapsulates full tax and itemized subscription billing data.
 type InvoiceDetails struct {
