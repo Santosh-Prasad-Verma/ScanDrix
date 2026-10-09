@@ -57,6 +57,8 @@ func DefaultCORSConfig() CORSConfig {
 		}
 	} else {
 		origins = []string{
+			"https://scandrix.dev",
+			"https://www.scandrix.dev",
 			"https://app.scandrix.dev",
 			"https://dashboard.scandrix.dev",
 		}
