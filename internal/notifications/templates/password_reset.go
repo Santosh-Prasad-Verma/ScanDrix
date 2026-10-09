@@ -79,7 +79,7 @@ func RenderPasswordResetWithDetails(d PasswordResetDetails) (subject, htmlBody s
 		<p style="margin: 0 0 14px 0;">Hi <strong>%s</strong>,</p>
 		<p style="margin: 0 0 14px 0;">We received a request to reset the password for your ScanDrix account. Click the button below to set a new password:</p>
 
-		<div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 6px; padding: 10px 14px; margin: 18px 0; font-size: 13px; color: #92400e;">
+		<div style="background-color: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 10px 14px; margin: 18px 0; font-size: 13px; color: #fbbf24;">
 			⏳ <strong>Note:</strong> This password reset link is valid for <strong>15 minutes</strong>.
 		</div>
 
@@ -88,12 +88,12 @@ func RenderPasswordResetWithDetails(d PasswordResetDetails) (subject, htmlBody s
 	`, badge, safeName, metadataHTML, warningHTML)
 
 	footnote := fmt.Sprintf(`
-		<p style="margin: 16px 0 0 0; font-size: 12px; color: #9ca3af; word-break: break-all;">
+		<p style="margin: 16px 0 0 0; font-size: 12px; color: #94a3b8; word-break: break-all;">
 			If the button does not work, copy and paste this URL into your browser:<br>
-			<span style="color: #4b5563;">%s</span>
+			<span style="color: #cbd5e1;">%s</span>
 		</p>
 	`, html.EscapeString(d.ResetURL))
 
-	htmlBody = RenderBrandLayoutWithFootnote(preview, "Reset your ScanDrix password", content, "Reset Password", d.ResetURL, footnote)
+	htmlBody = RenderBrandLayoutWithHero(preview, "Reset your ScanDrix password", content, "Reset Password", d.ResetURL, footnote, DrixyMascotThinking, "Drixy Security Guard")
 	return subject, htmlBody
 }

@@ -8,6 +8,7 @@ package forgejo
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -39,19 +41,24 @@ const (
 )
 
 type ForgejoService struct {
-	baseURL        string
-	httpClient     *http.Client
-	checksService  *ForgejoChecksService
-	defaultTimeout time.Duration
-	cacheStore     sync.Map
+	baseURL            string
+	httpClient         *http.Client
+	insecureClient     *http.Client
+	checksService      *ForgejoChecksService
+	defaultTimeout     time.Duration
+	cacheStore         sync.Map
+	insecureSkipVerify bool
+	insecureHosts      sync.Map
 }
 
 // ForgejoServiceConfig configures ForgejoService instances.
 type ForgejoServiceConfig struct {
-	BaseURL        string
-	HTTPClient     *http.Client
-	ChecksService  *ForgejoChecksService
-	DefaultTimeout time.Duration
+	BaseURL            string
+	HTTPClient         *http.Client
+	ChecksService      *ForgejoChecksService
+	DefaultTimeout     time.Duration
+	InsecureSkipVerify bool
+	CustomCACert       string
 }
 
 // NewForgejoService creates a production Forgejo/Gitea service adapter.
@@ -71,21 +78,47 @@ func NewForgejoService(cfg ForgejoServiceConfig) *ForgejoService {
 		client = &http.Client{Timeout: timeout}
 	}
 
+	// Dedicated self-hosted client with HTTPS certificate verification bypass for private enterprise instances
+	insecureTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	insecureClient := &http.Client{
+		Transport: insecureTransport,
+		Timeout:   timeout,
+	}
+
 	checksSvc := cfg.ChecksService
 	if checksSvc == nil {
 		checksSvc = NewForgejoChecksService(baseURL, client, nil)
 	}
 
-	return &ForgejoService{
-		baseURL:        baseURL,
-		httpClient:     client,
-		checksService:  checksSvc,
-		defaultTimeout: timeout,
+	svc := &ForgejoService{
+		baseURL:            baseURL,
+		httpClient:         client,
+		insecureClient:     insecureClient,
+		checksService:      checksSvc,
+		defaultTimeout:     timeout,
+		insecureSkipVerify: cfg.InsecureSkipVerify,
 	}
+
+	return svc
 }
 
 func (s *ForgejoService) Provider() models.SCMProvider {
 	return models.ProviderForgejo
+}
+
+// SetInsecureSkipVerify toggles TLS verification globally for all self-hosted Forgejo requests.
+func (s *ForgejoService) SetInsecureSkipVerify(skip bool) {
+	s.insecureSkipVerify = skip
+}
+
+// RegisterSelfHostedHost registers an on-premise instance host with TLS verification bypass.
+func (s *ForgejoService) RegisterSelfHostedHost(baseURL string, skipTLS bool) {
+	clean := strings.TrimRight(baseURL, "/")
+	if clean != "" {
+		s.insecureHosts.Store(clean, skipTLS)
+	}
 }
 
 // -------------------------------------------------------------------------------------
@@ -108,6 +141,20 @@ func (s *ForgejoService) extractCredentials(orgData types.OrganizationAndTeamDat
 			token = t
 		}
 	}
+
+	// Enterprise self-hosted certificate bypass resolution
+	if orgData.IntegrationCredentials != nil {
+		if skip, ok := orgData.IntegrationCredentials["skipTLSVerify"].(bool); ok && skip {
+			s.insecureHosts.Store(baseURL, true)
+		} else if skipStr, ok := orgData.IntegrationCredentials["skipTLSVerify"].(string); ok && (skipStr == "true" || skipStr == "1") {
+			s.insecureHosts.Store(baseURL, true)
+		} else if skip, ok := orgData.IntegrationCredentials["insecureSkipVerify"].(bool); ok && skip {
+			s.insecureHosts.Store(baseURL, true)
+		} else if skip, ok := orgData.IntegrationCredentials["skip_tls_verify"].(bool); ok && skip {
+			s.insecureHosts.Store(baseURL, true)
+		}
+	}
+
 	return baseURL, token
 }
 
@@ -174,7 +221,14 @@ func (s *ForgejoService) doRequest(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := s.httpClient.Do(req)
+	client := s.httpClient
+	if s.insecureSkipVerify || os.Getenv("FORGEJO_INSECURE_SKIP_VERIFY") == "true" || os.Getenv("FORGEJO_SKIP_VERIFY") == "true" {
+		client = s.insecureClient
+	} else if skip, ok := s.insecureHosts.Load(strings.TrimRight(baseURL, "/")); ok && skip == true {
+		client = s.insecureClient
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http request failed: %w", err)
 	}

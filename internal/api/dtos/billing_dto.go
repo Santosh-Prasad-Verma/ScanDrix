@@ -38,3 +38,45 @@ type WorkspacePlanStatusResponse struct {
 	FeaturesEnabled   []string  `json:"features_enabled"`
 	BYOKAllowed       bool      `json:"byok_allowed"`
 }
+
+// CalculateDowngradeDTO specifies target downgrade tier.
+type CalculateDowngradeDTO struct {
+	TargetPlan string `json:"target_plan"` // "COMMUNITY", "DEVELOPER", "TEAM"
+	Currency   string `json:"currency,omitempty"`
+}
+
+// ProrationResultDTO returns itemized breakdown of downgrade credits.
+type ProrationResultDTO struct {
+	CurrentPlan          string    `json:"current_plan"`
+	TargetPlan           string    `json:"target_plan"`
+	Currency             string    `json:"currency"`
+	CurrentPlanRate      float64   `json:"current_plan_rate"`
+	TargetPlanRate       float64   `json:"target_plan_rate"`
+	TotalCycleDays       int       `json:"total_cycle_days"`
+	DaysRemaining        int       `json:"days_remaining"`
+	ProratedCreditAmount float64   `json:"prorated_credit_amount"`
+	CreditBalanceApplied float64   `json:"credit_balance_applied"`
+	NextBillingDate      time.Time `json:"next_billing_date"`
+	ImmediateEffect      bool      `json:"immediate_effect"`
+}
+
+// ConfirmDowngradeDTO executes the automated self-service plan downgrade.
+type ConfirmDowngradeDTO struct {
+	TargetPlan      string `json:"target_plan"`
+	ImmediateEffect bool   `json:"immediate_effect"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+// ConfirmDowngradeResponse reports the outcome of the automated downgrade.
+type ConfirmDowngradeResponse struct {
+	Success              bool      `json:"success"`
+	NewPlanTier          string    `json:"new_plan_tier"`
+	CreditBalanceAdded   float64   `json:"credit_balance_added"`
+	Currency             string    `json:"currency"`
+	Message              string    `json:"message"`
+	EffectiveAt          time.Time `json:"effective_at"`
+	NextBillingDate      time.Time `json:"next_billing_date"`
+	NewTotalSeats        int       `json:"new_total_seats"`
+	NewMonthlyTokenLimit int64     `json:"new_monthly_token_limit"`
+}
+

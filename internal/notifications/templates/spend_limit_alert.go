@@ -21,15 +21,15 @@ func RenderSpendLimitAlert(subscriberName, orgName string, percent int, usedToke
 		<p style="margin: 0 0 16px 0;">Hi <strong>%s</strong>,</p>
 		<p style="margin: 0 0 16px 0;">Your workspace <strong>%s</strong> has used <strong>%d%%</strong> of its allocated monthly token quota.</p>
 
-		<div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px; padding: 14px 18px; margin: 20px 0; font-size: 14px; color: #92400e;">
+		<div style="background-color: #111827; border: 1px solid #1e293b; border-left: 3px solid #f59e0b; border-radius: 6px; padding: 14px 18px; margin: 20px 0; font-size: 14px; color: #fbbf24;">
 			<strong>Tokens Used:</strong> %s of %s tokens
 		</div>
 
-		<p style="margin: 0; font-size: 14px; color: #6b7280;">
+		<p style="margin: 0; font-size: 14px; color: #94a3b8;">
 			To prevent automated PR reviews from being paused, you can upgrade your plan or adjust your quota settings.
 		</p>
 	`, safeSubscriber, safeOrg, percent, formatNumber(usedTokens), formatNumber(limitTokens))
 
-	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("%d%% of Token Quota Used", percent), content, "Manage Plan & Quota", upgradeURL)
+	htmlBody = RenderBrandLayoutWithHero(preview, fmt.Sprintf("%d%% of Token Quota Used", percent), content, "Manage Plan & Quota", upgradeURL, "", DrixyMascotShockedAlert, "Drixy Quota Alert")
 	return subject, htmlBody
 }

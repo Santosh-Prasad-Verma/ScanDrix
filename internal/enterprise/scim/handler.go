@@ -247,6 +247,14 @@ func (s *SCIMService) TokenState(ctx context.Context, wsID uuid.UUID) (bool, err
 	return s.repo.HasSCIMToken(ctx, wsID)
 }
 
+// ListGroups returns the SCIM groups stored for the given workspace.
+func (s *SCIMService) ListGroups(ctx context.Context, wsID uuid.UUID) ([]database.SCIMGroupRecord, error) {
+	if s.repo == nil {
+		return nil, errors.New("scim persistence is not configured")
+	}
+	return s.repo.ListSCIMGroups(ctx, wsID)
+}
+
 // Routes mounts the standard SCIM 2.0 sub-router.
 func (s *SCIMService) Routes() chi.Router {
 	r := chi.NewRouter()

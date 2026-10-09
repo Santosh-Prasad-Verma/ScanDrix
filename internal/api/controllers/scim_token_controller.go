@@ -38,6 +38,7 @@ func (c *SCIMTokenController) Routes() chi.Router {
 	r.Get("/token", c.handleGetTokenStatus)
 	r.Post("/token", c.handleIssueToken)
 	r.Delete("/token", c.handleRevokeToken)
+	r.Get("/groups", c.handleListGroups)
 
 	return r
 }
@@ -134,6 +135,42 @@ func (c *SCIMTokenController) handleRevokeToken(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false})
+}
+
+func (c *SCIMTokenController) handleListGroups(w http.ResponseWriter, r *http.Request) {
+	if c.unavailable(w) {
+		return
+	}
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		writeSCIMTokenError(w, http.StatusUnauthorized, "unauthorized: missing workspace context")
+		return
+	}
+
+	groups, err := c.svc.ListGroups(r.Context(), wsID)
+	if err != nil {
+		writeSCIMTokenError(w, http.StatusInternalServerError, "failed listing scim groups")
+		return
+	}
+
+	type groupItem struct {
+		ID           string `json:"id"`
+		DisplayName  string `json:"displayName"`
+		MembersCount int    `json:"membersCount"`
+	}
+	resp := make([]groupItem, 0, len(groups))
+	for _, g := range groups {
+		resp = append(resp, groupItem{
+			ID:           g.ID,
+			DisplayName:  g.DisplayName,
+			MembersCount: len(g.Members),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"groups": resp,
+	})
 }
 
 func writeSCIMTokenError(w http.ResponseWriter, status int, message string) {

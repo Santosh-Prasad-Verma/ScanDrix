@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -112,6 +113,8 @@ func (c *BillingController) Routes() chi.Router {
 	r.Post("/razorpay/verify", c.handleVerifyPayment)
 	r.Get("/plan", c.handleGetPlan)
 	r.Post("/razorpay/webhook", c.handleWebhook)
+	r.Post("/downgrade/calculate", c.handleCalculateDowngradeProration)
+	r.Post("/downgrade/confirm", c.handleConfirmDowngrade)
 
 	// ScanDrix billing webhook lifecycle endpoints
 	r.Post("/webhook/payment-failed", c.handlePaymentFailed)
@@ -129,6 +132,8 @@ func (c *BillingController) ProtectedRoutes() chi.Router {
 	r.Post("/razorpay/order", c.handleCreateOrder)
 	r.Post("/razorpay/verify", c.handleVerifyPayment)
 	r.Get("/plan", c.handleGetPlan)
+	r.Post("/downgrade/calculate", c.handleCalculateDowngradeProration)
+	r.Post("/downgrade/confirm", c.handleConfirmDowngrade)
 
 	return r
 }
@@ -586,3 +591,226 @@ func (c *BillingController) handlePlanChanged(w http.ResponseWriter, r *http.Req
 		"disabled_rules": disabledCount,
 	})
 }
+
+func (c *BillingController) handleCalculateDowngradeProration(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req dtos.CalculateDowngradeDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	targetTier := strings.ToUpper(strings.TrimSpace(req.TargetPlan))
+	if targetTier == "" {
+		targetTier = "COMMUNITY"
+	}
+
+	currentPlan, err := c.repo.GetWorkspacePlanDetails(r.Context(), wsID)
+	if err != nil || currentPlan == nil {
+		http.Error(w, `{"error":"failed querying workspace plan details"}`, http.StatusInternalServerError)
+		return
+	}
+
+	plans, _ := c.repo.ListPlanConfigurations(r.Context())
+
+	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
+	if currency == "" {
+		currency = "INR"
+	}
+
+	var currentRate, targetRate float64
+	for _, p := range plans {
+		tierUpper := strings.ToUpper(p.Tier)
+		if tierUpper == strings.ToUpper(currentPlan.PlanTier) {
+			if currency == "USD" {
+				currentRate = float64(p.AmountUSD) / 100.0
+			} else {
+				currentRate = float64(p.AmountINR) / 100.0
+			}
+		}
+		if tierUpper == targetTier {
+			if currency == "USD" {
+				targetRate = float64(p.AmountUSD) / 100.0
+			} else {
+				targetRate = float64(p.AmountINR) / 100.0
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	daysRemaining := 0
+	totalCycleDays := 30
+	if !currentPlan.ExpiresAt.IsZero() && currentPlan.ExpiresAt.After(now) {
+		duration := currentPlan.ExpiresAt.Sub(now)
+		daysRemaining = int(duration.Hours() / 24)
+		if daysRemaining > 31 {
+			totalCycleDays = 365
+		}
+	}
+
+	var proratedCredit float64
+	if daysRemaining > 0 && currentRate > targetRate {
+		dailyDiff := (currentRate - targetRate) / float64(totalCycleDays)
+		proratedCredit = math.Round(dailyDiff*float64(daysRemaining)*100) / 100
+	}
+
+	resp := dtos.ProrationResultDTO{
+		CurrentPlan:          currentPlan.PlanTier,
+		TargetPlan:           targetTier,
+		Currency:             currency,
+		CurrentPlanRate:      currentRate,
+		TargetPlanRate:       targetRate,
+		TotalCycleDays:       totalCycleDays,
+		DaysRemaining:        daysRemaining,
+		ProratedCreditAmount: proratedCredit,
+		CreditBalanceApplied: proratedCredit,
+		NextBillingDate:      currentPlan.ExpiresAt,
+		ImmediateEffect:      true,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (c *BillingController) handleConfirmDowngrade(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"database service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req dtos.ConfirmDowngradeDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	targetTier := strings.ToUpper(strings.TrimSpace(req.TargetPlan))
+	if targetTier == "" {
+		targetTier = "COMMUNITY"
+	}
+
+	currentPlan, err := c.repo.GetWorkspacePlanDetails(r.Context(), wsID)
+	if err != nil || currentPlan == nil {
+		http.Error(w, `{"error":"failed querying workspace plan details"}`, http.StatusInternalServerError)
+		return
+	}
+
+	plans, _ := c.repo.ListPlanConfigurations(r.Context())
+	var currentRate, targetRate float64
+	var targetConfig *models.PlanConfiguration
+	for i := range plans {
+		p := &plans[i]
+		if strings.ToUpper(p.Tier) == strings.ToUpper(currentPlan.PlanTier) {
+			currentRate = float64(p.AmountINR) / 100.0
+		}
+		if strings.ToUpper(p.Tier) == targetTier {
+			targetRate = float64(p.AmountINR) / 100.0
+			targetConfig = p
+		}
+	}
+
+	now := time.Now().UTC()
+	daysRemaining := 0
+	totalCycleDays := 30
+	if !currentPlan.ExpiresAt.IsZero() && currentPlan.ExpiresAt.After(now) {
+		daysRemaining = int(currentPlan.ExpiresAt.Sub(now).Hours() / 24)
+		if daysRemaining > 31 {
+			totalCycleDays = 365
+		}
+	}
+
+	var proratedCredit float64
+	if daysRemaining > 0 && currentRate > targetRate {
+		dailyDiff := (currentRate - targetRate) / float64(totalCycleDays)
+		proratedCredit = math.Round(dailyDiff*float64(daysRemaining)*100) / 100
+	}
+
+	maxSeats := 5
+	var monthlyTokens int64 = 1000000
+	features := []string{"pr_reviews", "automated_rules"}
+
+	if targetConfig != nil {
+		maxSeats = targetConfig.MaxSeats
+		monthlyTokens = targetConfig.MonthlyTokens
+		if len(targetConfig.FeaturesEnabled) > 0 {
+			features = targetConfig.FeaturesEnabled
+		}
+	} else {
+		targetQuota := license.GetPlanQuota(license.LicenseTier(targetTier))
+		monthlyTokens = targetQuota.MonthlyTokens
+		if targetTier == "DEVELOPER" {
+			maxSeats = 1
+		} else if targetTier == "TEAM" {
+			maxSeats = 10
+		}
+	}
+
+	expiresAt := currentPlan.ExpiresAt
+	if expiresAt.IsZero() || expiresAt.Before(now) {
+		expiresAt = now.AddDate(0, 1, 0)
+	}
+
+	if err := c.repo.UpgradeWorkspacePlan(r.Context(), wsID, targetTier, maxSeats, expiresAt, features); err != nil {
+		slog.Error("Failed executing plan downgrade", "workspace_id", wsID, "target_plan", targetTier, "error", err)
+		http.Error(w, `{"error":"failed executing plan downgrade"}`, http.StatusInternalServerError)
+		return
+	}
+
+	maxRules := 5
+	if targetTier == "DEVELOPER" {
+		maxRules = 15
+	} else if targetTier == "TEAM" {
+		maxRules = 50
+	} else if targetTier == "SCALE" || targetTier == "ENTERPRISE" {
+		maxRules = 200
+	}
+	_, _ = c.repo.SyncRulesWithPlanLimit(r.Context(), wsID, maxRules)
+
+	outboxPayload, _ := json.Marshal(map[string]any{
+		"workspace_id":          wsID.String(),
+		"previous_plan":         currentPlan.PlanTier,
+		"new_plan":              targetTier,
+		"prorated_credit_added": proratedCredit,
+		"currency":              "INR",
+		"reason":                req.Reason,
+		"downgraded_at":         now,
+	})
+	_ = c.repo.InsertOutboxEvent(r.Context(), &models.OutboxRecord{
+		ID:          uuid.New(),
+		WorkspaceID: wsID,
+		EventType:   "billing.plan_downgraded",
+		Payload:     outboxPayload,
+	})
+
+	resp := dtos.ConfirmDowngradeResponse{
+		Success:              true,
+		NewPlanTier:          targetTier,
+		CreditBalanceAdded:   proratedCredit,
+		Currency:             "INR",
+		Message:              "Successfully downgraded plan to " + targetTier + ". Prorated credit balance has been credited to your workspace account.",
+		EffectiveAt:          now,
+		NextBillingDate:      expiresAt,
+		NewTotalSeats:        maxSeats,
+		NewMonthlyTokenLimit: monthlyTokens,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+

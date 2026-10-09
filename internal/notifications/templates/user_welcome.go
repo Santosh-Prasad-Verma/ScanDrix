@@ -5,7 +5,7 @@ import (
 	"html"
 )
 
-// RenderNewUserWelcome generates the clean white-and-black onboarding email sent when a new account is activated.
+// RenderNewUserWelcome generates the ambient gradient onboarding email sent when a new account is activated.
 func RenderNewUserWelcome(recipientName, dashboardURL string) (subject, htmlBody string) {
 	name := recipientName
 	if name == "" {
@@ -20,20 +20,20 @@ func RenderNewUserWelcome(recipientName, dashboardURL string) (subject, htmlBody
 		<p style="margin: 0 0 16px 0;">Hi <strong>%s</strong>,</p>
 		<p style="margin: 0 0 20px 0;">Welcome to ScanDrix! Your account is active and ready. You can now connect your Git repositories to start automated AI code reviews on your pull requests.</p>
 
-		<div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 18px 20px; margin: 24px 0;">
-			<div style="font-size: 13px; font-weight: 600; color: #111827; margin-bottom: 8px;">Quickstart Guide</div>
-			<div style="font-size: 14px; color: #4b5563; line-height: 1.6;">
-				1. Connect your GitHub or GitLab repositories in workspace settings.<br>
+		<div style="background-color: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 20px 22px; margin: 24px 0;">
+			<div style="font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 10px;">Quickstart Guide</div>
+			<div style="font-size: 14px; color: #cbd5e1; line-height: 1.65;">
+				1. Connect your GitHub, GitLab, or Forgejo repositories in workspace settings.<br>
 				2. Open a pull request to trigger your first automated AI review.<br>
-				3. Optional: Install the CLI via <code style="background-color: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px;">curl -fsSL https://get.scandrix.dev/install | sh</code>
+				3. Optional: Install the CLI via <code style="background-color: #060710; color: #38bdf8; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; border: 1px solid #1e293b;">curl -fsSL https://get.scandrix.dev/install | sh</code>
 			</div>
 		</div>
 
-		<p style="margin: 0; font-size: 14px; color: #6b7280;">
-			Need help getting set up? Reply directly to this email or visit our <a href="https://scandrix.dev/docs" style="color: #111827; text-decoration: underline;">documentation</a>.
+		<p style="margin: 0; font-size: 14px; color: #94a3b8;">
+			Need help getting set up? Reply directly to this email or visit our <a href="https://scandrix.dev/docs" style="color: #818cf8; text-decoration: underline;">documentation</a>.
 		</p>
 	`, safeName)
 
-	htmlBody = RenderBrandLayout(preview, "Welcome to ScanDrix", content, "Open Developer Dashboard", dashboardURL)
+	htmlBody = RenderBrandLayoutWithHero(preview, "Welcome to ScanDrix", content, "Open Developer Dashboard", dashboardURL, "", DrixyMascotHappyCelebrating, "Drixy Celebrating")
 	return subject, htmlBody
 }

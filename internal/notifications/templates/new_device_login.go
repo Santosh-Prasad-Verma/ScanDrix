@@ -17,7 +17,7 @@ type NewDeviceLoginDetails struct {
 	ActivityURL    string    // URL to view active sessions in the dashboard
 }
 
-// RenderNewDeviceLogin renders an alert email for unrecognized logins.
+// RenderNewDeviceLogin renders an alert email for unrecognized logins with ambient gradient styling.
 func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 	name := d.RecipientName
 	if name == "" {
@@ -34,7 +34,7 @@ func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 	subject = fmt.Sprintf("Security Alert: New login to ScanDrix from %s", safeLocation)
 	preview := fmt.Sprintf("We detected a sign-in to your ScanDrix account from a new device or IP address (%s).", safeLocation)
 
-	badge := RenderBadge("Security Alert", "#fef3c7", "#92400e", "#fde68a")
+	badge := RenderBadge("Security Alert", "rgba(245, 158, 11, 0.15)", "#fbbf24", "rgba(245, 158, 11, 0.4)")
 
 	rows := []InfoRow{
 		{Label: "Device & Client", Value: html.EscapeString(d.Device)},
@@ -50,7 +50,7 @@ func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 		If you recently logged in from this device or network, you can safely disregard this alert.<br><br>
 		<strong>If this wasn't you</strong>, your password may have been exposed. Click below to instantly terminate all active sessions and protect your account.
 	`
-	calloutHTML := RenderCallout(callout, "#fca5a5", "#fef2f2", "#991b1b")
+	calloutHTML := RenderCallout(callout, "#ef4444", "#111827", "#f87171")
 
 	content := fmt.Sprintf(`
 		%s
@@ -64,12 +64,12 @@ func RenderNewDeviceLogin(d NewDeviceLoginDetails) (subject, htmlBody string) {
 	footnote := ""
 	if d.ActivityURL != "" {
 		footnote = fmt.Sprintf(`
-			<p style="margin: 16px 0 0 0; font-size: 13px; color: #6b7280;">
-				Want to inspect all signed-in devices? <a href="%s" style="color: #000000; font-weight: 600; text-decoration: underline;">Review Active Sessions</a>
+			<p style="margin: 16px 0 0 0; font-size: 13px; color: #94a3b8;">
+				Want to inspect all signed-in devices? <a href="%s" style="color: #818cf8; font-weight: 600; text-decoration: underline;">Review Active Sessions</a>
 			</p>
 		`, html.EscapeString(d.ActivityURL))
 	}
 
-	htmlBody = RenderBrandLayoutWithFootnote(preview, "New device or location login", content, "Lock Account Immediately", d.LockAccountURL, footnote)
+	htmlBody = RenderBrandLayoutWithHero(preview, "New device or location login", content, "Lock Account Immediately", d.LockAccountURL, footnote, DrixyMascotStandingReady, "Drixy Device Security")
 	return subject, htmlBody
 }

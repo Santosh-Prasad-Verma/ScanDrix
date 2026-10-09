@@ -28,7 +28,7 @@ type WeeklyScanDigestDetails struct {
 	DashboardURL           string
 }
 
-// RenderWeeklyScanDigest generates the Monday morning weekly security digest email.
+// RenderWeeklyScanDigest generates the Monday morning weekly security digest email with ambient gradient styling.
 func RenderWeeklyScanDigest(d WeeklyScanDigestDetails) (subject, htmlBody string) {
 	name := d.RecipientName
 	if name == "" {
@@ -41,7 +41,7 @@ func RenderWeeklyScanDigest(d WeeklyScanDigestDetails) (subject, htmlBody string
 	subject = fmt.Sprintf("Weekly Security Digest: %s · %d PRs Reviewed, %d Blocked", safeOrg, d.TotalPRsReviewed, d.VulnerabilitiesBlocked)
 	preview := fmt.Sprintf("Weekly ScanDrix summary for %s: %d pull requests reviewed by Drixy, %d security issues blocked.", safeOrg, d.TotalPRsReviewed, d.VulnerabilitiesBlocked)
 
-	badge := RenderBadge("Weekly Digest", "#f3f4f6", "#111827", "#e5e7eb")
+	badge := RenderBadge("Weekly Digest", "rgba(99, 102, 241, 0.15)", "#c7d2fe", "rgba(99, 102, 241, 0.35)")
 
 	stats := []StatItem{
 		{Value: fmt.Sprintf("%d", d.TotalPRsReviewed), Label: "PRs Reviewed by Drixy"},
@@ -56,15 +56,15 @@ func RenderWeeklyScanDigest(d WeeklyScanDigestDetails) (subject, htmlBody string
 		var rows strings.Builder
 		rows.WriteString(`
 			<div style="margin: 24px 0 10px 0;">
-				<span style="font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #374151;">
+				<span style="font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8;">
 					Top Scanned Repositories
 				</span>
 			</div>
-			<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; border-collapse: separate; overflow: hidden; margin-bottom: 20px;">
+			<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #111827; border: 1px solid #1e293b; border-radius: 8px; border-collapse: separate; overflow: hidden; margin-bottom: 20px;">
 		`)
 
 		for i, repo := range d.TopRepos {
-			borderBottom := "border-bottom: 1px solid #f3f4f6;"
+			borderBottom := "border-bottom: 1px solid #1e293b;"
 			if i == len(d.TopRepos)-1 {
 				borderBottom = ""
 			}
@@ -74,12 +74,12 @@ func RenderWeeklyScanDigest(d WeeklyScanDigestDetails) (subject, htmlBody string
 			}
 			rows.WriteString(fmt.Sprintf(`
 				<tr>
-					<td style="padding: 10px 16px; font-size: 13px; font-weight: 600; color: #111827; %s">
+					<td style="padding: 10px 16px; font-size: 13px; font-weight: 600; color: #ffffff; %s">
 						%s
 					</td>
-					<td style="padding: 10px 16px; font-size: 12px; color: #6b7280; text-align: right; %s">
+					<td style="padding: 10px 16px; font-size: 12px; color: #94a3b8; text-align: right; %s">
 						%d PRs · %d blocked
-						<span style="display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 700; background: #e5e7eb; color: #111827; padding: 2px 6px; border-radius: 3px;">%s</span>
+						<span style="display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 700; background: #1e293b; color: #38bdf8; border: 1px solid #334155; padding: 2px 6px; border-radius: 4px;">%s</span>
 					</td>
 				</tr>
 			`, borderBottom, html.EscapeString(repo.Repository), borderBottom, repo.PRsScanned, repo.IssuesBlocked, html.EscapeString(grade)))
@@ -96,11 +96,11 @@ func RenderWeeklyScanDigest(d WeeklyScanDigestDetails) (subject, htmlBody string
 		%s
 		%s
 
-		<p style="margin: 16px 0 0 0; font-size: 14px; color: #4b5563;">
+		<p style="margin: 16px 0 0 0; font-size: 14px; color: #94a3b8;">
 			Drixy continuously inspects every incoming pull request to safeguard code quality, prevent vulnerabilities, and save engineering hours.
 		</p>
 	`, badge, safeName, safeOrg, safeDateRange, RenderStatGrid(stats), reposHTML)
 
-	htmlBody = RenderBrandLayout(preview, "Weekly Security & Review Digest", content, "View Weekly Dashboard", d.DashboardURL)
+	htmlBody = RenderBrandLayoutWithHero(preview, "Weekly Security & Review Digest", content, "View Weekly Dashboard", d.DashboardURL, "", DrixyMascotCoffeeBreak, "Drixy Coffee Break")
 	return subject, htmlBody
 }

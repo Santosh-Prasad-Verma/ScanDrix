@@ -5,19 +5,49 @@ import (
 	"time"
 )
 
-// Brand Color Palette (ScanDrix clean white and black minimalist system)
+// Brand Color Palette (ScanDrix Blue & Black Indigo Cream Professional Ambient Gradients Style)
 const (
-	ColorPrimaryLight = "#000000" // Crisp black CTA button
-	ColorPrimaryDark  = "#ffffff" // Pure white text on CTA button
-	ColorHeaderBG     = "#ffffff" // Pure white header
-	ColorPageBG       = "#f9fafb" // Crisp light page background
-	ColorCardBG       = "#ffffff" // Pure white card container
-	ColorTextPrimary  = "#111827" // Deep black headings and primary text
-	ColorTextMuted    = "#6b7280" // Refined slate gray secondary text
-	ColorBorder       = "#e5e7eb" // Subtle clean 1px border
-	ColorSuccess      = "#10b981" // Emerald green status accent
-	ColorDanger       = "#ef4444" // Red alert accent
-	ColorWarning      = "#f59e0b" // Amber warning accent
+	ColorPrimaryCTA     = "#4f46e5" // Ambient indigo CTA
+	ColorPrimaryAccent  = "#6366f1" // Light indigo accent
+	ColorCoralAccent    = "#ef8557" // ScanDrix coral button accent
+	ColorPageBG         = "#060710" // Deep ambient dark page background
+	ColorCardBG         = "#0d1322" // Deep dark indigo card container
+	ColorCardSurface    = "#111827" // Internal container surface
+	ColorHeaderBG       = "#0d1322" // Header background
+	ColorPrimaryLight   = "#6366f1" // Button fill
+	ColorPrimaryDark    = "#ffffff" // Button text
+	ColorTextPrimary    = "#ffffff" // Crisp white headings and titles
+	ColorTextCream      = "#ebd6ff" // Cream accent
+	ColorTextSecondary  = "#cbd5e1" // High contrast readable body text
+	ColorTextMuted      = "#94a3b8" // Slate muted metadata text
+	ColorBorder         = "#1e293b" // Subtle dark indigo-slate border
+	ColorBorderSubtle   = "#2e3856" // Subtle highlight border
+	ColorSuccess        = "#10b981" // Emerald green status accent
+	ColorDanger         = "#ef4444" // Red alert accent
+	ColorWarning        = "#f59e0b" // Amber warning accent
+)
+
+// Drixy Mascot Asset filenames for contextual email templates
+const (
+	DrixyAssetBaseURL           = "https://app.scandrix.dev/drixy"
+	DrixyMascotWavingHello      = "drixy_waving_hello.png"
+	DrixyMascotHappyCelebrating = "drixy_happy_celebrating.png"
+	DrixyMascotStandingReady    = "drixy_standing_ready.png"
+	DrixyMascotCheeringSuccess  = "drixy_cheering_success.png"
+	DrixyMascotLyingRelaxed     = "drixy_lying_relaxed.png"
+	DrixyMascotPointingGuide    = "drixy_pointing_guide.png"
+	DrixyMascotThinking         = "drixy_thinking_analyzing.png"
+	DrixyMascotCuriousLooking   = "drixy_curious_looking.png"
+	DrixyMascotReadingBook      = "drixy_reading_book.png"
+	DrixyMascotCoolThumbsUp     = "drixy_cool_thumbs_up.png"
+	DrixyMascotIdeaLightbulb    = "drixy_idea_lightbulb.png"
+	DrixyMascotScanningPages    = "drixy_scanning_pages.png"
+	DrixyMascotShockedAlert     = "drixy_shocked_alert.png"
+	DrixyMascotCoffeeBreak      = "drixy_coffee_break.png"
+	DrixyMascotHuggingKnees     = "drixy_hugging_knees_waiting.png"
+	DrixyMascotFloatingWaving   = "drixy_floating_waving.png"
+	DrixyMascotInBoxUnboxing    = "drixy_in_box_unboxing.png"
+	DrixyMascotWalkingBackpack  = "drixy_walking_backpack.png"
 )
 
 // InvoiceDetails encapsulates full tax and itemized subscription billing data.

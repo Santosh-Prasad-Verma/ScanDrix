@@ -485,3 +485,69 @@ func TestBillingControllerListPlans(t *testing.T) {
 		t.Fatalf("SCALE plan not found in ListPlans response")
 	}
 }
+
+func TestBillingControllerDowngradeFlow(t *testing.T) {
+	wsID := uuid.New()
+	limiter := llm.NewTokenBudgetLimiter()
+	repo := &mockBillingRepo{
+		planDetails: &models.WorkspacePlanDetails{
+			WorkspaceID: wsID,
+			PlanTier:    "TEAM",
+			TotalSeats:  25,
+			ExpiresAt:   time.Now().UTC().AddDate(0, 0, 15),
+		},
+	}
+	ctrl := controllers.NewBillingController(nil, repo, limiter)
+	router := ctrl.ProtectedRoutes()
+
+	// 1. Calculate downgrade proration
+	calcBody, _ := json.Marshal(dtos.CalculateDowngradeDTO{
+		TargetPlan: "COMMUNITY",
+		Currency:   "INR",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/downgrade/calculate", bytes.NewReader(calcBody))
+	ctx := context.WithValue(req.Context(), auth.WorkspaceContextKey, wsID)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for calculate downgrade, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var proration dtos.ProrationResultDTO
+	if err := json.NewDecoder(rec.Body).Decode(&proration); err != nil {
+		t.Fatalf("failed decoding proration result: %v", err)
+	}
+
+	if proration.TargetPlan != "COMMUNITY" {
+		t.Fatalf("expected target plan COMMUNITY, got %s", proration.TargetPlan)
+	}
+
+	// 2. Confirm downgrade
+	confirmBody, _ := json.Marshal(dtos.ConfirmDowngradeDTO{
+		TargetPlan:      "COMMUNITY",
+		ImmediateEffect: true,
+		Reason:          "Downsizing engineering team",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/downgrade/confirm", bytes.NewReader(confirmBody))
+	req2 = req2.WithContext(ctx)
+
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for confirm downgrade, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var confirmResp dtos.ConfirmDowngradeResponse
+	if err := json.NewDecoder(rec2.Body).Decode(&confirmResp); err != nil {
+		t.Fatalf("failed decoding confirm response: %v", err)
+	}
+
+	if !confirmResp.Success || confirmResp.NewPlanTier != "COMMUNITY" {
+		t.Fatalf("expected successful downgrade to COMMUNITY, got: %+v", confirmResp)
+	}
+}
+

@@ -5,7 +5,7 @@ import (
 	"html"
 )
 
-// RenderTeamInvite generates the clean white-and-black email inviting a teammate to join a ScanDrix workspace.
+// RenderTeamInvite generates the ambient gradient email inviting a teammate to join a ScanDrix workspace.
 func RenderTeamInvite(inviterName, recipientEmail, orgName, role, inviteURL string) (subject, htmlBody string) {
 	safeInviter := html.EscapeString(inviterName)
 	safeOrg := html.EscapeString(orgName)
@@ -17,12 +17,11 @@ func RenderTeamInvite(inviterName, recipientEmail, orgName, role, inviteURL stri
 	content := fmt.Sprintf(`
 		<p style="margin: 0 0 16px 0;">Hi,</p>
 		<p style="margin: 0 0 20px 0;"><strong>%s</strong> has invited you to collaborate on <strong>%s</strong> as a <strong>%s</strong>.</p>
-		<p style="margin: 0; font-size: 14px; color: #6b7280;">
+		<p style="margin: 0; font-size: 14px; color: #94a3b8;">
 			Click the button below to accept the invitation and access the team workspace.
 		</p>
 	`, safeInviter, safeOrg, safeRole)
 
-	htmlBody = RenderBrandLayout(preview, fmt.Sprintf("Join %s on ScanDrix", safeOrg), content, "Accept Invitation", inviteURL)
+	htmlBody = RenderBrandLayoutWithHero(preview, fmt.Sprintf("Join %s on ScanDrix", safeOrg), content, "Accept Invitation", inviteURL, "", DrixyMascotFloatingWaving, "Drixy Workspace Invitation")
 	return subject, htmlBody
 }
-

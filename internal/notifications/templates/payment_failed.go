@@ -20,15 +20,15 @@ func RenderPaymentFailed(subscriberName, orgName, planTier, orderID, failureReas
 		<p style="margin: 0 0 16px 0;">Hi <strong>%s</strong>,</p>
 		<p style="margin: 0 0 16px 0;">We were unable to process the renewal payment for your <strong>%s</strong> subscription on workspace <strong>%s</strong>.</p>
 
-		<div style="background-color: #fef2f2; border: 1px solid #fee2e2; border-left: 3px solid #ef4444; border-radius: 4px; padding: 14px 18px; margin: 20px 0; font-size: 14px; color: #991b1b;">
+		<div style="background-color: #111827; border: 1px solid #1e293b; border-left: 3px solid #ef4444; border-radius: 6px; padding: 14px 18px; margin: 20px 0; font-size: 14px; color: #f87171;">
 			<strong>Reason:</strong> %s (Order: %s)
 		</div>
 
-		<p style="margin: 0; font-size: 14px; color: #6b7280;">
+		<p style="margin: 0; font-size: 14px; color: #94a3b8;">
 			Please update your payment method to ensure automated pull request reviews continue uninterrupted.
 		</p>
 	`, safeSubscriber, safeTier, safeOrg, safeReason, safeOrderID)
 
-	htmlBody = RenderBrandLayout(preview, "Payment Failed", content, "Update Payment Method", retryURL)
+	htmlBody = RenderBrandLayoutWithHero(preview, "Payment Failed", content, "Update Payment Method", retryURL, "", DrixyMascotCuriousLooking, "Drixy Payment Notice")
 	return subject, htmlBody
 }
