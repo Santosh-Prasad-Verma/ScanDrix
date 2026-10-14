@@ -230,6 +230,23 @@ description: Dependency management, SBOM verification, and pipeline integrity.
 4. Typosquatting: Check package namespaces and verification status.
 `,
 		},
+		{
+			Name:        "scandrix-security-audit",
+			Description: "Multi-phase autonomous security audit and vulnerability discovery harness",
+			Filename:    "scandrix-security-audit.md",
+			Content: `---
+name: scandrix-security-audit
+description: Autonomous multi-phase security audit and vulnerability harness for codebases, APIs, and LLM systems. Use for comprehensive security reviews, vulnerability discovery, or pen-testing.
+---
+
+# ScanDrix Security Audit Harness
+1. Reconnaissance: Map architecture, trust boundaries, public surfaces, and deterministic coverage units in architecture.md and coverage-ledger.json.
+2. Coverage-Led Hunting: Assign isolated hunters across attack classes (AI/LLM, Auth, RLS, Webhooks, Sandbox, Client-Side).
+3. Adversarial Validation: Every candidate finding is independently tested by a verifier seeking to disprove it.
+4. Structured Output: Write confirmed, needs_validation, and rejected records to findings.json validated by report-schema.json.
+5. Reporting: Derive REPORT.md, FINDINGS-DETAIL.md, and NEEDS-VALIDATION.md with actionable remediation steps.
+`,
+		},
 	}
 }
 

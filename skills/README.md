@@ -22,6 +22,8 @@ It implements a **Two-Tier Architecture**:
   - Web application security (strict schema validation, context-aware XSS escaping, magic byte file upload verification, cookie security).
 - `scandrix-sec-supplychain`
   - Dependency integrity (lockfile enforcement, `govulncheck`, `trivy fs`, typosquatting prevention).
+- `scandrix-security-audit`
+  - Multi-phase vulnerability discovery harness (Reconnaissance, Coverage Ledger, Hunting across AI/LLM, Auth, RLS, Webhooks, Sandbox, and Adversarial Validation).
 
 ---
 
@@ -62,6 +64,8 @@ It implements a **Two-Tier Architecture**:
   - Load `scandrix-sec-input-web`.
 - **Modifying dependencies (`go.mod`, `package.json`, lockfiles)**:
   - Load `scandrix-sec-supplychain`.
+- **User requests comprehensive security review, vulnerability discovery, or pen-test**:
+  - Load `scandrix-security-audit`.
 - **User mentions `review`, `commit`, `push`, `open PR`, `merge`, `quality gate`, `security scan`**:
   - Prefer `scandrix-review` (or `scandrix-review-dev` for local backend development).
 - **User mentions `business validation`, `acceptance criteria`, `task requirements`**:

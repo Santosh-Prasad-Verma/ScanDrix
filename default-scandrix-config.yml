@@ -1245,16 +1245,20 @@ v2PromptOverrides:
         - Batch processing inefficiency: Failing on first error rather than aggregating batch feedback
       security: |
         - Injection vulnerabilities: SQL, command, NoSQL, LDAP, or template injection vectors
-        - Broken authentication & authorization: Missing permission gates, privilege escalation flaws
-        - Sensitive data exposure: Credentials, private keys, or PII emitted in logs or responses
+        - Broken authentication & authorization: Missing permission gates, privilege escalation flaws, fail-open auth logic
+        - Multi-tenant data isolation & RLS: Queries omitting tenant/org scoping, missing or bypassable Row Level Security (RLS) policies
+        - Sensitive data & BYOK exposure: API keys, bearer tokens, private keys, or PII emitted in logs, telemetry, prompt dumps, or client bundles
         - Insecure cryptography: Broken hash algorithms (MD5/SHA1), static nonces, or hardcoded keys
         - Input validation gaps: Missing sanitization, boundary checks, or integer overflow paths
-        - Session management: Predictable session tokens, missing expiration, or insecure cookies
+        - Session management: Predictable session tokens, missing expiration, insecure cookies, or missing OAuth state/PKCE bindings
         - Timing attacks: Direct equality comparisons on secrets instead of constant-time comparison
         - Insecure fallback values: Using empty strings or weak defaults when security env vars are absent
         - Input validation bypass: Unchecked pagination limits or negative slice indices
-        - Server-Side Request Forgery (SSRF): Unchecked external URLs in network operations
+        - Server-Side Request Forgery (SSRF): Unchecked external URLs in network operations or proxy endpoints
         - Case-sensitivity bypass: Inconsistent normalization in comparisons of domain/email identifiers
+        - AI & LLM security: Indirect prompt injection via diffs or external content, untrusted LLM tool execution, prompt exfiltration
+        - Webhook & messaging integrity: Unverified HMAC signatures, replay vulnerabilities, or poison pills in RabbitMQ/queue workers
+        - Sandbox & execution isolation: Path traversal, symlink escapes, or unconfined network/filesystem access in test runners or execution environments
   severity:
     flags:
       critical: |

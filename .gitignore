@@ -64,6 +64,7 @@ tmp/
 temp/
 .scratch/
 scratch/
+audits/
 /cli
 prompt.md
 SCANDRIX_ENGINEERING_MASTERCLASS.md
