@@ -199,3 +199,38 @@ func TestLocalSandboxGitHooksDisabled(t *testing.T) {
 		t.Fatalf("SECURITY VIOLATION: untrusted git hook executed during sandbox checkout!")
 	}
 }
+
+func TestLocalSandboxEnvironmentIsolation(t *testing.T) {
+	sourceRepo := setupTestRepo(t)
+	ctx := context.Background()
+
+	// Simulate host process having sensitive environment variables
+	t.Setenv("SCANDRIX_ENCRYPTION_KEY", "secret-key-12345")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/scandrix")
+	t.Setenv("JWT_SECRET", "super-secret-jwt-token")
+
+	provider := local.NewLocalSandboxProvider()
+	inst, err := provider.CreateSandboxWithRepo(ctx, contracts.CreateSandboxParams{
+		CloneURL: sourceRepo,
+		Branch:   "main",
+		Platform: models.ProviderGitHub,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandboxWithRepo failed: %v", err)
+	}
+	defer func() { _ = inst.Cleanup(ctx) }()
+
+	// Execute with empty env map (which previously caused cmd.Env = nil)
+	rc := inst.RemoteCommands()
+	res, err := rc.Exec(ctx, "echo \"KEY=$SCANDRIX_ENCRYPTION_KEY DB=$DATABASE_URL JWT=$JWT_SECRET\"")
+	if err != nil {
+		t.Fatalf("exec failed: %v", err)
+	}
+
+	if strings.Contains(res.Stdout, "secret-key-12345") ||
+		strings.Contains(res.Stdout, "postgres://") ||
+		strings.Contains(res.Stdout, "super-secret-jwt-token") {
+		t.Fatalf("SECURITY VIOLATION: host secrets leaked into sandbox environment: %s", res.Stdout)
+	}
+}
+

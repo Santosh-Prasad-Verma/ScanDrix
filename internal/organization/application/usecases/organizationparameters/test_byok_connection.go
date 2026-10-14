@@ -45,9 +45,7 @@ type TestBYOKConnectionUseCase struct {
 
 func NewTestBYOKConnectionUseCase() *TestBYOKConnectionUseCase {
 	return &TestBYOKConnectionUseCase{
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		httpClient: NewSafeHTTPClient(15 * time.Second),
 	}
 }
 

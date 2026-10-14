@@ -90,3 +90,38 @@ func TestBYOKProvidersAndModelsUseCases(t *testing.T) {
 		t.Errorf("expected no error deleting nonexistent model: %v", err)
 	}
 }
+
+func TestAssertSafeURLValidation(t *testing.T) {
+	invalidURLs := []string{
+		"http://localhost",
+		"http://localhost:8080/v1",
+		"https://foo.localhost/v1",
+		"http://127.0.0.1:8080",
+		"https://127.0.0.1/v1",
+		"http://10.0.0.1:9000",
+		"http://192.168.1.50/v1",
+		"http://172.16.0.5/v1",
+		"http://169.254.169.254/latest/meta-data",
+		"http://0.0.0.0:8000",
+		"file:///etc/passwd",
+		"ftp://evil.com/models",
+		"https://non-existent-domain-for-unit-test-never-resolves-12345.scandrix.internal",
+	}
+
+	for _, raw := range invalidURLs {
+		err := orgparamusecases.AssertSafeURL(raw)
+		if err == nil {
+			t.Errorf("expected AssertSafeURL to reject %q, but succeeded", raw)
+		}
+	}
+
+	// Permitted: empty or public IP
+	if err := orgparamusecases.AssertSafeURL(""); err != nil {
+		t.Errorf("expected empty URL to pass, got: %v", err)
+	}
+
+	if err := orgparamusecases.AssertSafeURL("https://8.8.8.8/v1"); err != nil {
+		t.Errorf("expected public IP to pass, got: %v", err)
+	}
+}
+

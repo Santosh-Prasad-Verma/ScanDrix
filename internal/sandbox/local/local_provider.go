@@ -240,6 +240,16 @@ func (s *LocalSandboxInstance) Run(ctx context.Context, command string, envs map
 	start := time.Now()
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
 	cmd.Dir = s.repoDir
+	pathEnv := os.Getenv("PATH")
+	if pathEnv == "" {
+		pathEnv = "/usr/local/bin:/usr/bin:/bin"
+	}
+	cmd.Env = []string{
+		fmt.Sprintf("PATH=%s", pathEnv),
+		fmt.Sprintf("HOME=%s", s.repoDir),
+		fmt.Sprintf("TMPDIR=%s", s.repoDir),
+		"LC_ALL=C",
+	}
 
 	for k, v := range envs {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
