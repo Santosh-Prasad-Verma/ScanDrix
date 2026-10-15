@@ -36,3 +36,14 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "docker"
+
+  - package-ecosystem: "npm"
+    directory: "/scandrix-dashboard"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "frontend"
+      - "security"
+

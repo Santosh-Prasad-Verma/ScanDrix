@@ -1,0 +1,6 @@
+Contact: mailto:security@scandrix.dev
+Expires: 2027-10-15T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://scandrix.dev/.well-known/security.txt
+Policy: https://scandrix.dev/security
+Acknowledgments: https://scandrix.dev/security/hall-of-fame
