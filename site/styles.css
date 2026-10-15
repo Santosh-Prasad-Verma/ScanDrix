@@ -107,11 +107,17 @@ header {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 60px;
-  height: 60px;
+  width: 56px;
+  height: 56px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
+}
+
+.logo-img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
 }
 
 h1 {
@@ -230,9 +236,7 @@ h1 span {
 
 .install-cmd code {
   flex: 1;
-  background: var(--accent-gradient);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #F4F4F5;
   white-space: pre-wrap;
   word-break: break-all;
   line-height: 1.5;
@@ -255,11 +259,11 @@ h1 span {
 .copy-btn:hover {
   background: var(--surface-3);
   color: #FFFFFF;
-  border-color: #FF571A;
+  border-color: var(--border-bright);
 }
 
 .copy-btn.copied {
-  background: var(--accent-gradient);
+  background: var(--accent);
   border-color: transparent;
   color: #FFFFFF;
 }
@@ -339,12 +343,11 @@ h2::before {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 1.5rem 1.65rem;
-  transition: border-color 0.2s ease, transform 0.15s ease;
+  transition: border-color 0.2s ease;
 }
 
 .command:hover {
   border-color: var(--border-bright);
-  transform: translateY(-1px);
 }
 
 .command-header {
@@ -423,14 +426,13 @@ h2::before {
   color: var(--text-secondary);
   font-size: 1.02rem;
   font-weight: 500;
-  transition: border-color 0.15s, color 0.15s, transform 0.15s;
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
 }
 
 .tool:hover {
-  border-color: #FF571A;
+  border-color: var(--border-bright);
   color: #FFFFFF;
   background: var(--surface-2);
-  transform: translateY(-2px);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -457,19 +459,19 @@ h2::before {
 }
 
 .feature-icon {
-  width: 36px;
-  height: 36px;
-  background: linear-gradient(135deg, rgba(255, 107, 43, 0.14) 0%, rgba(255, 87, 26, 0.18) 40%, rgba(212, 56, 0, 0.12) 100%);
-  border: 1px solid rgba(255, 87, 26, 0.3);
-  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   color: #FF571A;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .feature h3 {
@@ -502,22 +504,9 @@ footer {
   margin-top: 4.5rem;
   padding-top: 2.25rem;
   border-top: 1px solid var(--border);
-  position: relative;
   color: var(--text-muted);
   text-align: center;
   font-size: 0.98rem;
-}
-
-footer::before {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(360px, 75%);
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, #FF571A 50%, transparent 100%);
-  opacity: 0.75;
 }
 
 .footer-security-line {
