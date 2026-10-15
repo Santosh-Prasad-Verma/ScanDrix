@@ -44,7 +44,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          go-version-file: 'go.mod'
           cache: true
 
       - name: Download Go Dependencies
@@ -61,7 +61,7 @@ jobs:
       # could not pass even with zero findings in the actual codebase.
       - name: Run Gosec SAST Analysis
         run: |
-          gosec -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test -exclude-dir=.agents -exclude-dir=evals -exclude-dir=e2b-sandbox ./...
+          gosec -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test ./cmd/... ./internal/...
 
       - name: Upload SARIF Artifact
         uses: actions/upload-artifact@v4
