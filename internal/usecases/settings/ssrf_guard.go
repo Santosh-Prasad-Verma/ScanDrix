@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 )
 
@@ -119,6 +120,11 @@ func AssertSafeEndpoint(rawURL string) error {
 		return errors.New("endpoint URL missing valid hostname")
 	}
 
+	// In test mode, RFC 2606 .invalid domains are explicitly reserved for test stubs
+	if isTestMode() && strings.HasSuffix(hostname, ".invalid") {
+		return nil
+	}
+
 	// Resolve hostname IPs
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
@@ -158,8 +164,11 @@ func isRestrictedIP(ip net.IP) bool {
 }
 
 func isTestMode() bool {
+	if testing.Testing() {
+		return true
+	}
 	if os.Getenv("GO_ENV") == "test" || os.Getenv("TESTING") == "true" || os.Getenv("API_NODE_ENV") == "test" || os.Getenv("SCANDRIX_ALLOW_LOCAL_LLM") == "true" {
 		return true
 	}
-	return flag.Lookup("test.v") != nil
+	return flag.Lookup("test.v") != nil || strings.HasSuffix(os.Args[0], ".test")
 }

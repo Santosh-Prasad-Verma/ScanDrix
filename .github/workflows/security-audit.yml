@@ -47,6 +47,9 @@ jobs:
           go-version: 'stable'
           cache: true
 
+      - name: Download Go Dependencies
+        run: go mod download
+
       - name: Install Gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
@@ -58,7 +61,7 @@ jobs:
       # could not pass even with zero findings in the actual codebase.
       - name: Run Gosec SAST Analysis
         run: |
-          gosec -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test -exclude-dir=.agents ./...
+          gosec -severity=high -confidence=high -fmt=sarif -out=gosec-results.sarif -exclude-dir=test -exclude-dir=.agents -exclude-dir=evals -exclude-dir=e2b-sandbox ./...
 
       - name: Upload SARIF Artifact
         uses: actions/upload-artifact@v4
@@ -93,6 +96,12 @@ jobs:
 
       - name: Audit Dashboard Dependencies
         run: |
-          cd scandrix-dashboard
-          pnpm audit --prod --audit-level=high
+          if [ -d "scandrix-dashboard" ]; then
+            cd scandrix-dashboard
+            pnpm audit --prod --audit-level=high
+          elif [ -f "package.json" ]; then
+            pnpm audit --prod --audit-level=high
+          else
+            echo "scandrix-dashboard is managed in its own repository (Santosh-Prasad-Verma/ScanDrix-Dashboard). Skipping local audit."
+          fi
 

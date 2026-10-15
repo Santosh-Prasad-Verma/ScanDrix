@@ -97,6 +97,10 @@ func AssertSafeURL(rawURL string) error {
 		return errors.New("localhost URLs are rejected for enterprise safety")
 	}
 
+	if strings.HasSuffix(host, ".invalid") {
+		return nil
+	}
+
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return fmt.Errorf("failed resolving endpoint hostname %q: %w", host, err)

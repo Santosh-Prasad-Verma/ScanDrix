@@ -1,0 +1,16 @@
+title = "ScanDrix Gitleaks Configuration"
+
+[allowlist]
+description = "Allowlist test files containing mock strings and dummy keys"
+paths = [
+  '''_test\.go$''',
+  '''evals/.*''',
+  '''test/.*''',
+]
+regexes = [
+  '''(?i)secret-key-12345''',
+  '''(?i)super-secret-jwt-token''',
+]
+commits = [
+  "d3f6a31005101014a6afd41412957f14e83e934a",
+]
