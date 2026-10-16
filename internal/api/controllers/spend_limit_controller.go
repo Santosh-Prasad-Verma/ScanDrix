@@ -3,8 +3,10 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -96,22 +98,25 @@ func (c *SpendLimitController) WriteRoutePatterns() []RoutePattern {
 	}
 }
 
-func (c *SpendLimitController) resolveOrgAndTeam(r *http.Request) (string, string) {
-	orgID := r.URL.Query().Get("organizationId")
-	teamID := r.URL.Query().Get("teamId")
-
-	if orgID == "" {
-		if wsID, err := auth.WorkspaceFromContext(r.Context()); err == nil {
-			orgID = wsID.String()
-		}
+func (c *SpendLimitController) resolveOrgAndTeam(r *http.Request) (string, string, int, error) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		return "", "", http.StatusUnauthorized, errors.New("missing workspace authorization context")
 	}
-	return orgID, teamID
+
+	reqOrg := strings.TrimSpace(r.URL.Query().Get("organizationId"))
+	if reqOrg != "" && reqOrg != wsID.String() {
+		return "", "", http.StatusForbidden, errors.New("organizationId does not match authenticated workspace")
+	}
+
+	teamID := r.URL.Query().Get("teamId")
+	return wsID.String(), teamID, http.StatusOK, nil
 }
 
 func (c *SpendLimitController) handleGetStatus(w http.ResponseWriter, r *http.Request) {
-	orgID, teamID := c.resolveOrgAndTeam(r)
-	if orgID == "" {
-		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+	orgID, teamID, status, err := c.resolveOrgAndTeam(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -154,20 +159,20 @@ func (c *SpendLimitController) handleGetStatus(w http.ResponseWriter, r *http.Re
 	}
 
 	wsUUID, _ := uuid.Parse(orgID)
-	status, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID)
+	evalStatus, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"failed evaluating spend limit status: %s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(evalStatus)
 }
 
 func (c *SpendLimitController) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	orgID, teamID := c.resolveOrgAndTeam(r)
-	if orgID == "" {
-		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+	orgID, teamID, status, err := c.resolveOrgAndTeam(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -182,12 +187,25 @@ func (c *SpendLimitController) handleGetConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	limitUSD := 250.0
-	if c.repo != nil {
-		wsUUID, _ := uuid.Parse(orgID)
-		if status, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID); err == nil && status != nil {
-			limitUSD = status.LimitUSD
-		}
+	if c.repo == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "spend limit configuration is unavailable on this deployment",
+		})
+		return
+	}
+
+	wsUUID, _ := uuid.Parse(orgID)
+	evalStatus, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed querying spend limit status: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	limitUSD := 0.0
+	if evalStatus != nil {
+		limitUSD = evalStatus.LimitUSD
 	}
 
 	prices := []models.ModelPriceInfo{
@@ -210,9 +228,18 @@ func (c *SpendLimitController) handleGetConfig(w http.ResponseWriter, r *http.Re
 }
 
 func (c *SpendLimitController) handleConfigureSpendLimit(w http.ResponseWriter, r *http.Request) {
-	orgID, teamID := c.resolveOrgAndTeam(r)
-	if orgID == "" {
-		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+	orgID, teamID, status, err := c.resolveOrgAndTeam(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+		return
+	}
+
+	if c.configService != nil && !c.configService.HasPersistence() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "spend limit persistence is unavailable on this deployment",
+		})
 		return
 	}
 
@@ -222,17 +249,30 @@ func (c *SpendLimitController) handleConfigureSpendLimit(w http.ResponseWriter, 
 			http.Error(w, `{"error":"invalid spend limit request payload"}`, http.StatusBadRequest)
 			return
 		}
+		if input.OrganizationID != "" && input.OrganizationID != orgID {
+			http.Error(w, `{"error":"organizationId does not match authenticated workspace"}`, http.StatusForbidden)
+			return
+		}
 		input.OrganizationID = orgID
 		input.TeamID = teamID
 
 		cfg, err := c.configureUseCase.Execute(r.Context(), input)
 		if err != nil {
+			if strings.Contains(err.Error(), "persistence service is unavailable") {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(cfg)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"spend limit persistence is unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -252,12 +292,10 @@ func (c *SpendLimitController) handleConfigureSpendLimit(w http.ResponseWriter, 
 		return
 	}
 
-	if c.repo != nil {
-		wsUUID, _ := uuid.Parse(orgID)
-		if err := c.repo.UpdateSpendLimit(r.Context(), wsUUID, req.LimitUSD); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed updating spend limit: %s"}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
+	wsUUID, _ := uuid.Parse(orgID)
+	if err := c.repo.UpdateSpendLimit(r.Context(), wsUUID, req.LimitUSD); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed updating spend limit: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

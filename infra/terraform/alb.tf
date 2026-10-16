@@ -38,7 +38,7 @@ resource "aws_lb_target_group" "api" {
   target_type = "ip"
 
   health_check {
-    path                = "/health"
+    path                = "/healthz"
     protocol            = "HTTP"
     matcher             = "200-299"
     interval            = 30
@@ -61,7 +61,7 @@ resource "aws_lb_target_group" "webhooks" {
   target_type = "ip"
 
   health_check {
-    path                = "/health"
+    path                = "/healthz"
     protocol            = "HTTP"
     matcher             = "200-299"
     interval            = 30

@@ -3,6 +3,7 @@ package spendlimit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/scandrix/backend/internal/analytics/pricing"
@@ -34,6 +35,11 @@ func NewSpendLimitConfigService(
 	}
 }
 
+// HasPersistence reports whether an underlying organization parameter repository is configured.
+func (s *SpendLimitConfigService) HasPersistence() bool {
+	return s != nil && s.orgParamsService != nil
+}
+
 // GetConfig retrieves the stored spend limit config for an organization.
 func (s *SpendLimitConfigService) GetConfig(ctx context.Context, orgID, teamID string) (*SpendLimitConfig, error) {
 	if s.orgParamsService == nil {
@@ -60,7 +66,7 @@ func (s *SpendLimitConfigService) GetConfig(ctx context.Context, orgID, teamID s
 // SaveConfig persists the spend limit configuration for an organization.
 func (s *SpendLimitConfigService) SaveConfig(ctx context.Context, orgID, teamID string, cfg *SpendLimitConfig) error {
 	if s.orgParamsService == nil {
-		return nil
+		return errors.New("organization parameters persistence service is unavailable")
 	}
 	return s.orgParamsService.Set(ctx, orgID, teamID, ParamKeySpendLimitConfig, cfg)
 }

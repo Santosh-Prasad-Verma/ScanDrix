@@ -83,7 +83,7 @@ func (t *FeedbackTracker) CalculateWorkspaceSentiment(workspaceID uuid.UUID) (to
 	}
 
 	if total == 0 {
-		return 0, 1.0, 0.0 // Default 100% helpful when no negative votes
+		return 0, 0.0, 0.0
 	}
 
 	return total, float64(helpfulCount) / float64(total), float64(fpCount) / float64(total)

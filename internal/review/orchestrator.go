@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/analytics/pricing"
 	"github.com/scandrix/backend/internal/codeanalysis/ast"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/integrations/github"
@@ -512,6 +513,21 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 				o.streamHub.Broadcast(task.ReviewID, "stage_failed", "AI_SYNTHESIS", map[string]string{"error": aiErrorMsg})
 			}
 		} else {
+			if o.repo != nil && aiResp != nil && aiResp.Usage.Total() > 0 {
+				calc := pricing.NewModelCostCalculator(pricing.NewPricingResolver(pricing.NewTokenPricingCatalog()))
+				costUSD, _ := calc.TotalCost(ctx, []pricing.CostUsageRow{
+					{
+						Model:  aiResp.Model,
+						Input:  int64(aiResp.Usage.InputTokens),
+						Output: int64(aiResp.Usage.OutputTokens),
+					},
+				}, nil)
+				revID := task.ReviewID
+				if err := o.repo.RecordTokenUsage(ctx, task.WorkspaceID, &revID, int64(aiResp.Usage.InputTokens), int64(aiResp.Usage.OutputTokens), costUSD); err != nil {
+					slog.Error("Failed to record review token usage", "review_id", task.ReviewID, "error", err)
+				}
+			}
+
 			for _, f := range aiResp.Findings {
 				sev := models.SeverityMedium
 				switch strings.ToUpper(f.Severity) {

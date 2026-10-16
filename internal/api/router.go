@@ -36,6 +36,7 @@ import (
 	centinfra "github.com/scandrix/backend/internal/centralizedconfig/infrastructure"
 	"github.com/scandrix/backend/internal/clireview"
 	corehealth "github.com/scandrix/backend/internal/core/health"
+	corelog "github.com/scandrix/backend/internal/core/log"
 	"github.com/scandrix/backend/internal/database"
 	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/enterprise/rbac"
@@ -452,12 +453,34 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	tokenUsageRepo := analyticsRepo.NewTokenUsageRepository(pricingResolver)
 	tokenUsageService := analyticsRepo.NewTokenUsageService(tokenUsageRepo)
 
+	if llmGw != nil {
+		llmGw.SetSpanIngester(func(ctx context.Context, orgID string, prNumber int, model string, inputTokens, outputTokens int64, isBYOK bool, duration time.Duration) {
+			_ = tokenUsageRepo.IngestSpan(ctx, analyticsRepo.RawSpanRecord{
+				OrganizationID: orgID,
+				PRNumber:       prNumber,
+				Timestamp:      time.Now().UTC(),
+				Duration:       duration.Milliseconds(),
+				TokenUsage: corelog.TokenUsageTu{
+					IsByok: isBYOK,
+					Model:  model,
+					Input:  inputTokens,
+					Output: outputTokens,
+					Total:  inputTokens + outputTokens,
+					Area:   corelog.AreaReview,
+				},
+			})
+		})
+	}
+
 	usageSummaryUC := usage.NewBuildUsageSummaryUseCase(tokenUsageService, pricingResolver, nil)
 	costEstimateUC := usage.NewCostEstimateUseCase(tokenUsageService, nil, modelCostCalc)
 	developerUsageUC := usage.NewTokensByDeveloperUseCase(tokenUsageService, nil, nil)
 	monthlySpendUC := usage.NewMonthlySpendUseCase(tokenUsageService, modelCostCalc)
-
-	spendLimitCfgSvc := spendlimit.NewSpendLimitConfigService(nil, monthlySpendUC, pricingResolver)
+	var spendLimitParamSvc spendlimit.IOrganizationParametersService
+	if pool != nil && orgModule != nil && orgModule.OrganizationParametersService != nil {
+		spendLimitParamSvc = NewOrgParamsSpendLimitAdapter(orgModule.OrganizationParametersService)
+	}
+	spendLimitCfgSvc := spendlimit.NewSpendLimitConfigService(spendLimitParamSvc, monthlySpendUC, pricingResolver)
 	configureSpendLimitUC := spendlimit.NewConfigureSpendLimitUseCase(spendLimitCfgSvc)
 	getSpendLimitConfigUC := spendlimit.NewGetSpendLimitConfigUseCase(spendLimitCfgSvc, nil, nil, pricingResolver)
 
@@ -568,9 +591,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	)
 	systemCtrl := controllers.NewSystemController(cfg.Repo)
 	skillsCtrl := controllers.NewSkillsController()
-	userLogCtrl := controllers.NewUserLogController(auditRepo)
+	userLogCtrl := controllers.NewUserLogController(cfg.Repo)
 	userCtrl := controllers.NewUserController(authCtrl, authRepo).WithJoinOrganizationUseCase(orgModule.JoinOrganizationUC)
-	workflowQueueCtrl := controllers.NewWorkflowQueueController(nil)
+	workflowQueueCtrl := controllers.NewWorkflowQueueController(cfg.Repo)
 	ssoConfigCtrl := controllers.NewSSOConfigController(authCtrl, cfg.Repo)
 
 	// CLI Review Execution & History Dashboard Controllers
@@ -610,7 +633,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	}
 	if agentRunner == nil {
 		agentRunner = runner.NewGoAgentRunner(func(ctx context.Context, req runner.ModelTurnRequest) (*runner.ModelTurnResult, error) {
-			return &runner.ModelTurnResult{Text: "Agent harness active."}, nil
+			return nil, errors.New("no LLM runner configured: provider credentials missing or unconfigured")
 		})
 	}
 

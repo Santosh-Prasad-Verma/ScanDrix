@@ -38,11 +38,12 @@ type ActivateLicenseRequest struct {
 
 // WebhookHealthResponse details recent webhook delivery reliability.
 type WebhookHealthResponse struct {
-	TotalDelivered   int64     `json:"total_delivered"`
-	SuccessRate      float64   `json:"success_rate"`
-	AverageLatencyMs float64   `json:"average_latency_ms"`
-	RecentFailures   int       `json:"recent_failures"`
-	LastEventAt      time.Time `json:"last_event_at"`
+	TotalDelivered   int64      `json:"total_delivered"`
+	SuccessRate      *float64   `json:"success_rate"`
+	AverageLatencyMs float64    `json:"average_latency_ms"`
+	RecentFailures   int        `json:"recent_failures"`
+	LastEventAt      *time.Time `json:"last_event_at"`
+	Unavailable      []string   `json:"unavailable,omitempty"`
 }
 
 // OutboxLagResponse details asynchronous queue backlog.

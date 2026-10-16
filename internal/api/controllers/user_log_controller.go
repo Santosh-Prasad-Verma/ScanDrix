@@ -16,12 +16,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/auth"
+	"github.com/scandrix/backend/pkg/models"
 )
 
 // UserLogRepository defines the data access contract for settings audit trails and user activity tracking.
 type UserLogRepository interface {
-	LogUserStatusChange(ctx context.Context, wsID *uuid.UUID, userID, email, status, reason string) error
-	ListSettingsAuditLogs(ctx context.Context, wsID uuid.UUID, teamID, repoID *uuid.UUID, page, perPage int) ([]SettingsAuditLogRecord, int, error)
+	LogUserStatusChange(ctx context.Context, wsID uuid.UUID, userID, email, status, reason string) error
+	ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit int) ([]models.AuditLogRecord, error)
 }
 
 // SettingsAuditLogRecord represents a change to code review settings.
@@ -40,11 +41,11 @@ type SettingsAuditLogRecord struct {
 
 // UserLogController manages user status changes and code review setting audit logs.
 type UserLogController struct {
-	repo AuditRepository
+	repo UserLogRepository
 }
 
 // NewUserLogController constructs the user log controller.
-func NewUserLogController(repo AuditRepository) *UserLogController {
+func NewUserLogController(repo UserLogRepository) *UserLogController {
 	if isNilInterface(repo) {
 		repo = nil
 	}
@@ -70,6 +71,12 @@ type userStatusChangeRequest struct {
 }
 
 func (c *UserLogController) handleStatusChange(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace authorization context"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var req userStatusChangeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON request body"}`, http.StatusBadRequest)
@@ -81,11 +88,27 @@ func (c *UserLogController) handleStatusChange(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	if req.OrganizationID != "" && req.OrganizationID != wsID.String() {
+		http.Error(w, `{"error":"organizationId does not match authenticated workspace"}`, http.StatusForbidden)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"user log repository unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := c.repo.LogUserStatusChange(r.Context(), wsID, req.UserID, req.Email, req.Status, req.Reason); err != nil {
+		slog.Error("Failed to persist user status change audit log", "error", err, "workspace_id", wsID)
+		http.Error(w, `{"error":"failed recording user status change"}`, http.StatusInternalServerError)
+		return
+	}
+
 	slog.Info("User status change recorded",
 		"user_id", req.UserID,
 		"email", req.Email,
 		"status", req.Status,
-		"org_id", req.OrganizationID,
+		"workspace_id", wsID,
 		"reason", req.Reason,
 	)
 

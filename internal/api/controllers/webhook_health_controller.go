@@ -61,14 +61,17 @@ func (c *WebhookHealthController) handleGetWebhookHealth(w http.ResponseWriter, 
 	}
 
 	total := delivered + pending + retrying + dlq
-	successRate := 100.0
+	var successRate *float64
+	var unavailable []string
 	if total > 0 {
-		successRate = float64(delivered) / float64(total) * 100.0
+		sr := float64(delivered) / float64(total) * 100.0
+		successRate = &sr
+	} else {
+		unavailable = append(unavailable, "success_rate:insufficient_data")
 	}
 
-	lastTime := time.Now().UTC()
-	if lastEventAt != nil {
-		lastTime = *lastEventAt
+	if lastEventAt == nil {
+		unavailable = append(unavailable, "last_event_at:no_data_source")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -76,7 +79,8 @@ func (c *WebhookHealthController) handleGetWebhookHealth(w http.ResponseWriter, 
 		TotalDelivered: delivered,
 		SuccessRate:    successRate,
 		RecentFailures: int(dlq),
-		LastEventAt:    lastTime,
+		LastEventAt:    lastEventAt,
+		Unavailable:    unavailable,
 	})
 }
 

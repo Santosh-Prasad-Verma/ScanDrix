@@ -77,5 +77,6 @@ func TestJobStatusServiceMetricsEmpty(t *testing.T) {
 	metrics, err := service.GetMetrics(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, metrics)
-	assert.Equal(t, 100.0, metrics.SuccessRate)
+	assert.Nil(t, metrics.SuccessRate)
+	assert.Contains(t, metrics.Unavailable, "success_rate:no_data_source")
 }

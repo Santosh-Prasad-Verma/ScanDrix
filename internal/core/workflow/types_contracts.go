@@ -36,16 +36,17 @@ type JobExecutionHistoryEntry struct {
 
 // WorkflowMetrics represents aggregate platform workflow telemetry.
 type WorkflowMetrics struct {
-	QueueSize             int                `json:"queueSize"`
-	ProcessingCount       int                `json:"processingCount"`
-	CompletedToday        int                `json:"completedToday"`
-	FailedToday           int                `json:"failedToday"`
-	AverageProcessingTime float64            `json:"averageProcessingTimeMs"`
-	SuccessRate           float64            `json:"successRatePercent"`
-	ByStatus              map[string]int     `json:"byStatus"`
-	StaleProcessingJobs   int                `json:"staleProcessingJobs"`
-	InboxLag              int                `json:"inboxLag"`
-	OutboxLag             int                `json:"outboxLag"`
+	QueueSize             int            `json:"queueSize"`
+	ProcessingCount       int            `json:"processingCount"`
+	CompletedToday        int            `json:"completedToday"`
+	FailedToday           int            `json:"failedToday"`
+	AverageProcessingTime float64        `json:"averageProcessingTimeMs"`
+	SuccessRate           *float64       `json:"successRatePercent"`
+	ByStatus              map[string]int `json:"byStatus"`
+	StaleProcessingJobs   int            `json:"staleProcessingJobs"`
+	InboxLag              int            `json:"inboxLag"`
+	OutboxLag             int            `json:"outboxLag"`
+	Unavailable           []string       `json:"unavailable,omitempty"`
 }
 
 // JobDetailResponse bundles the active job state and its execution history.

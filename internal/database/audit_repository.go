@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -397,7 +398,7 @@ func (r *Repository) GetRepositoryReportsData(ctx context.Context, since time.Ti
 			if rd.TotalReviews > 0 {
 				rd.PassRate = (float64(rd.CleanReviewsCount) / float64(rd.TotalReviews)) * 100.0
 			} else {
-				rd.PassRate = 100.0
+				rd.PassRate = 0.0
 			}
 			reports = append(reports, rd)
 		}
@@ -407,4 +408,20 @@ func (r *Repository) GetRepositoryReportsData(ctx context.Context, since time.Ti
 		return nil, fmt.Errorf("failed compiling repository reports data: %w", err)
 	}
 	return reports, nil
+}
+
+// LogUserStatusChange records a user lifecycle or status change audit event into audit_logs.
+func (r *Repository) LogUserStatusChange(ctx context.Context, wsID uuid.UUID, userID, email, status, reason string) error {
+	if r == nil || r.client == nil {
+		return fmt.Errorf("database unavailable")
+	}
+
+	metaMap := map[string]string{
+		"new_status": status,
+		"reason":     reason,
+		"email":      email,
+	}
+	metadata, _ := json.Marshal(metaMap)
+
+	return r.InsertAuditLog(ctx, wsID, userID, email, "", "user.status_change", "user", userID, metadata)
 }

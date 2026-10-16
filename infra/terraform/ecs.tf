@@ -19,7 +19,7 @@ resource "aws_ecs_cluster" "main" {
 # ─────────────────────────────────────────────────────────────
 resource "aws_ecr_repository" "api" {
   name                 = "${var.project_name}-api"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -28,7 +28,7 @@ resource "aws_ecr_repository" "api" {
 
 resource "aws_ecr_repository" "worker" {
   name                 = "${var.project_name}-worker"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -37,7 +37,7 @@ resource "aws_ecr_repository" "worker" {
 
 resource "aws_ecr_repository" "webhooks" {
   name                 = "${var.project_name}-webhooks"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -183,7 +183,7 @@ resource "aws_ecs_task_definition" "api" {
       # Cloudflare Tunnel sidecar: outbound-only, no public ALB needed.
       # TUNNEL_TOKEN is automatically provisioned and managed via SecretsManager.
       name      = "cloudflared"
-      image     = "cloudflare/cloudflared:latest"
+      image     = "cloudflare/cloudflared:2025.2.1"
       essential = false
       command   = ["tunnel", "--no-autoupdate", "run"]
 

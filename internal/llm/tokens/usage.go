@@ -21,3 +21,11 @@ type TokenUsage struct {
 	ParentRunID string `json:"parentRunId,omitempty"`
 	RunName     string `json:"runName,omitempty"`
 }
+
+// Total returns the total tokens consumed.
+func (u TokenUsage) Total() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.InputTokens + u.OutputTokens
+}

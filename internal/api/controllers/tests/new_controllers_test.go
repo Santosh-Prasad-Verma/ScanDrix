@@ -108,25 +108,73 @@ func TestSkillsController(t *testing.T) {
 	})
 }
 
-func TestUserLogController(t *testing.T) {
-	ctrl := controllers.NewUserLogController(nil)
-	router := ctrl.Routes()
+type mockUserLogRepo struct {
+	logged bool
+	lastWS uuid.UUID
+}
 
-	t.Run("post status-change succeeds with 204", func(t *testing.T) {
+func (m *mockUserLogRepo) LogUserStatusChange(ctx context.Context, wsID uuid.UUID, userID, email, status, reason string) error {
+	m.logged = true
+	m.lastWS = wsID
+	return nil
+}
+
+func (m *mockUserLogRepo) ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit int) ([]models.AuditLogRecord, error) {
+	return []models.AuditLogRecord{}, nil
+}
+
+func TestUserLogController(t *testing.T) {
+	wsID := uuid.New()
+	authCtx := auth.WithWorkspaceContext(context.Background(), wsID)
+
+	t.Run("post status-change requires authentication", func(t *testing.T) {
+		ctrl := controllers.NewUserLogController(nil)
 		body := bytes.NewBufferString(`{"userId":"user-123","email":"dev@scandrix.internal","status":"ACTIVE"}`)
 		req := httptest.NewRequest(http.MethodPost, "/status-change", body)
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+		ctrl.Routes().ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("post status-change rejects mismatched organizationId with 403", func(t *testing.T) {
+		ctrl := controllers.NewUserLogController(&mockUserLogRepo{})
+		body := bytes.NewBufferString(`{"organizationId":"` + uuid.NewString() + `","userId":"user-123","email":"dev@scandrix.internal","status":"ACTIVE"}`)
+		req := httptest.NewRequest(http.MethodPost, "/status-change", body).WithContext(authCtx)
+		rec := httptest.NewRecorder()
+		ctrl.Routes().ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
+	t.Run("post status-change fails closed with 503 when repo is nil", func(t *testing.T) {
+		ctrl := controllers.NewUserLogController(nil)
+		body := bytes.NewBufferString(`{"userId":"user-123","email":"dev@scandrix.internal","status":"ACTIVE"}`)
+		req := httptest.NewRequest(http.MethodPost, "/status-change", body).WithContext(authCtx)
+		rec := httptest.NewRecorder()
+		ctrl.Routes().ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	})
+
+	t.Run("post status-change persists and returns 204 with valid repo", func(t *testing.T) {
+		repo := &mockUserLogRepo{}
+		ctrl := controllers.NewUserLogController(repo)
+		body := bytes.NewBufferString(`{"userId":"user-123","email":"dev@scandrix.internal","status":"ACTIVE","reason":"onboarding"}`)
+		req := httptest.NewRequest(http.MethodPost, "/status-change", body).WithContext(authCtx)
+		rec := httptest.NewRecorder()
+		ctrl.Routes().ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusNoContent, rec.Code)
+		assert.True(t, repo.logged)
+		assert.Equal(t, wsID, repo.lastWS)
 	})
 
 	t.Run("get code-review-settings returns empty array when repo is nil", func(t *testing.T) {
-		wsID := uuid.New()
-		ctx := context.WithValue(context.Background(), auth.WorkspaceContextKey, wsID)
-		req := httptest.NewRequest(http.MethodGet, "/code-review-settings", nil).WithContext(ctx)
+		ctrl := controllers.NewUserLogController(nil)
+		req := httptest.NewRequest(http.MethodGet, "/code-review-settings", nil).WithContext(authCtx)
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+		ctrl.Routes().ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
 		var res map[string]any
@@ -382,12 +430,83 @@ func TestUserController(t *testing.T) {
 	})
 }
 
-func TestWorkflowQueueController(t *testing.T) {
-	ctrl := controllers.NewWorkflowQueueController(nil)
-	router := ctrl.Routes()
+type mockWorkflowQueueRepo struct {
+	jobs    map[uuid.UUID]*models.WorkflowJobRecord
+	details map[uuid.UUID]*models.WorkflowJobDetailRecord
+	metrics *models.WorkflowQueueMetricsRecord
+}
 
-	t.Run("get metrics returns queue summary", func(t *testing.T) {
+func (m *mockWorkflowQueueRepo) GetReviewJob(ctx context.Context, jobID uuid.UUID) (*models.WorkflowJobRecord, error) {
+	if m.jobs != nil {
+		if j, ok := m.jobs[jobID]; ok {
+			return j, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockWorkflowQueueRepo) GetReviewJobDetail(ctx context.Context, jobID uuid.UUID) (*models.WorkflowJobDetailRecord, error) {
+	if m.details != nil {
+		if d, ok := m.details[jobID]; ok {
+			return d, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockWorkflowQueueRepo) GetQueueMetrics(ctx context.Context) (*models.WorkflowQueueMetricsRecord, error) {
+	if m.metrics != nil {
+		return m.metrics, nil
+	}
+	return &models.WorkflowQueueMetricsRecord{}, nil
+}
+
+func TestWorkflowQueueController(t *testing.T) {
+	t.Run("nil repository returns 503 service unavailable", func(t *testing.T) {
+		ctrl := controllers.NewWorkflowQueueController(nil)
+		router := ctrl.Routes()
+
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+		reqJob := httptest.NewRequest(http.MethodGet, "/jobs/"+uuid.NewString(), nil)
+		recJob := httptest.NewRecorder()
+		router.ServeHTTP(recJob, reqJob)
+		assert.Equal(t, http.StatusServiceUnavailable, recJob.Code)
+	})
+
+	t.Run("unknown job returns 404 rather than fabricated completed record", func(t *testing.T) {
+		repo := &mockWorkflowQueueRepo{
+			jobs: make(map[uuid.UUID]*models.WorkflowJobRecord),
+		}
+		ctrl := controllers.NewWorkflowQueueController(repo)
+		router := ctrl.Routes()
+
+		jobID := uuid.New().String()
+		req := httptest.NewRequest(http.MethodGet, "/jobs/"+jobID, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("known job returns real job record", func(t *testing.T) {
+		knownID := uuid.New()
+		repo := &mockWorkflowQueueRepo{
+			jobs: map[uuid.UUID]*models.WorkflowJobRecord{
+				knownID: {
+					ID:       knownID.String(),
+					Status:   "running",
+					Progress: 50,
+				},
+			},
+		}
+		ctrl := controllers.NewWorkflowQueueController(repo)
+		router := ctrl.Routes()
+
+		req := httptest.NewRequest(http.MethodGet, "/jobs/"+knownID.String(), nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 
@@ -396,12 +515,20 @@ func TestWorkflowQueueController(t *testing.T) {
 		err := json.NewDecoder(rec.Body).Decode(&res)
 		require.NoError(t, err)
 		assert.Equal(t, float64(200), res["status"])
-		assert.NotNil(t, res["data"])
 	})
 
-	t.Run("get job status returns status object", func(t *testing.T) {
-		jobID := uuid.New().String()
-		req := httptest.NewRequest(http.MethodGet, "/jobs/"+jobID, nil)
+	t.Run("get metrics returns real queue metrics", func(t *testing.T) {
+		repo := &mockWorkflowQueueRepo{
+			metrics: &models.WorkflowQueueMetricsRecord{
+				ActiveJobs:   3,
+				WaitingJobs:  5,
+				Completed24h: 12,
+			},
+		}
+		ctrl := controllers.NewWorkflowQueueController(repo)
+		router := ctrl.Routes()
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 

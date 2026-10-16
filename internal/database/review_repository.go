@@ -1418,3 +1418,102 @@ func (r *Repository) ListWorkspacesForUser(ctx context.Context, email string) ([
 	}
 	return list, nil
 }
+
+// GetReviewJob retrieves the real execution status for a review workflow job.
+func (r *Repository) GetReviewJob(ctx context.Context, jobID uuid.UUID) (*models.WorkflowJobRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	var state models.ReviewState
+	var createdAt time.Time
+	var completedAt *time.Time
+
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		query := `SELECT state, created_at, completed_at FROM pull_request_reviews WHERE id = $1 LIMIT 1`
+		return tx.QueryRow(ctx, query, jobID).Scan(&state, &createdAt, &completedAt)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	progress := 10
+	statusStr := "queued"
+	switch state {
+	case models.ReviewStateCompleted:
+		progress = 100
+		statusStr = "completed"
+	case models.ReviewStateFailed:
+		progress = 100
+		statusStr = "failed"
+	case models.ReviewStateProcessing:
+		progress = 50
+		statusStr = "running"
+	case models.ReviewStateQueued, models.ReviewStateReceived:
+		progress = 10
+		statusStr = "queued"
+	}
+
+	updatedAt := createdAt
+	if completedAt != nil {
+		updatedAt = *completedAt
+	}
+
+	return &models.WorkflowJobRecord{
+		ID:        jobID.String(),
+		Status:    statusStr,
+		Progress:  progress,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, nil
+}
+
+// GetReviewJobDetail retrieves stage diagnostics for a review workflow job.
+func (r *Repository) GetReviewJobDetail(ctx context.Context, jobID uuid.UUID) (*models.WorkflowJobDetailRecord, error) {
+	job, err := r.GetReviewJob(ctx, jobID)
+	if err != nil || job == nil {
+		return nil, err
+	}
+
+	return &models.WorkflowJobDetailRecord{
+		WorkflowJobRecord: *job,
+		CurrentStage:      job.Status,
+		Stages:            []string{"checkout", "diff_analysis", "rule_evaluation", "llm_critique", "synthesis", "publish"},
+	}, nil
+}
+
+// GetQueueMetrics computes real-time queue throughput from pull_request_reviews.
+func (r *Repository) GetQueueMetrics(ctx context.Context) (*models.WorkflowQueueMetricsRecord, error) {
+	if r == nil || r.client == nil || r.client.Pool == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+
+	var active, waiting, completed24h, failed24h, avgDurationMs int
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		query := `
+			SELECT
+				COALESCE(COUNT(CASE WHEN state = 'RUNNING' THEN 1 END), 0),
+				COALESCE(COUNT(CASE WHEN state IN ('QUEUED', 'PENDING') THEN 1 END), 0),
+				COALESCE(COUNT(CASE WHEN state = 'COMPLETED' AND created_at >= now() - INTERVAL '24 hours' THEN 1 END), 0),
+				COALESCE(COUNT(CASE WHEN state = 'FAILED' AND created_at >= now() - INTERVAL '24 hours' THEN 1 END), 0),
+				COALESCE(AVG(CASE WHEN state = 'COMPLETED' AND completed_at IS NOT NULL AND created_at >= now() - INTERVAL '24 hours'
+				                  THEN EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000 END), 0)::int
+			FROM pull_request_reviews;
+		`
+		return tx.QueryRow(ctx, query).Scan(&active, &waiting, &completed24h, &failed24h, &avgDurationMs)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.WorkflowQueueMetricsRecord{
+		ActiveJobs:    active,
+		WaitingJobs:   waiting,
+		Completed24h:  completed24h,
+		Failed24h:     failed24h,
+		AvgDurationMs: avgDurationMs,
+	}, nil
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,31 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.verifyRequest(provider, r, body, secret) {
 		http.Error(w, "invalid webhook signature or unauthorized token", http.StatusUnauthorized)
 		return
+	}
+
+	// 3.5. Replay Defense: Validate timestamp freshness if timestamp header is provided
+	tsHeader := r.Header.Get("X-Webhook-Timestamp")
+	if tsHeader == "" {
+		tsHeader = r.Header.Get("X-Timestamp")
+	}
+	if tsHeader != "" {
+		var ts time.Time
+		if sec, err := strconv.ParseInt(tsHeader, 10, 64); err == nil {
+			if sec > 1e11 {
+				ts = time.UnixMilli(sec)
+			} else {
+				ts = time.Unix(sec, 0)
+			}
+		} else if parsed, err := time.Parse(time.RFC3339, tsHeader); err == nil {
+			ts = parsed
+		}
+		if !ts.IsZero() {
+			age := time.Since(ts)
+			if age > 10*time.Minute || age < -5*time.Minute {
+				http.Error(w, "webhook timestamp expired or invalid", http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	// 4. Parse into normalized event

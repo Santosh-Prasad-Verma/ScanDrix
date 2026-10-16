@@ -113,6 +113,32 @@ type PullRequestReview struct {
 	CompletedAt    *time.Time  `json:"completed_at,omitempty" db:"completed_at"`
 }
 
+// WorkflowJobRecord models a queued or running workflow task.
+type WorkflowJobRecord struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"` // "queued" | "running" | "completed" | "failed"
+	Progress  int       `json:"progress"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// WorkflowJobDetailRecord provides extended stage diagnostics for a workflow job.
+type WorkflowJobDetailRecord struct {
+	WorkflowJobRecord
+	CurrentStage string   `json:"currentStage"`
+	Stages       []string `json:"stages"`
+	Error        string   `json:"error,omitempty"`
+}
+
+// WorkflowQueueMetricsRecord summarizes queue throughput and consumer health.
+type WorkflowQueueMetricsRecord struct {
+	ActiveJobs    int `json:"activeJobs"`
+	WaitingJobs   int `json:"waitingJobs"`
+	Completed24h  int `json:"completed24h"`
+	Failed24h     int `json:"failed24h"`
+	AvgDurationMs int `json:"avgDurationMs"`
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 3. SECURITY FINDINGS & SEVERITY TAXONOMY (FindingSeverity & CodeFinding)
 // ═══════════════════════════════════════════════════════════════

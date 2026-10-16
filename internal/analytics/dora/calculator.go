@@ -96,12 +96,14 @@ func CalculateDORA(
 
 	// 4. Time to Restore (MTTR)
 	avgMTTR := time.Duration(0)
-	mttrTier := TierLow
+	var mttrTier PerformanceTier
+	measuredTiers := []PerformanceTier{dfTier, ltTier, cfrTier}
 	if resolvedIncidents > 0 {
 		avgMTTR = totalRecovery / time.Duration(resolvedIncidents)
 		mttrTier = classifyTimeToRestore(avgMTTR)
-	} else if failedCount == 0 {
-		mttrTier = TierElite // No failures = Elite MTTR
+		measuredTiers = append(measuredTiers, mttrTier)
+	} else {
+		report.Unavailable = append(report.Unavailable, "time_to_restore:insufficient_data")
 	}
 
 	report.TimeToRestore = MetricTimeToRestore{
@@ -127,7 +129,7 @@ func CalculateDORA(
 	)
 
 	// 6. Overall Performance Tier
-	report.OverallTier = computeOverallTier([]PerformanceTier{dfTier, ltTier, cfrTier, mttrTier})
+	report.OverallTier = computeOverallTier(measuredTiers)
 
 	return report
 }
@@ -193,11 +195,18 @@ func computeOverallTier(tiers []PerformanceTier) PerformanceTier {
 	}
 
 	sum := 0
+	count := 0
 	for _, t := range tiers {
-		sum += scores[t]
+		if s, ok := scores[t]; ok {
+			sum += s
+			count++
+		}
+	}
+	if count == 0 {
+		return TierLow
 	}
 
-	avg := float64(sum) / float64(len(tiers))
+	avg := float64(sum) / float64(count)
 	switch {
 	case avg >= 3.5:
 		return TierElite

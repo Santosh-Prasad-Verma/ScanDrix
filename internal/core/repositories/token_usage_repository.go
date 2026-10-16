@@ -37,13 +37,13 @@ func (r *PostgresTokenUsageRepository) Record(ctx context.Context, usage *domain
 	}
 
 	query := `
-		INSERT INTO token_usage_records (id, workspace_id, review_id, repository_id, model_name, prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, operation_type, recorded_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO token_usage_records (id, workspace_id, review_id, prompt_tokens, completion_tokens, cost_usd, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
 	_, err := r.db.ExecContext(ctx, query,
-		usage.ID, usage.WorkspaceID, usage.ReviewID, usage.RepositoryID,
-		usage.ModelName, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
-		usage.EstimatedCostUSD, usage.OperationType, usage.RecordedAt,
+		usage.ID, usage.WorkspaceID, usage.ReviewID,
+		usage.PromptTokens, usage.CompletionTokens,
+		usage.EstimatedCostUSD, usage.RecordedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed recording token usage: %w", err)
@@ -57,9 +57,9 @@ func (r *PostgresTokenUsageRepository) GetMonthlySpend(ctx context.Context, wsID
 	end := start.AddDate(0, 1, 0)
 
 	query := `
-		SELECT COALESCE(SUM(estimated_cost_usd), 0)
+		SELECT COALESCE(SUM(cost_usd), 0)
 		FROM token_usage_records
-		WHERE workspace_id = $1 AND recorded_at >= $2 AND recorded_at < $3
+		WHERE workspace_id = $1 AND created_at >= $2 AND created_at < $3
 	`
 	var spend float64
 	err := r.db.QueryRowContext(ctx, query, wsID, start, end).Scan(&spend)
@@ -75,9 +75,9 @@ func (r *PostgresTokenUsageRepository) GetAggregatedUsage(ctx context.Context, w
 		SELECT 
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(total_tokens), 0)
+			COALESCE(SUM(prompt_tokens + completion_tokens), 0)
 		FROM token_usage_records
-		WHERE workspace_id = $1 AND recorded_at >= $2
+		WHERE workspace_id = $1 AND created_at >= $2
 	`
 	var prompt, completion, total int64
 	err := r.db.QueryRowContext(ctx, query, wsID, since).Scan(&prompt, &completion, &total)

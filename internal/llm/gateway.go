@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/scandrix/backend/internal/llm/byok"
 	"github.com/scandrix/backend/internal/llm/providers/kernel"
+	"github.com/scandrix/backend/internal/llm/tokens"
 	"github.com/scandrix/backend/internal/prompts"
 	"github.com/scandrix/backend/internal/scandrix/agentfirewall"
 	"github.com/scandrix/backend/pkg/models"
@@ -55,6 +56,8 @@ type ReviewResponse struct {
 	Statistics           map[string]int         `json:"statistics,omitempty"`
 	Findings             []CandidateFindingJSON `json:"findings"`
 	PolicyCompliance     map[string]any         `json:"policy_compliance,omitempty"`
+	Usage                tokens.TokenUsage      `json:"usage,omitempty"`
+	Model                string                 `json:"model,omitempty"`
 }
 
 // CandidateFindingJSON represents raw JSON output from the model.
@@ -126,6 +129,15 @@ type Gateway struct {
 	maxContextTokens int
 	firewall         *agentfirewall.Firewall
 	engine           *Engine
+	spanIngester     SpanIngestCallback
+}
+
+// SpanIngestCallback receives telemetry whenever an LLM review invocation completes.
+type SpanIngestCallback func(ctx context.Context, orgID string, prNumber int, model string, inputTokens, outputTokens int64, isBYOK bool, duration time.Duration)
+
+// SetSpanIngester registers a span ingestion callback on the Gateway.
+func (g *Gateway) SetSpanIngester(fn SpanIngestCallback) {
+	g.spanIngester = fn
 }
 
 // GatewayOption configures optional credentials on Gateway.
@@ -437,6 +449,7 @@ func (g *Gateway) AnalyzeDiff(ctx context.Context, req ReviewRequest) (*ReviewRe
 		slot.Model = req.Model
 	}
 
+	startTime := time.Now()
 	var reviewResp ReviewResponse
 	userPrompt := fmt.Sprintf("Pull Request Title: %s\nRepository: %s\n\nDiff Content:\n%s", req.PullTitle, req.RepoNamespace, req.DiffContent)
 
@@ -450,14 +463,41 @@ func (g *Gateway) AnalyzeDiff(ctx context.Context, req ReviewRequest) (*ReviewRe
 		},
 		Target: &reviewResp,
 	})
+	modelName := ""
+	if callRes != nil {
+		modelName = callRes.SlotUsed.Model
+		if modelName == "" {
+			modelName = callRes.Identity.Model
+		}
+	}
+	if modelName == "" && slot != nil {
+		modelName = slot.Model
+	}
+	if modelName == "" {
+		modelName = req.Model
+	}
+
 	if err != nil {
 		// If strict unmarshal failed, attempt fallback recovery on raw response text
 		if callRes != nil && callRes.Text != "" {
 			if parsed, parseErr := parseStructuredJSON(callRes.Text); parseErr == nil && parsed != nil {
+				parsed.Usage = callRes.Usage
+				parsed.Model = modelName
+				if g.spanIngester != nil {
+					g.spanIngester(ctx, req.WorkspaceID.String(), 0, modelName, int64(callRes.Usage.InputTokens), int64(callRes.Usage.OutputTokens), req.BYOKConfig != nil, time.Since(startTime))
+				}
 				return parsed, nil
 			}
 		}
 		return nil, fmt.Errorf("ai review synthesis failed: %w", err)
+	}
+
+	if callRes != nil {
+		reviewResp.Usage = callRes.Usage
+		reviewResp.Model = modelName
+		if g.spanIngester != nil {
+			g.spanIngester(ctx, req.WorkspaceID.String(), 0, modelName, int64(callRes.Usage.InputTokens), int64(callRes.Usage.OutputTokens), req.BYOKConfig != nil, time.Since(startTime))
+		}
 	}
 
 	return &reviewResp, nil

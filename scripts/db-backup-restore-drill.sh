@@ -133,17 +133,24 @@ RESTORE_DURATION=0
 
 if [[ -n "$TARGET_DB_URL" && "$DRY_RUN" != "true" ]]; then
   echo "[2/4] Restoring dump to drill target database..."
-  pg_restore \
+  if pg_restore \
     --dbname="$TARGET_DB_URL" \
     --clean \
     --if-exists \
     --no-owner \
     --no-privileges \
-    "$BACKUP_FILE" || true
-  END_RESTORE=$(date +%s)
-  RESTORE_DURATION=$((END_RESTORE - START_RESTORE))
-  RESTORE_STATUS="PASSED (${RESTORE_DURATION}s)"
-  echo "      Restore complete in ${RESTORE_DURATION}s."
+    "$BACKUP_FILE"; then
+    END_RESTORE=$(date +%s)
+    RESTORE_DURATION=$((END_RESTORE - START_RESTORE))
+    RESTORE_STATUS="PASSED (${RESTORE_DURATION}s)"
+    echo "      Restore complete in ${RESTORE_DURATION}s."
+  else
+    END_RESTORE=$(date +%s)
+    RESTORE_DURATION=$((END_RESTORE - START_RESTORE))
+    RESTORE_STATUS="FAILED (${RESTORE_DURATION}s)"
+    echo "      ERROR: pg_restore failed on target database." >&2
+    exit 1
+  fi
 
   echo "[3/4] Verifying seat reconciliation and RLS on restored database..."
   RESTORED_RLS_VIOLATIONS=$(psql "$TARGET_DB_URL" -t -A -c "$RLS_CHECK_SQL" 2>/dev/null || true)

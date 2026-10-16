@@ -3,6 +3,8 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -88,13 +90,18 @@ func (c *UsageController) Routes() chi.Router {
 	return r
 }
 
-func (c *UsageController) parseQuery(r *http.Request) usage.TokenUsageQueryContract {
-	orgID := r.URL.Query().Get("organizationId")
-	if orgID == "" {
-		if wsID, err := auth.WorkspaceFromContext(r.Context()); err == nil {
-			orgID = wsID.String()
-		}
+func (c *UsageController) parseQuery(r *http.Request) (usage.TokenUsageQueryContract, int, error) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		return usage.TokenUsageQueryContract{}, http.StatusUnauthorized, errors.New("missing workspace authorization context")
 	}
+
+	reqOrg := strings.TrimSpace(r.URL.Query().Get("organizationId"))
+	if reqOrg != "" && reqOrg != wsID.String() {
+		return usage.TokenUsageQueryContract{}, http.StatusForbidden, errors.New("organizationId does not match authenticated workspace")
+	}
+
+	orgID := wsID.String()
 
 	now := time.Now().UTC()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -134,13 +141,13 @@ func (c *UsageController) parseQuery(r *http.Request) usage.TokenUsageQueryContr
 		Developer:      dev,
 		RepositoryID:   repoID,
 		PRNumber:       prNumber,
-	}
+	}, http.StatusOK, nil
 }
 
 func (c *UsageController) handleGetTokenSummary(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
-	if q.OrganizationID == "" {
-		http.Error(w, `{"error":"missing organizationId context"}`, http.StatusBadRequest)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -171,9 +178,9 @@ func (c *UsageController) handleGetTokenSummary(w http.ResponseWriter, r *http.R
 }
 
 func (c *UsageController) handleGetTokenOverview(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
-	if q.OrganizationID == "" {
-		http.Error(w, `{"error":"missing organizationId context"}`, http.StatusBadRequest)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -200,9 +207,9 @@ func (c *UsageController) handleGetTokenOverview(w http.ResponseWriter, r *http.
 }
 
 func (c *UsageController) handleGetTokenEstimate(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
-	if q.OrganizationID == "" {
-		http.Error(w, `{"error":"missing organizationId context"}`, http.StatusBadRequest)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -226,9 +233,9 @@ func (c *UsageController) handleGetTokenEstimate(w http.ResponseWriter, r *http.
 }
 
 func (c *UsageController) handleGetTokenDeveloper(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
-	if q.OrganizationID == "" {
-		http.Error(w, `{"error":"missing organizationId context"}`, http.StatusBadRequest)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
 
@@ -276,7 +283,12 @@ func (c *UsageController) handleGetTokenPricing(w http.ResponseWriter, r *http.R
 }
 
 func (c *UsageController) handleGetTokenDaily(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+		return
+	}
+
 	if c.tokenUsageService != nil {
 		res, err := c.tokenUsageService.GetDailyUsage(r.Context(), q)
 		if err != nil {
@@ -292,7 +304,12 @@ func (c *UsageController) handleGetTokenDaily(w http.ResponseWriter, r *http.Req
 }
 
 func (c *UsageController) handleGetTokenByPr(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+		return
+	}
+
 	if c.tokenUsageService != nil {
 		res, err := c.tokenUsageService.GetUsageByPr(r.Context(), q)
 		if err != nil {
@@ -308,7 +325,12 @@ func (c *UsageController) handleGetTokenByPr(w http.ResponseWriter, r *http.Requ
 }
 
 func (c *UsageController) handleGetTokenByReview(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+		return
+	}
+
 	if c.tokenUsageService != nil {
 		res, err := c.tokenUsageService.GetUsageByReview(r.Context(), q)
 		if err != nil {
@@ -324,7 +346,12 @@ func (c *UsageController) handleGetTokenByReview(w http.ResponseWriter, r *http.
 }
 
 func (c *UsageController) handleGetTokenByArea(w http.ResponseWriter, r *http.Request) {
-	q := c.parseQuery(r)
+	q, status, err := c.parseQuery(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
+		return
+	}
+
 	if c.tokenUsageService != nil {
 		res, err := c.tokenUsageService.GetUsageByArea(r.Context(), q)
 		if err != nil {

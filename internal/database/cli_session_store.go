@@ -124,18 +124,32 @@ func (s *PostgresCLISessionStore) CompleteSession(ctx context.Context, userCode 
 	if workspaceID == uuid.Nil {
 		return cliauth.ErrNoWorkspace
 	}
-	_ = s.fallback.CompleteSession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email)
+	fallbackErr := s.fallback.CompleteSession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email)
 	if s.repo != nil {
-		_ = s.repo.CompleteCLISession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email)
+		if err := s.repo.CompleteCLISession(ctx, userCode, accessToken, refreshToken, userID, workspaceID, email); err != nil {
+			log.Printf("[cli-session] ERROR durable CompleteCLISession failed for user code %s: %v", userCode, err)
+			if fallbackErr != nil {
+				return err
+			}
+		}
+	} else if fallbackErr != nil {
+		return fallbackErr
 	}
 	return nil
 }
 
 // MarkConsumed updates the session status to consumed to prevent replay attacks.
 func (s *PostgresCLISessionStore) MarkConsumed(ctx context.Context, sessionID uuid.UUID) error {
-	_ = s.fallback.MarkConsumed(ctx, sessionID)
+	fallbackErr := s.fallback.MarkConsumed(ctx, sessionID)
 	if s.repo != nil {
-		_ = s.repo.ConsumeCLISession(ctx, sessionID)
+		if err := s.repo.ConsumeCLISession(ctx, sessionID); err != nil {
+			log.Printf("[cli-session] ERROR durable ConsumeCLISession failed for session %s: %v", sessionID, err)
+			if fallbackErr != nil {
+				return err
+			}
+		}
+	} else if fallbackErr != nil {
+		return fallbackErr
 	}
 	return nil
 }

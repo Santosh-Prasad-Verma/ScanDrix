@@ -217,12 +217,7 @@ func (p *ConversationAgentProvider) Execute(ctx context.Context, req Conversatio
 	state, err := p.runner.Run(ctx, spec, runInput, toolCtx)
 	if err != nil {
 		slog.Error("ConversationAgent execution failed", "error", err, "thread_id", req.ThreadID)
-		return &ConversationResponse{
-			Response:     ConversationProviderErrorMessage,
-			ThreadID:     req.ThreadID,
-			FinishReason: "error",
-			Duration:     time.Since(startTime),
-		}, nil
+		return nil, fmt.Errorf("conversation agent execution failed: %w", err)
 	}
 
 	// 5. Extract and normalize answer

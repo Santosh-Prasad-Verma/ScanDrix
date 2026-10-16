@@ -118,7 +118,7 @@ func (s *JobStatusService) GetMetrics(ctx context.Context) (*WorkflowMetrics, er
 	}
 
 	if s.pool == nil {
-		metrics.SuccessRate = 100.0
+		metrics.Unavailable = []string{"success_rate:no_data_source"}
 		return metrics, nil
 	}
 
@@ -159,9 +159,10 @@ func (s *JobStatusService) GetMetrics(ctx context.Context) (*WorkflowMetrics, er
 
 	totalToday := metrics.CompletedToday + metrics.FailedToday
 	if totalToday > 0 {
-		metrics.SuccessRate = (float64(metrics.CompletedToday) / float64(totalToday)) * 100.0
+		sr := (float64(metrics.CompletedToday) / float64(totalToday)) * 100.0
+		metrics.SuccessRate = &sr
 	} else {
-		metrics.SuccessRate = 100.0
+		metrics.Unavailable = append(metrics.Unavailable, "success_rate:insufficient_data")
 	}
 
 	// 3. Stale Processing Jobs

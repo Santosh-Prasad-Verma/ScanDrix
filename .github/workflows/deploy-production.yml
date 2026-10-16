@@ -124,11 +124,46 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Register New Task Definition Revision
+        id: task-def
+        env:
+          SERVICE_NAME: ${{ matrix.service.name }}
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/scandrix-${{ matrix.service.name }}:${{ steps.tags.outputs.tag_sha }}
+          ECS_SERVICE: ${{ matrix.service.ecs_service }}
+        run: |
+          set -euo pipefail
+          TASK_DEF_JSON=$(aws ecs describe-task-definition \
+            --task-definition "${ECS_SERVICE}" \
+            --region "${AWS_REGION}" \
+            --query 'taskDefinition' \
+            --output json)
+
+          NEW_CONTAINER_DEFS=$(echo "$TASK_DEF_JSON" | jq \
+            --arg IMAGE "$IMAGE_URI" \
+            --arg CONTAINER "$SERVICE_NAME" \
+            '.containerDefinitions | map(if .name == $CONTAINER then .image = $IMAGE else . end)')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --family $(echo "$TASK_DEF_JSON" | jq -r '.family') \
+            --task-role-arn $(echo "$TASK_DEF_JSON" | jq -r '.taskRoleArn // empty') \
+            --execution-role-arn $(echo "$TASK_DEF_JSON" | jq -r '.executionRoleArn // empty') \
+            --network-mode $(echo "$TASK_DEF_JSON" | jq -r '.networkMode // empty') \
+            --cpu $(echo "$TASK_DEF_JSON" | jq -r '.cpu // empty') \
+            --memory $(echo "$TASK_DEF_JSON" | jq -r '.memory // empty') \
+            --requires-compatibilities $(echo "$TASK_DEF_JSON" | jq -r '.requiresCompatibilities // empty | join(" ")') \
+            --container-definitions "$NEW_CONTAINER_DEFS" \
+            --region "${AWS_REGION}" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "task_def_arn=${NEW_TASK_DEF_ARN}" >> "$GITHUB_OUTPUT"
+
       - name: Trigger Rolling ECS Deployment
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ matrix.service.ecs_service }} \
+            --task-definition ${{ steps.task-def.outputs.task_def_arn }} \
             --force-new-deployment \
             --region ${{ env.AWS_REGION }}
 
