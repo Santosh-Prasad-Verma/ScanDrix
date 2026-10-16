@@ -1,4 +1,4 @@
-FROM golang:1.25.3-alpine AS builder
+FROM golang:1.27.2-alpine AS builder
 ENV GOTOOLCHAIN=auto
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /build
