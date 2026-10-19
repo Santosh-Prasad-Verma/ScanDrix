@@ -7,6 +7,7 @@ const (
 	ChannelEmail   Channel = "email"
 	ChannelInApp   Channel = "in_app"
 	ChannelSlack   Channel = "slack"
+	ChannelTeams   Channel = "teams"
 	ChannelDiscord Channel = "discord"
 	ChannelWebhook Channel = "webhook"
 )
@@ -16,6 +17,7 @@ var ActiveChannels = map[Channel]bool{
 	ChannelEmail:   true,
 	ChannelInApp:   true,
 	ChannelSlack:   true,
+	ChannelTeams:   true,
 	ChannelDiscord: true,
 	ChannelWebhook: true,
 }

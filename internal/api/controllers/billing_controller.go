@@ -371,6 +371,9 @@ func (c *BillingController) verifyBillingSignature(r *http.Request, body []byte)
 
 	sigHeader := r.Header.Get("X-ScanDrix-Signature")
 	if sigHeader == "" {
+		sigHeader = r.Header.Get("X-Billing-Signature")
+	}
+	if sigHeader == "" {
 		sigHeader = r.Header.Get("X-Signature")
 	}
 	if sigHeader == "" {
@@ -813,4 +816,3 @@ func (c *BillingController) handleConfirmDowngrade(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
-

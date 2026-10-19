@@ -26,7 +26,6 @@ import (
 )
 
 // GitLabService implements contracts.ICodeManagementService for GitLab SaaS and GitLab Self-Managed.
-// Translates libs/platform/infrastructure/adapters/services/gitlab.service.ts
 var _ contracts.ICodeManagementService = (*GitLabService)(nil)
 
 type GitLabService struct {

@@ -37,12 +37,25 @@ func (uc *FindByKeyUseCase) Execute(ctx context.Context, wsID uuid.UUID, key org
 	}
 
 	if key == orgparams.KeyBYOKConfig && maskSecrets {
-		var byokCfg orgparams.BYOKConfigValue
-		if err := json.Unmarshal(entity.ConfigValue, &byokCfg); err == nil {
-			for i := range byokCfg.Credentials {
-				byokCfg.Credentials[i].APIKey = MaskSecret(byokCfg.Credentials[i].APIKey)
+		var rawMap map[string]any
+		if err := json.Unmarshal(entity.ConfigValue, &rawMap); err == nil {
+			if creds, ok := rawMap["credentials"].([]any); ok {
+				for _, c := range creds {
+					if cMap, ok := c.(map[string]any); ok {
+						if k, ok := cMap["apiKey"].(string); ok && k != "" {
+							cMap["apiKey"] = MaskSecret(k)
+						}
+						if sets, ok := cMap["settings"].(map[string]any); ok {
+							for _, secretKey := range []string{"awsSecretAccessKey", "awsSessionToken", "awsBearerToken"} {
+								if sv, ok := sets[secretKey].(string); ok && sv != "" {
+									sets[secretKey] = MaskSecret(sv)
+								}
+							}
+						}
+					}
+				}
 			}
-			maskedBytes, _ := json.Marshal(byokCfg)
+			maskedBytes, _ := json.Marshal(rawMap)
 			// Return a safe copy without mutating storage
 			safeCopy := *entity
 			safeCopy.ConfigValue = maskedBytes

@@ -53,6 +53,7 @@ import (
 	drixyModules "github.com/scandrix/backend/internal/rules/drixy/modules"
 	"github.com/scandrix/backend/internal/telemetry"
 	"github.com/scandrix/backend/internal/webhooks/ingestion"
+	webhookControllers "github.com/scandrix/backend/internal/webhooks/controllers"
 	apiservices "github.com/scandrix/backend/internal/api/services"
 	cmcontracts "github.com/scandrix/backend/internal/platform/domain/contracts"
 	"github.com/scandrix/backend/pkg/models"
@@ -109,6 +110,10 @@ type RouterConfig struct {
 	AzureDevOpsWebhookSecret string
 	ForgejoWebhookSecret     string
 	BillingWebhookSecret     string
+	JiraWebhookSecret        string
+	LinearWebhookSecret      string
+	SlackSigningSecret       string
+	TeamsWebhookSecret       string
 }
 
 // entitlementResolver memoizes the single resolver shared by the license
@@ -167,9 +172,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// 3. GLOBAL MIDDLEWARE PIPELINE (CORS, RateLimiting, CSRF, Metrics & Security)
 	// ═══════════════════════════════════════════════════════════════
 
-	// Base Middlewares (Order: Recoverer -> RequestID -> SecurityHeaders -> CORS -> RateLimit -> CSRF -> Metrics -> Logger -> Timeout)
+	// Base Middlewares (Order: Recoverer -> RequestID -> RequestBodyLimit -> SecurityHeaders -> CORS -> RateLimit -> CSRF -> Metrics -> Logger -> Timeout)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(scandrixMiddleware.RequestBodyLimit(10 * 1024 * 1024))
 	r.Use(scandrixMiddleware.SecurityHeaders)
 	corsCfg := scandrixMiddleware.DefaultCORSConfig()
 	r.Use(scandrixMiddleware.CORS(corsCfg))
@@ -546,6 +552,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	issuesCtrl := controllers.NewIssuesController(issuesRepo)
 	automationCtrl := controllers.NewAutomationController(autoRepo)
 	billingCtrl := controllers.NewBillingController(cfg.BillingService, billingRepo, cfg.BudgetLimiter, cfg.BillingWebhookSecret)
+	pmWebhookCtrl := webhookControllers.NewPMWebhooksController(cfg.Repo, cfg.JiraWebhookSecret, cfg.LinearWebhookSecret)
+	botActionsCtrl := webhookControllers.NewBotActionsController(cfg.Repo, cfg.SlackSigningSecret, cfg.TeamsWebhookSecret)
+	finetuningCtrl := controllers.NewFineTuningController(cfg.Repo)
+	warehouseCtrl := controllers.NewWarehouseController(cfg.Repo)
 	auditCtrl := controllers.NewAuditController(auditRepo)
 	githubCtrl := controllers.NewGitHubController(ghRepo)
 	orgCtrl := controllers.NewOrganizationController(orgRepo).WithUseCases(
@@ -718,6 +728,23 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		target.Post("/azure-repos/webhook", gitWebhookHandler.ServeHTTP)
 		target.Post("/forgejo/webhook", gitWebhookHandler.ServeHTTP)
 
+		// Project Management Status Webhook endpoints (Jira & Linear)
+		target.Post("/webhooks/jira", pmWebhookCtrl.HandleJiraWebhook)
+		target.Post("/webhooks/jira/webhook", pmWebhookCtrl.HandleJiraWebhook)
+		target.Post("/jira/webhook", pmWebhookCtrl.HandleJiraWebhook)
+		target.Post("/webhooks/linear", pmWebhookCtrl.HandleLinearWebhook)
+		target.Post("/webhooks/linear/webhook", pmWebhookCtrl.HandleLinearWebhook)
+		target.Post("/linear/webhook", pmWebhookCtrl.HandleLinearWebhook)
+
+		// Interactive Bot Action Webhook endpoints (Slack Block Kit & MS Teams Adaptive Cards)
+		target.Post("/webhooks/slack/actions", botActionsCtrl.HandleSlackActions)
+		target.Post("/notifications/slack/actions", botActionsCtrl.HandleSlackActions)
+		target.Post("/slack/actions", botActionsCtrl.HandleSlackActions)
+		target.Post("/webhooks/teams/actions", botActionsCtrl.HandleTeamsActions)
+		target.Post("/notifications/teams/actions", botActionsCtrl.HandleTeamsActions)
+		target.Post("/teams/actions", botActionsCtrl.HandleTeamsActions)
+
+
 		// ScanDrix Model Context Protocol (MCP) Streamable HTTP Server
 		//
 		// MCP is disabled by default (SCANDRIX_MCP_SERVER_ENABLED must be set
@@ -854,6 +881,8 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			authGroup.Mount("/team-members", teamCtrl.TeamMembersRoutes())
 			authGroup.Mount("/agent", agentCtrl.Routes())
 			authGroup.Mount("/workflow-queue", workflowQueueCtrl.Routes())
+			authGroup.Route("/finetuning", finetuningCtrl.RegisterRoutes)
+			authGroup.Route("/analytics/warehouse", warehouseCtrl.RegisterRoutes)
 
 			// RBAC-protected routes: teams / members require member management policy
 			authGroup.Group(func(teamGroup chi.Router) {
@@ -929,7 +958,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// 8. REST V1 & ROOT COMPATIBILITY MOUNT (Dual-route path binding)
 	// ═══════════════════════════════════════════════════════════════
 
-	// Mount on /api/v1 (standard REST spec) and root / (for Next.js apps/web proxy compatibility)
+	// Mount on /api/v1 (standard REST spec) and root / (for Next.js frontend dashboard proxy compatibility)
 	r.Route("/api/v1", mountAPIRoutes)
 	mountAPIRoutes(r)
 

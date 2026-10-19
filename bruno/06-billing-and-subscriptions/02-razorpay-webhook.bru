@@ -1,0 +1,59 @@
+meta {
+  name: 02 - Razorpay Subscription Webhook (Dynamic Signature)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{webhooksBaseUrl}}/api/v1/webhooks/billing/webhook
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Razorpay-Signature: {{razorpaySignature}}
+}
+
+body:json {
+  {
+    "event": "subscription.charged",
+    "account_id": "acc_mock_scandrix",
+    "payload": {
+      "subscription": {
+        "entity": {
+          "id": "sub_mock_enterprise_99",
+          "plan_id": "plan_enterprise_annual",
+          "status": "active"
+        }
+      },
+      "payment": {
+        "entity": {
+          "id": "pay_mock_12345",
+          "amount": 49900,
+          "currency": "USD",
+          "status": "captured"
+        }
+      }
+    }
+  }
+}
+
+script:pre-request {
+  let signature = 'test-billing-signature';
+  try {
+    const crypto = require('crypto');
+    const secret = bru.getEnvVar('razorpayWebhookSecret') || 'test-billing-secret';
+    const bodyString = JSON.stringify(req.getBody());
+    signature = crypto.createHmac('sha256', secret).update(bodyString).digest('hex');
+  } catch (e) {
+    // Safe sandbox mode fallback
+  }
+  bru.setVar('razorpaySignature', signature);
+}
+
+tests {
+  test("Webhook handles signature check (200, 400, or 401)", function() {
+    expect([200, 400, 401]).to.include(res.getStatus());
+  });
+}

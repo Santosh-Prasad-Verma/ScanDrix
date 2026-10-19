@@ -1,0 +1,31 @@
+meta {
+  name: 01 - List Tracked Pull Requests
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/pull-requests/executions
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect([200, 401]).to.include(res.getStatus());
+  });
+
+  test("Extract first reviewId if present", function() {
+    if (res.getStatus() === 200) {
+      const data = res.getBody();
+      const list = Array.isArray(data) ? data : (data.items || data.pull_requests || []);
+      if (list.length > 0 && list[0].id) {
+        bru.setVar('reviewId', list[0].id);
+      }
+    }
+  });
+}

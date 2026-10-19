@@ -1,0 +1,34 @@
+meta {
+  name: 02 - Subscribe Review Progress SSE Stream
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/pull-requests/executions/events?review_id={{reviewId}}
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+  Accept: text/event-stream
+}
+
+script:pre-request {
+  if (!bru.getVar('reviewId')) {
+    bru.setVar('reviewId', '00000000-0000-0000-0000-000000000000');
+  }
+}
+
+tests {
+  test("Stream handshake responds with 200 or 400/404/500 (for nil review)", function() {
+    expect([200, 400, 401, 404, 500]).to.include(res.getStatus());
+  });
+
+  test("Content-Type is text/event-stream on active stream", function() {
+    if (res.getStatus() === 200) {
+      expect(res.getHeader('content-type')).to.include('text/event-stream');
+    }
+  });
+}

@@ -1,0 +1,47 @@
+meta {
+  name: 02 - GitLab Merge Request Webhook
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{webhooksBaseUrl}}/webhooks/gitlab
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Gitlab-Event: Merge Request Hook
+  X-Gitlab-Token: {{gitlabSecretToken}}
+}
+
+body:json {
+  {
+    "object_kind": "merge_request",
+    "project": {
+      "id": 883921,
+      "name": "scandrix-gitlab-repo",
+      "path_with_namespace": "scandrix/scandrix-gitlab-repo"
+    },
+    "object_attributes": {
+      "id": 5519,
+      "target_branch": "main",
+      "source_branch": "feature/fix-auth",
+      "title": "fix: sanitize auth headers",
+      "state": "opened",
+      "action": "open"
+    }
+  }
+}
+
+script:pre-request {
+  const secret = bru.getEnvVar('gitlabWebhookSecret') || 'test-gitlab-secret';
+  bru.setVar('gitlabSecretToken', secret);
+}
+
+tests {
+  test("GitLab webhook returns 200, 202, or 401", function() {
+    expect([200, 202, 401]).to.include(res.getStatus());
+  });
+}

@@ -438,3 +438,41 @@ func TestAuthenticatorEphemeralKeyOnEmptySecret(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_QueryTokenRestriction(t *testing.T) {
+	authenticator := auth.NewAuthenticator("test-jwt-secret-for-query-params-32b")
+	userID := uuid.New()
+	wsID := uuid.New()
+	token, err := authenticator.GenerateToken(userID, wsID, models.RoleMember)
+	if err != nil {
+		t.Fatalf("unexpected error generating token: %v", err)
+	}
+
+	protectedHandler := authenticator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 1. Standard REST endpoint with query param ?token= must be REJECTED (HTTP 401)
+	reqREST := httptest.NewRequest(http.MethodGet, "/api/v1/organizations?token="+token, nil)
+	recREST := httptest.NewRecorder()
+	protectedHandler.ServeHTTP(recREST, reqREST)
+	if recREST.Code != http.StatusUnauthorized {
+		t.Fatalf("expected HTTP 401 when passing query parameter token on standard REST endpoint, got %d", recREST.Code)
+	}
+
+	// 2. Streaming SSE endpoint with query param ?token= must be ACCEPTED (HTTP 200)
+	reqSSE := httptest.NewRequest(http.MethodGet, "/api/v1/reviews/events?token="+token, nil)
+	recSSE := httptest.NewRecorder()
+	protectedHandler.ServeHTTP(recSSE, reqSSE)
+	if recSSE.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 when passing query parameter token on SSE stream endpoint, got %d", recSSE.Code)
+	}
+
+	// 3. Standard REST endpoint with standard Authorization header must be ACCEPTED (HTTP 200)
+	reqHeader := httptest.NewRequest(http.MethodGet, "/api/v1/organizations", nil)
+	reqHeader.Header.Set("Authorization", "Bearer "+token)
+	recHeader := httptest.NewRecorder()
+	protectedHandler.ServeHTTP(recHeader, reqHeader)
+	if recHeader.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 when passing Authorization header, got %d", recHeader.Code)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,14 +19,7 @@ const (
 	TabFindings ActiveTab = iota
 	TabDiff
 	TabStats
-	TabChat
 )
-
-// chatResponseMsg delivers async AI completion to the TUI state machine.
-type chatResponseMsg struct {
-	reply string
-	err   error
-}
 
 // Model represents the top-level Bubbletea state machine.
 type Model struct {
@@ -44,9 +36,6 @@ type Model struct {
 	height           int
 	runner           *engine.CLIRunner
 	gateway          *llm.Gateway
-	chatHistory      []llm.ChatMessage
-	chatInput        string
-	isChatLoading    bool
 }
 
 // NewModel creates an initialized TUI dashboard state.
@@ -62,7 +51,7 @@ func NewModel(rawDiff string, runner *engine.CLIRunner) Model {
 	notification := ""
 
 	if strings.TrimSpace(rawDiff) == "" {
-		initialTab = TabChat
+		initialTab = TabFindings
 		notification = "✨ Clean working tree — no uncommitted changes"
 	} else {
 		// Run fast local review on startup to prevent TUI freeze
@@ -87,8 +76,6 @@ func NewModel(rawDiff string, runner *engine.CLIRunner) Model {
 		notification:     notification,
 		runner:           runner,
 		gateway:          gw,
-		chatHistory:      make([]llm.ChatMessage, 0),
-		chatInput:        "",
 		width:            100,
 		height:           30,
 	}
@@ -106,85 +93,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case chatResponseMsg:
-		m.isChatLoading = false
-		reply := msg.reply
-		if msg.err != nil {
-			reply = fmt.Sprintf("❌ AI Inference Error: %v\n\n(Ensure AI provider keys are set in .env)", msg.err)
-		}
-		m.chatHistory = append(m.chatHistory, llm.ChatMessage{
-			Role:    "assistant",
-			Content: reply,
-		})
-		m.notification = "✨ AI response received"
-		return m, nil
-
 	case tea.KeyMsg:
-		// When on Chat tab, capture text input
-		if m.activeTab == TabChat {
-			switch msg.Type {
-			case tea.KeyCtrlC:
-				return m, tea.Quit
-			case tea.KeyTab:
-				m.activeTab = (m.activeTab + 1) % 4
-				return m, nil
-			case tea.KeyShiftTab:
-				m.activeTab = (m.activeTab + 3) % 4
-				return m, nil
-			case tea.KeyEnter:
-				if strings.TrimSpace(m.chatInput) != "" && !m.isChatLoading {
-					userText := m.chatInput
-					m.chatHistory = append(m.chatHistory, llm.ChatMessage{
-						Role:    "user",
-						Content: userText,
-					})
-					m.chatInput = ""
-					m.isChatLoading = true
-
-					gw := m.gateway
-					history := m.chatHistory
-					return m, func() tea.Msg {
-						if gw == nil {
-							return chatResponseMsg{
-								reply: "🤖 ScanDrix Local Intelligence: " + userText + "\n\n(Tip: Configure OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY in .env for multi-model reasoning)",
-							}
-						}
-						ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-						defer cancel()
-						systemPrompt := "You are ScanDrix AI, an elite Staff Security & Software Engineer in the terminal. Provide concise, expert code review, security, and architectural guidance."
-						reply, err := gw.GenerateChatResponse(ctx, systemPrompt, history, userText)
-						return chatResponseMsg{reply: reply, err: err}
-					}
-				}
-				return m, nil
-
-			case tea.KeyBackspace:
-				if len(m.chatInput) > 0 {
-					m.chatInput = m.chatInput[:len(m.chatInput)-1]
-				}
-				return m, nil
-
-			case tea.KeyEsc:
-				m.chatInput = ""
-				return m, nil
-
-			case tea.KeyRunes, tea.KeySpace:
-				m.chatInput += msg.String()
-				return m, nil
-			}
-		}
-
 		// Standard navigation keys
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
 		case "tab":
-			m.activeTab = (m.activeTab + 1) % 4
+			m.activeTab = (m.activeTab + 1) % 3
 			return m, nil
 
 		case "shift+tab":
-			m.activeTab = (m.activeTab + 3) % 4
+			m.activeTab = (m.activeTab + 2) % 3
 			return m, nil
 
 		case "1":
@@ -197,10 +117,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "3":
 			m.activeTab = TabStats
-			return m, nil
-
-		case "4":
-			m.activeTab = TabChat
 			return m, nil
 
 		case "up", "k":
@@ -323,12 +239,6 @@ func (m Model) View() string {
 		tabs = append(tabs, InactiveTabStyle.Render("[3] Security Metrics"))
 	}
 
-	if m.activeTab == TabChat {
-		tabs = append(tabs, ActiveTabStyle.Render("[4] AI Agent / Live Chat"))
-	} else {
-		tabs = append(tabs, InactiveTabStyle.Render("[4] AI Agent / Live Chat"))
-	}
-
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabs...) + "\n\n")
 
 	// 3. Body View
@@ -339,8 +249,6 @@ func (m Model) View() string {
 		b.WriteString(m.RenderDiffView(m.width, m.height))
 	case TabStats:
 		b.WriteString(m.RenderStatsView(m.width, m.height))
-	case TabChat:
-		b.WriteString(m.RenderChatView(m.width, m.height))
 	}
 
 	// 4. Notification / Status Banner
@@ -350,7 +258,7 @@ func (m Model) View() string {
 
 	// 5. Footer Shortcuts
 	footer := lipgloss.JoinHorizontal(lipgloss.Left,
-		HelpKeyStyle.Render("Tab/1-4:"), HelpDescStyle.Render("Tabs | "),
+		HelpKeyStyle.Render("Tab/1-3:"), HelpDescStyle.Render("Tabs | "),
 		HelpKeyStyle.Render("↑/↓:"), HelpDescStyle.Render("Navigate | "),
 		HelpKeyStyle.Render("a:"), HelpDescStyle.Render("Apply Fix | "),
 		HelpKeyStyle.Render("f:"), HelpDescStyle.Render("Filter | "),

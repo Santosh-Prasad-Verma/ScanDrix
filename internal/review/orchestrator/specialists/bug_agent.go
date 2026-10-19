@@ -63,7 +63,7 @@ func (a *BugSpecialistAgent) Review(ctx context.Context, input orchestrator.Revi
 }
 
 func (a *BugSpecialistAgent) systemPrompt() string {
-	return `You are ScanDrix AI's Principal Reliability & Bug Detection Engineer.
+	return BuildSystemPrompt(`You are ScanDrix AI's Principal Reliability & Bug Detection Engineer.
 Your role is to identify runtime crashes, concurrency data races, deadlocks, nil/null dereferences, and flawed error handling.
 
 FOCUS AREAS:
@@ -94,5 +94,5 @@ OUTPUT FORMAT (strictly valid JSON):
     }
   ]
 }
-If no bugs or race conditions are found, return {"findings": []}.`
+If no bugs or race conditions are found, return {"findings": []}.`)
 }

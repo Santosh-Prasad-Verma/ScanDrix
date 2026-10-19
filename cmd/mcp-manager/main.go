@@ -44,7 +44,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	slog.Info("Starting ScanDrix MCP Manager Microservice (apps/mcp-manager equivalent)")
+	slog.Info("Starting ScanDrix MCP Manager Microservice")
 
 	cfg, err := config.Load()
 	if err != nil {

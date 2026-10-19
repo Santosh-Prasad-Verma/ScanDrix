@@ -1,0 +1,22 @@
+meta {
+  name: 01 - List Available Billing Plans
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/billing/plans
+  body: none
+  auth: none
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Returns available enterprise plans list", function() {
+    const data = res.getBody();
+    expect(data.plans || data).to.be.ok;
+  });
+}

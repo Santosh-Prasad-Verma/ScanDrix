@@ -30,7 +30,6 @@ import (
 )
 
 // ForgejoService implements contracts.ICodeManagementService for Forgejo / Gitea API v1.
-// Translates libs/platform/infrastructure/adapters/services/forgejo.service.ts
 var _ contracts.ICodeManagementService = (*ForgejoService)(nil)
 
 const (

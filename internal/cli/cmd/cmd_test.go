@@ -29,7 +29,6 @@ func TestRootCommandHierarchy(t *testing.T) {
 		"subscribe",
 		"update",
 		"schema",
-		"chat",
 		"tui",
 		"scan",
 		"diff",

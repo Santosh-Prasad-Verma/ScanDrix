@@ -29,7 +29,7 @@ type OverflowRunnerMetrics struct {
 }
 
 // OverflowRecoveringRunner decorates contracts.AgentRunner to recover from mid-loop context overflows.
-// When proactive window compression mis-estimates dense code tokens (issue #1574) and a provider
+// When proactive window compression mis-estimates dense code tokens  and a provider
 // fails with context window overflow, this decorator re-runs the pass ONCE with tighter compression.
 type OverflowRecoveringRunner struct {
 	inner      contracts.AgentRunner

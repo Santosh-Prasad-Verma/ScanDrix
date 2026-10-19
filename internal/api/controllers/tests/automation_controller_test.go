@@ -36,4 +36,28 @@ func TestAutomationControllerEndpoints(t *testing.T) {
 	if !strings.Contains(wAuth.Body.String(), `"data"`) {
 		t.Errorf("expected json data response, got %s", wAuth.Body.String())
 	}
+
+	// 3. Authorized toggle request -> 200 OK
+	ruleID := uuid.New()
+	toggleBody := strings.NewReader(`{"enabled":true}`)
+	reqToggle := httptest.NewRequest(http.MethodPatch, "/"+ruleID.String()+"/toggle", toggleBody).WithContext(ctx)
+	wToggle := httptest.NewRecorder()
+	router.ServeHTTP(wToggle, reqToggle)
+	if wToggle.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for toggle, got %d", wToggle.Code)
+	}
+	if !strings.Contains(wToggle.Body.String(), `"updated"`) {
+		t.Errorf("expected updated status in toggle response, got %s", wToggle.Body.String())
+	}
+
+	// 4. Authorized delete request -> 200 OK
+	reqDelete := httptest.NewRequest(http.MethodDelete, "/"+ruleID.String(), nil).WithContext(ctx)
+	wDelete := httptest.NewRecorder()
+	router.ServeHTTP(wDelete, reqDelete)
+	if wDelete.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for delete, got %d", wDelete.Code)
+	}
+	if !strings.Contains(wDelete.Body.String(), `"deleted"`) {
+		t.Errorf("expected deleted status in delete response, got %s", wDelete.Body.String())
+	}
 }

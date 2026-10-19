@@ -1,0 +1,1471 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ScanDrix Enterprise API",
+    "description": "High-Performance AI-Powered Automated Code Review, Rule Engine, and SCM Security Platform.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "ScanDrix Engineering",
+      "url": "https://scandrix.dev",
+      "email": "support@scandrix.dev"
+    },
+    "license": {
+      "name": "Proprietary Enterprise License"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "https://api.scandrix.dev",
+      "description": "Production Cloud Gateway"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Standard JWT Bearer token obtained via /api/v1/auth/login or CLI session"
+      },
+      "CLIKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-team-key",
+        "description": "ScanDrix Team CLI Key (starts with scandrix_*)"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "admin@scandrix.dev"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "example": "SuperSecret123!"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password",
+          "displayName",
+          "workspaceName"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "admin@scandrix.dev"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "example": "SuperSecret123!"
+          },
+          "displayName": {
+            "type": "string",
+            "example": "System Administrator"
+          },
+          "workspaceName": {
+            "type": "string",
+            "example": "Core Engineering"
+          }
+        }
+      },
+      "TriggerReviewRequest": {
+        "type": "object",
+        "required": [
+          "repository",
+          "pull_request_id"
+        ],
+        "properties": {
+          "repository": {
+            "type": "string",
+            "example": "acme/backend"
+          },
+          "pull_request_id": {
+            "type": "integer",
+            "example": 42
+          },
+          "commit_sha": {
+            "type": "string",
+            "example": "HEAD"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "DryRunRuleRequest": {
+        "type": "object",
+        "required": [
+          "rule",
+          "sample_code"
+        ],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "example": "no-hardcoded-secrets"
+          },
+          "sample_code": {
+            "type": "string",
+            "example": "const apiKey = \"sk-12345\";"
+          }
+        }
+      },
+      "WarehouseSyncRequest": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "string",
+            "enum": [
+              "snowflake",
+              "bigquery",
+              "clickhouse"
+            ],
+            "example": "snowflake"
+          },
+          "force_full_sync": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "StandardResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "message": {
+            "type": "string",
+            "example": "Operation completed successfully"
+          }
+        }
+      },
+      "HealthProbeResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "details": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "System Probes"
+        ],
+        "summary": "Health Diagnostics Probe",
+        "description": "Handles health diagnostics probe with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "System Probes"
+        ],
+        "summary": "Readiness Probe",
+        "description": "Handles readiness probe with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "tags": [
+          "System Probes"
+        ],
+        "summary": "Liveness Probe",
+        "description": "Handles liveness probe with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Telemetry & Observability"
+        ],
+        "summary": "Prometheus Metrics Stream",
+        "description": "Handles prometheus metrics stream with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "User Login with Email and Password",
+        "description": "Handles user login with email and password with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "User Registration and Workspace Onboarding",
+        "description": "Handles user registration and workspace onboarding with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Refresh Expired JWT Access Token",
+        "description": "Handles refresh expired jwt access token with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Revoke Active Token Session",
+        "description": "Handles revoke active token session with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Get Current Authenticated User & Workspace",
+        "description": "Handles get current authenticated user & workspace with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/cli-keys": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "List Workspace CLI Keys",
+        "description": "Handles list workspace cli keys with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Generate New Team CLI Key",
+        "description": "Handles generate new team cli key with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/cli-keys/{keyId}": {
+      "delete": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Revoke Team CLI Key",
+        "description": "Handles revoke team cli key with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "keyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unique identifier for keyId"
+          }
+        ]
+      }
+    },
+    "/api/v1/reviews/trigger": {
+      "post": {
+        "tags": [
+          "Code Review Pipeline"
+        ],
+        "summary": "Trigger Automated Code Review",
+        "description": "Handles trigger automated code review with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "": "#/components/schemas/TriggerReviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reviews": {
+      "get": {
+        "tags": [
+          "Code Review Pipeline"
+        ],
+        "summary": "List Historical Pull Request Reviews",
+        "description": "Handles list historical pull request reviews with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/reviews/{id}": {
+      "get": {
+        "tags": [
+          "Code Review Pipeline"
+        ],
+        "summary": "Get Review Execution Details and Status",
+        "description": "Handles get review execution details and status with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unique identifier for id"
+          }
+        ]
+      }
+    },
+    "/api/v1/reviews/{id}/findings": {
+      "get": {
+        "tags": [
+          "Code Review Pipeline"
+        ],
+        "summary": "Get Identified Security Vulnerabilities & Findings",
+        "description": "Handles get identified security vulnerabilities & findings with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unique identifier for id"
+          }
+        ]
+      }
+    },
+    "/api/v1/reviews/{id}/suggestions": {
+      "get": {
+        "tags": [
+          "Code Review Pipeline"
+        ],
+        "summary": "Get AI Suggested Code Fixes",
+        "description": "Handles get ai suggested code fixes with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unique identifier for id"
+          }
+        ]
+      }
+    },
+    "/api/v1/rules": {
+      "get": {
+        "tags": [
+          "Rules Engine"
+        ],
+        "summary": "List Configured Review Rules",
+        "description": "Handles list configured review rules with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Rules Engine"
+        ],
+        "summary": "Create or Update Custom Review Rule",
+        "description": "Handles create or update custom review rule with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rules/dry-run": {
+      "post": {
+        "tags": [
+          "Rules Engine"
+        ],
+        "summary": "Dry-Run Rule Against Sample Code",
+        "description": "Handles dry-run rule against sample code with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "": "#/components/schemas/DryRunRuleRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rules/packs": {
+      "get": {
+        "tags": [
+          "Rules Engine"
+        ],
+        "summary": "List Community and Enterprise Rule Packs",
+        "description": "Handles list community and enterprise rule packs with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/analytics/warehouse/config": {
+      "get": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Get Data Warehouse Configuration",
+        "description": "Handles get data warehouse configuration with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Save Snowflake / BigQuery Connection Settings",
+        "description": "Handles save snowflake / bigquery connection settings with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/analytics/warehouse/test": {
+      "post": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Test Warehouse Driver Connectivity",
+        "description": "Handles test warehouse driver connectivity with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/analytics/warehouse/sync": {
+      "post": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Trigger Asynchronous Warehouse Synchronization",
+        "description": "Handles trigger asynchronous warehouse synchronization with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "": "#/components/schemas/WarehouseSyncRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analytics/warehouse/schema-ddl": {
+      "get": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Retrieve SQL DDL for Warehouse Schema Creation",
+        "description": "Handles retrieve sql ddl for warehouse schema creation with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/analytics/warehouse/history": {
+      "get": {
+        "tags": [
+          "Data Warehouse"
+        ],
+        "summary": "Get Historical Warehouse Sync Runs",
+        "description": "Handles get historical warehouse sync runs with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/orgs": {
+      "get": {
+        "tags": [
+          "Organizations & Teams"
+        ],
+        "summary": "List Organizations and Workspaces",
+        "description": "Handles list organizations and workspaces with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/teams": {
+      "get": {
+        "tags": [
+          "Organizations & Teams"
+        ],
+        "summary": "List Workspace Teams and Members",
+        "description": "Handles list workspace teams and members with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "CLIKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/webhooks/github": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "GitHub App & Repository Webhook Ingestion",
+        "description": "Handles github app & repository webhook ingestion with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/webhooks/gitlab": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "GitLab Project Webhook Ingestion",
+        "description": "Handles gitlab project webhook ingestion with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/webhooks/bitbucket": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Bitbucket Cloud/Server Webhook Ingestion",
+        "description": "Handles bitbucket cloud/server webhook ingestion with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/webhooks/azure-repos": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Azure DevOps Webhook Ingestion",
+        "description": "Handles azure devops webhook ingestion with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/webhooks/forgejo": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Forgejo / Gitea Webhook Ingestion",
+        "description": "Handles forgejo / gitea webhook ingestion with strict validation and tenant isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "": "#/components/schemas/StandardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Forbidden \u2014 insufficient workspace permissions"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    }
+  }
+}

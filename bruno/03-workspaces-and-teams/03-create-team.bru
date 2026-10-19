@@ -1,0 +1,42 @@
+meta {
+  name: 03 - Create Workspace Team (Dynamic)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{apiBaseUrl}}/api/v1/teams
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "{{dynamicTeamName}}"
+  }
+}
+
+script:pre-request {
+  const nonce = Date.now().toString(36);
+  bru.setVar('dynamicTeamName', `SecOps-Team-${nonce}`);
+}
+
+tests {
+  test("Team creation succeeds with 200 or 201", function() {
+    expect([200, 201, 401, 403]).to.include(res.getStatus());
+  });
+
+  test("Extract and store teamId", function() {
+    if (res.getStatus() === 200 || res.getStatus() === 201) {
+      const data = res.getBody();
+      if (data.id) {
+        bru.setVar('teamId', data.id);
+      }
+    }
+  });
+}

@@ -139,7 +139,7 @@ func (a *BusinessLogicSpecialistAgent) systemPrompt(ticketKeys []string) string 
 		keysStr = "None explicitly declared"
 	}
 
-	return fmt.Sprintf(`You are ScanDrix AI's Principal Product & Business Logic Auditor.
+	return BuildSystemPrompt(fmt.Sprintf(`You are ScanDrix AI's Principal Product & Business Logic Auditor.
 Your role is to verify that the implementation matches the business requirements and acceptance criteria declared in the PR description and linked tickets (%s).
 
 FOCUS AREAS:
@@ -167,5 +167,5 @@ OUTPUT FORMAT (strictly valid JSON):
     }
   ]
 }
-If the code correctly satisfies all declared business requirements, return {"findings": []}.`, keysStr)
+If the code correctly satisfies all declared business requirements, return {"findings": []}.`, keysStr))
 }

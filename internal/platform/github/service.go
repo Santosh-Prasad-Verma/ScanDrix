@@ -28,7 +28,6 @@ import (
 )
 
 // GitHubService implements contracts.ICodeManagementService for GitHub Cloud and GitHub Enterprise Server.
-// Translates libs/platform/infrastructure/adapters/services/github/github.service.ts
 var _ contracts.ICodeManagementService = (*GitHubService)(nil)
 
 type GitHubService struct {
@@ -460,7 +459,6 @@ func (s *GitHubService) GetPullRequests(ctx context.Context, orgData types.Organ
 }
 
 // SearchPullRequestsByTitle searches pull requests in a repository using GitHub's Search API.
-// Matches libs/platform/infrastructure/adapters/services/github/github.service.ts (searchPullRequestsByTitle).
 func (s *GitHubService) SearchPullRequestsByTitle(ctx context.Context, orgData types.OrganizationAndTeamData, repo *types.RepositoryDescriptor, title string, state string, author string, branch string) ([]*types.PullRequest, error) {
 	token, err := s.resolveToken(ctx, orgData)
 	if err != nil {
@@ -871,7 +869,6 @@ func (s *GitHubService) GetRepositoryContentFile(ctx context.Context, orgData ty
 }
 
 // GetRepositoryContentBatch retrieves multiple repository files in parallel using GraphQL batches of 50.
-// Matches libs/platform/infrastructure/adapters/services/github/github.service.ts getRepositoryContentBatch
 func (s *GitHubService) GetRepositoryContentBatch(ctx context.Context, orgData types.OrganizationAndTeamData, repo types.RepositoryDescriptor, files []string, ref string) (map[string]*types.RepositoryFile, error) {
 	result := make(map[string]*types.RepositoryFile)
 	if len(files) == 0 {

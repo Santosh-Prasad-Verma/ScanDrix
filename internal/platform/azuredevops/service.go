@@ -20,7 +20,6 @@ import (
 )
 
 // AzureDevOpsService implements contracts.ICodeManagementService for Azure DevOps Git (REST 7.0/7.1 API).
-// Translates libs/platform/infrastructure/adapters/services/azureRepos/azureRepos.service.ts
 var _ contracts.ICodeManagementService = (*AzureDevOpsService)(nil)
 
 type AzureDevOpsService struct {

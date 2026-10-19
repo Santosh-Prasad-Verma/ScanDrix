@@ -253,6 +253,7 @@ var ChannelLabels = map[enums.Channel]string{
 	enums.ChannelEmail:   "Email",
 	enums.ChannelInApp:   "In-App",
 	enums.ChannelSlack:   "Slack",
+	enums.ChannelTeams:   "Microsoft Teams",
 	enums.ChannelDiscord: "Discord",
 	enums.ChannelWebhook: "Webhook",
 }

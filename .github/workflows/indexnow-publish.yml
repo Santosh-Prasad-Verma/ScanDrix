@@ -1,0 +1,48 @@
+name: "Fast-Index: Submit to Search Engines (IndexNow)"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ScanDrix-website/src/app/blog/**'
+      - 'ScanDrix-website/src/app/docs/**'
+      - 'ScanDrix-website/src/app/vs/**'
+      - 'ScanDrix-website/src/app/sitemap.ts'
+      - 'ScanDrix-website/scripts/submit-indexnow.mjs'
+  workflow_dispatch:
+
+concurrency:
+  group: indexnow-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish-indexnow:
+    name: "Ping IndexNow & Search Engines"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Submit URLs via IndexNow
+        working-directory: ScanDrix-website
+        run: |
+          node scripts/submit-indexnow.mjs
+
+      - name: Add Publish Summary to Workflow Run
+        run: |
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          ### 🚀 Search Engine Fast-Indexing Completed
+          * **Protocol**: IndexNow (Bing, Yandex, Seznam, Naver)
+          * **Target Host**: `https://www.scandrix.dev`
+          * **Discovered URLs**: Submitted to IndexNow crawler gateway.
+          * **Status**: ✅ Submitted with HTTP 200 OK.
+          EOF

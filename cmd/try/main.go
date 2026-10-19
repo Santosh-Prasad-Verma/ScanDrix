@@ -21,7 +21,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	port := 8082
-	slog.Info("Starting Scandrix Public Try PR Review Service (apps/try equivalent)", "port", port)
+	slog.Info("Starting ScanDrix Public Try PR Review Service", "port", port)
 
 	evaluator, err := rules.NewEvaluator(rules.DefaultCatalog())
 	if err != nil {

@@ -227,3 +227,32 @@ func TestPullRequestController_Endpoints(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, w.Code)
 	assert.Contains(t, w.Body.String(), "PR backfill started in background")
 }
+
+func TestPullRequestController_RejectUnauthenticatedRequests(t *testing.T) {
+	mockRepo := &mockPullRequestRepo{}
+	ctrl := controllers.NewPullRequestController(mockRepo, nil)
+	routes := ctrl.Routes()
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/executions"},
+		{http.MethodGet, "/executions/summary"},
+		{http.MethodGet, "/executions/facets"},
+		{http.MethodGet, "/awaiting"},
+		{http.MethodGet, "/authors"},
+		{http.MethodGet, "/files?repositoryId=" + uuid.New().String() + "&prNumber=1"},
+		{http.MethodPost, "/backfill"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			w := httptest.NewRecorder()
+			routes.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusUnauthorized, w.Code, "endpoint must reject unauthenticated caller with 401")
+		})
+	}
+}
+

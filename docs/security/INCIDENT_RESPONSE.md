@@ -39,7 +39,7 @@ DO UPDATE SET expires_at = GREATEST(revoked_access_tokens.expires_at, EXCLUDED.e
 ```
 
 ### 2.2 Instant Team CLI Key Revocation
-To deactivate a leaked Team API Key (`kodus_*` / `scandrix_*`):
+To deactivate a leaked Team API Key (`scandrix_*`):
 ```sql
 UPDATE team_cli_key 
 SET is_active = false, 
@@ -59,7 +59,7 @@ WHERE id = '$WORKSPACE_ID';
 
 ## 3. Credential & Secret Rotation Procedures
 
-All rotation procedures must strictly follow [`docs/operations/rotation-runbooks.md`](file:///home/tarun/Videos/kodus-ai/ScanDrix/docs/operations/rotation-runbooks.md):
+All rotation procedures must strictly follow [`docs/operations/rotation-runbooks.md`](../operations/rotation-runbooks.md):
 
 1. **`JWT_SECRET` Rotation**:
    * Generate new 256-bit secret: `openssl rand -hex 32`.

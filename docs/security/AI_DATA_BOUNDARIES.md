@@ -23,7 +23,7 @@ ScanDrix strictly limits data ingestion to the minimum context required to perfo
 ### 2.1 Ingested Data
 * **Unified Git Diffs**: Lines added, modified, or deleted within the target pull request or commit.
 * **Bounded Context Windows**: Surrounding lines of code directly adjacent to the change, imported interfaces, and syntax trees necessary to verify type safety and security context.
-* **Configuration & Rules**: Custom Kody review rules, `.drixy/rules.yaml`, and organization review parameters.
+* **Configuration & Rules**: Custom Drixy review rules, `.drixy/rules.yaml`, and organization review parameters.
 
 ### 2.2 Excluded Data (Never Ingested or Sent to AI)
 * **Full Repository Archives**: ScanDrix never clones or uploads entire repositories to AI model providers.
@@ -72,6 +72,6 @@ When **Zero Data Retention** is toggled in Organization Parameters:
 
 Enterprise customers can verify model interaction boundaries through:
 * **Tamper-Evident Audit Logs**: Queryable via `internal/enterprise/audit/events.go` recording provider, model ID, timestamp, and operator without storing raw source code.
-* **Egress Firewall Rules**: Listed in [`docs/security/egress-allowlist.md`](file:///home/tarun/Videos/kodus-ai/ScanDrix/docs/security/egress-allowlist.md) for strict network gateway enforcement.
+* **Egress Firewall Rules**: Listed in [`docs/security/egress-allowlist.md`](./egress-allowlist.md) for strict network gateway enforcement.
 
 For security inquiries or specific DPA signing, contact **`security@scandrix.dev`**.

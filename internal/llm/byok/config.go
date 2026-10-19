@@ -239,9 +239,14 @@ func ResolveModelSlot(config *BYOKConfig, modelID string) *NormalizedModel {
 		return nil
 	}
 
+	decryptedAPIKey := cred.APIKey
+	if dec, err := DecryptKey(cred.APIKey); err == nil && dec != "" {
+		decryptedAPIKey = dec
+	}
+
 	slot := &NormalizedModel{
 		Provider:                BYOKProvider(cred.Provider),
-		APIKey:                  cred.APIKey,
+		APIKey:                  decryptedAPIKey,
 		Model:                   targetModel.Model,
 		BYOKModelID:             targetModel.ID,
 		CredentialID:            cred.ID,
@@ -264,19 +269,31 @@ func ResolveModelSlot(config *BYOKConfig, modelID string) *NormalizedModel {
 			slot.VertexLocation = loc
 		}
 		if t, ok := cred.Settings["awsBearerToken"].(string); ok {
-			slot.AWSBearerToken = t
+			if dec, err := DecryptKey(t); err == nil && dec != "" {
+				slot.AWSBearerToken = dec
+			} else {
+				slot.AWSBearerToken = t
+			}
 		}
 		if id, ok := cred.Settings["awsAccessKeyId"].(string); ok {
 			slot.AWSAccessKeyID = id
 		}
 		if sec, ok := cred.Settings["awsSecretAccessKey"].(string); ok {
-			slot.AWSSecretAccessKey = sec
+			if dec, err := DecryptKey(sec); err == nil && dec != "" {
+				slot.AWSSecretAccessKey = dec
+			} else {
+				slot.AWSSecretAccessKey = sec
+			}
 		}
 		if reg, ok := cred.Settings["awsRegion"].(string); ok {
 			slot.AWSRegion = reg
 		}
 		if ses, ok := cred.Settings["awsSessionToken"].(string); ok {
-			slot.AWSSessionToken = ses
+			if dec, err := DecryptKey(ses); err == nil && dec != "" {
+				slot.AWSSessionToken = dec
+			} else {
+				slot.AWSSessionToken = ses
+			}
 		}
 		if orders, ok := cred.Settings["openrouterProviderOrder"].([]any); ok {
 			for _, ord := range orders {

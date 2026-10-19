@@ -169,3 +169,62 @@ func (v *SuggestionVerifier) resolveCheckCommand(filePath string) string {
 		return "true"
 	}
 }
+
+// VerifyTestSuite executes the project's native automated test suite in the isolated sandbox.
+func (v *SuggestionVerifier) VerifyTestSuite(ctx context.Context, sandbox contracts.SandboxInstance) (*VerificationResult, error) {
+	start := time.Now()
+	if sandbox == nil {
+		return &VerificationResult{
+			Verified: false,
+			Status:   StatusUnverifiedSandboxUnavailable,
+			Duration: time.Since(start),
+		}, nil
+	}
+
+	// Probe repo structure to determine test runner
+	testCmd := "true"
+	if _, err := sandbox.ReadFile("go.mod"); err == nil {
+		testCmd = "go test -short ./..."
+	} else if _, err := sandbox.ReadFile("package.json"); err == nil {
+		testCmd = "npm test --if-present"
+	} else if _, err := sandbox.ReadFile("Cargo.toml"); err == nil {
+		testCmd = "cargo test"
+	} else if _, err := sandbox.ReadFile("pyproject.toml"); err == nil {
+		testCmd = "pytest -q"
+	}
+
+	runRes, err := sandbox.Run(ctx, testCmd, nil, 30*time.Second)
+	if err != nil || (runRes != nil && runRes.TimedOut) {
+		return &VerificationResult{
+			Verified:     false,
+			Status:       StatusUnverifiedTimeout,
+			ErrorMessage: "test execution timed out",
+			Duration:     time.Since(start),
+		}, nil
+	}
+
+	if runRes != nil && runRes.ExitCode == 0 {
+		return &VerificationResult{
+			Verified:   true,
+			Status:     StatusPass,
+			Iterations: 1,
+			Duration:   time.Since(start),
+		}, nil
+	}
+
+	errMsg := ""
+	if runRes != nil {
+		errMsg = strings.TrimSpace(runRes.Stderr)
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(runRes.Stdout)
+		}
+	}
+
+	return &VerificationResult{
+		Verified:     false,
+		Status:       StatusUnverifiedCompilationFailed,
+		Iterations:   1,
+		ErrorMessage: errMsg,
+		Duration:     time.Since(start),
+	}, nil
+}

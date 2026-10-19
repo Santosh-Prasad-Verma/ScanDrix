@@ -43,7 +43,7 @@ build/
 /scandrix-dashboard/
 /ScanDrix-website/
 
-# 2. Test Coverage & Go Profiling Artifacts
+# 2. Test Coverage, CI Outputs & Go Profiling Artifacts
 *.out
 *.prof
 *.pprof
@@ -54,6 +54,29 @@ junit.xml
 cpu.pprof
 mem.pprof
 trace.out
+*.sarif
+*-summary.md
+/test-results/
+/playwright-report/
+
+# Logs & Debugging
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Node modules & Package caches (for local tools / scripts)
+node_modules/
+.pnpm-store/
+
+# Legacy test collections
+test/legacy-bruno/
+test/legacy/
+
+# Eval run artifacts (regenerated dynamically)
+evals/**/results/
+evals/**/runs/
 
 # 3. Environment Variables & Secret Credentials (Master Rule 1.5)
 .env
@@ -100,6 +123,18 @@ audits/
 /cli
 prompt.md
 SCANDRIX_ENGINEERING_MASTERCLASS.md
+SCANDRIX_ARCHITECTURE_TECH_STACK.md
+MARKETING_LAUNCH_PACK.md
+
+# Scratch, draft & local temporary markdown files
+*.draft.md
+*.scratch.md
+*.tmp.md
+*SCRATCH*.md
+*NOTES*.md
+TODO.md
+NOTES.md
+scratch.md
 
 # 7. Terraform State & Provider Binaries
 # tfstate holds secrets in plaintext (RDS passwords, Secrets Manager values,

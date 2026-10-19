@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -133,9 +134,15 @@ func main() {
 	}()
 	//	// Initialize Appwrite Storage client
 	// ═══════════════════════════════════════════════════════════════
-	// 4. DOMAIN CLIENTS & AI GATEWAY (Storage, multi-model providers & token limiter)
-	// ═══════════════════════════════════════════════════════════════
-	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	var primaryStorage storage.Driver
+	if cfg.AppwriteProjectID != "" && cfg.AppwriteAPIKey != "" {
+		primaryStorage = storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	}
+	var fallbackStorage storage.Driver
+	if cfg.SupabaseURL != "" && cfg.SupabaseServiceKey != "" {
+		fallbackStorage = storage.NewSupabaseStorageDriver(cfg.SupabaseURL, cfg.SupabaseServiceKey)
+	}
+	artifactStorage := storage.NewDualRailStorage(primaryStorage, fallbackStorage)
 
 	// Initialize AI Gateway
 	aiGatewayOpts := make([]llm.GatewayOption, 0)
@@ -231,7 +238,7 @@ func main() {
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
 
 	// Initialize Orchestrator & StreamHub (distributed cross-pod SSE)
-	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
+	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactStorage, evaluator)
 	streamHub := review.NewStreamHub()
 	if cacheClient != nil {
 		streamHub.SetRedisClient(cacheClient)
@@ -320,16 +327,26 @@ func main() {
 			}
 		}
 
-		// 1b. Resolve the tracked repository id.
+		// 1b. Resolve the tracked repository id and verify tenant boundary.
 		//
 		// pull_request_reviews.repository_id is a foreign key into
 		// tracked_repositories. Without this the review insert violates the
 		// constraint and no review row is ever written.
-		if repo != nil && task.RepositoryID == uuid.Nil && task.RepoNamespace != "" {
-			if tr, err := repo.GetTrackedRepositoryByNamespace(traceCtx, provider, task.RepoNamespace); err == nil {
+		if repo != nil && task.RepoNamespace != "" {
+			if tr, err := repo.GetTrackedRepositoryByNamespace(traceCtx, provider, task.RepoNamespace); err == nil && tr != nil {
+				if task.WorkspaceID != uuid.Nil && tr.WorkspaceID != task.WorkspaceID {
+					slog.Error("Cross-tenant repository mismatch: task workspace does not match tracked repository workspace",
+						"task_workspace", task.WorkspaceID,
+						"repo_workspace", tr.WorkspaceID,
+						"repo", task.RepoNamespace)
+					return nil, fmt.Errorf("refusal: unauthorized repository access for workspace")
+				}
+				if task.WorkspaceID == uuid.Nil {
+					task.WorkspaceID = tr.WorkspaceID
+				}
 				task.RepositoryID = tr.ID
 				slog.Info("Resolved repository ID from namespace", "repo", task.RepoNamespace, "repository_id", tr.ID)
-			} else {
+			} else if task.RepositoryID == uuid.Nil {
 				slog.Warn("Could not resolve repository ID; review will not persist",
 					"repo", task.RepoNamespace, "error", err)
 			}
@@ -395,7 +412,11 @@ func main() {
 
 		// 2. Fall back to global SCM router clients (GitHub PAT, GitLab token)
 		if rawDiff == "" && task.RepoNamespace != "" && task.PullRequestNumber > 0 {
-			if client, err := scmRouter.Resolve(provider, task.RepoNamespace); err == nil && client != nil {
+			// Enforce tenant boundary: do not allow global credentials fallback if repository is unverified/unassigned in this workspace
+			if repo != nil && task.WorkspaceID != uuid.Nil && task.RepositoryID == uuid.Nil {
+				slog.Warn("Refusing global SCM fallback for unassigned/unverified repository",
+					"repo", task.RepoNamespace, "workspace_id", task.WorkspaceID)
+			} else if client, err := scmRouter.Resolve(provider, task.RepoNamespace); err == nil && client != nil {
 				if d, err := client.FetchDiff(traceCtx, task.RepoNamespace, task.PullRequestNumber); err == nil && d != "" {
 					rawDiff = d
 					activeAdapter = client.AsAdapter()
@@ -409,12 +430,17 @@ func main() {
 
 		// Legacy direct GitHub fallback if still unpopulated
 		if rawDiff == "" && githubClient != nil && task.RepoNamespace != "" && task.PullRequestNumber > 0 {
-			parts := strings.Split(task.RepoNamespace, "/")
-			if len(parts) == 2 {
-				fetchedDiff, err := githubClient.FetchPullRequestDiff(traceCtx, parts[0], parts[1], task.PullRequestNumber)
-				if err == nil {
-					rawDiff = fetchedDiff
-					slog.Info("Successfully fetched pull request diff from legacy GitHub client", "repo", task.RepoNamespace, "pr", task.PullRequestNumber, "diff_bytes", len(rawDiff))
+			if repo != nil && task.WorkspaceID != uuid.Nil && task.RepositoryID == uuid.Nil {
+				slog.Warn("Refusing legacy GitHub fallback for unassigned/unverified repository",
+					"repo", task.RepoNamespace, "workspace_id", task.WorkspaceID)
+			} else {
+				parts := strings.Split(task.RepoNamespace, "/")
+				if len(parts) == 2 {
+					fetchedDiff, err := githubClient.FetchPullRequestDiff(traceCtx, parts[0], parts[1], task.PullRequestNumber)
+					if err == nil {
+						rawDiff = fetchedDiff
+						slog.Info("Successfully fetched pull request diff from legacy GitHub client", "repo", task.RepoNamespace, "pr", task.PullRequestNumber, "diff_bytes", len(rawDiff))
+					}
 				}
 			}
 		}
@@ -541,11 +567,20 @@ func runOutboxRelay(ctx context.Context, repo *database.Repository, broker *queu
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	var lastBrokerWarn time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if broker == nil {
+				if time.Since(lastBrokerWarn) > 30*time.Second {
+					slog.Warn("Outbox relay paused: RabbitMQ broker is not connected; waiting for message broker")
+					lastBrokerWarn = time.Now()
+				}
+				continue
+			}
+
 			events, err := repo.FetchPendingOutboxEvents(ctx, 50)
 			if err != nil || len(events) == 0 {
 				continue

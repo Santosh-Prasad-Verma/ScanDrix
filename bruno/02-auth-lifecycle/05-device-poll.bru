@@ -1,0 +1,17 @@
+meta {
+  name: 05 - RFC 8628 CLI Device Poll
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/auth/cli/device/poll?device_code={{deviceCode}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("Returns 200 or 400 authorization_pending", function() {
+    expect([200, 400]).to.include(res.getStatus());
+  });
+}

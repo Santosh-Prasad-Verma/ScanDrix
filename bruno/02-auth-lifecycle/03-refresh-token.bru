@@ -1,0 +1,36 @@
+meta {
+  name: 03 - Refresh Session Token
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{apiBaseUrl}}/api/v1/auth/refresh
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "refresh_token": "{{refreshToken}}"
+  }
+}
+
+tests {
+  test("Refresh returns 200 or 400 when refresh_token is not simulated", function() {
+    expect([200, 400, 401]).to.include(res.getStatus());
+  });
+
+  test("Updates authToken if fresh token returned", function() {
+    if (res.getStatus() === 200) {
+      const data = res.getBody();
+      if (data.token) {
+        bru.setVar('authToken', data.token);
+      }
+    }
+  });
+}

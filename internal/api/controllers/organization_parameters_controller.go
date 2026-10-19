@@ -460,6 +460,42 @@ func (c *OrganizationParametersController) handleCreateOrUpdate(w http.ResponseW
 			http.Error(w, fmt.Sprintf(`{"error":"failed saving parameter: %s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
+
+		if auditLogger, ok := c.repo.(interface {
+			InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID, actorEmail, ipAddress, action, targetType, targetID string, metadata []byte) error
+		}); ok {
+			var actorID, actorEmail string
+			if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil {
+				actorID = profile.ID.String()
+				actorEmail = profile.Email
+			}
+			if actorEmail == "" {
+				actorEmail, _ = auth.CallerEmail(r.Context())
+			}
+			_ = auditLogger.InsertAuditLog(r.Context(), wsID, actorID, actorEmail, r.RemoteAddr, "organization_parameter.updated", "organization_parameter", key, []byte(fmt.Sprintf(`{"key":%q}`, key)))
+		}
+	}
+
+	var respConfigValue any = req.ConfigValue
+	if key == models.OrgParamKeyBYOKConfig {
+		var respCfg byok.BYOKConfig
+		if json.Unmarshal(valBytes, &respCfg) == nil {
+			for i := range respCfg.Credentials {
+				if respCfg.Credentials[i].APIKey != "" {
+					respCfg.Credentials[i].APIKey = maskSecret(respCfg.Credentials[i].APIKey)
+				}
+				if respCfg.Credentials[i].Settings != nil {
+					for _, k := range []string{"awsSecretAccessKey", "awsSessionToken", "awsBearerToken"} {
+						if val, ok := respCfg.Credentials[i].Settings[k]; ok {
+							if strVal, ok := val.(string); ok && strVal != "" {
+								respCfg.Credentials[i].Settings[k] = maskSecret(strVal)
+							}
+						}
+					}
+				}
+			}
+			respConfigValue = respCfg
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -467,7 +503,7 @@ func (c *OrganizationParametersController) handleCreateOrUpdate(w http.ResponseW
 		"statusCode": http.StatusOK,
 		"data": map[string]any{
 			"key":         req.Key,
-			"configValue": req.ConfigValue,
+			"configValue": respConfigValue,
 			"success":     true,
 		},
 	})
@@ -554,6 +590,20 @@ func (c *OrganizationParametersController) handleDeleteBYOK(w http.ResponseWrite
 			valBytes, _ := json.Marshal(cfg)
 			_ = c.repo.SetOrganizationParameter(r.Context(), wsID, models.OrgParamKeyBYOKConfig, valBytes, param.Description)
 
+			if auditLogger, ok := c.repo.(interface {
+				InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID, actorEmail, ipAddress, action, targetType, targetID string, metadata []byte) error
+			}); ok {
+				var actorID, actorEmail string
+			if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil {
+				actorID = profile.ID.String()
+				actorEmail = profile.Email
+			}
+			if actorEmail == "" {
+				actorEmail, _ = auth.CallerEmail(r.Context())
+			}
+				_ = auditLogger.InsertAuditLog(r.Context(), wsID, actorID, actorEmail, r.RemoteAddr, "byok_model.deleted", "byok_model", modelID, []byte(fmt.Sprintf(`{"modelId":%q}`, modelID)))
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"statusCode": http.StatusOK,
@@ -565,6 +615,19 @@ func (c *OrganizationParametersController) handleDeleteBYOK(w http.ResponseWrite
 
 	// Last model or full teardown: delete entire BYOK config
 	_ = c.repo.DeleteOrganizationParameter(r.Context(), wsID, models.OrgParamKeyBYOKConfig)
+	if auditLogger, ok := c.repo.(interface {
+		InsertAuditLog(ctx context.Context, wsID uuid.UUID, actorID, actorEmail, ipAddress, action, targetType, targetID string, metadata []byte) error
+	}); ok {
+		var actorID, actorEmail string
+		if profile, ok := auth.AccountProfileFromContext(r.Context()); ok && profile != nil {
+			actorID = profile.ID.String()
+			actorEmail = profile.Email
+		}
+		if actorEmail == "" {
+			actorEmail, _ = auth.CallerEmail(r.Context())
+		}
+		_ = auditLogger.InsertAuditLog(r.Context(), wsID, actorID, actorEmail, r.RemoteAddr, "byok_config.deleted", "organization_parameter", models.OrgParamKeyBYOKConfig, []byte(`{"key":"byok_config"}`))
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

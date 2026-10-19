@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -265,6 +266,61 @@ func (r *Repository) GetTicketsForReview(ctx context.Context, wsID, reviewID uui
 		return rows.Err()
 	})
 	return list, err
+}
+
+
+// ResolveFindingByTicketKey updates findings and tracked issues associated with an external PM ticket key.
+// It sets finding lifecycle status to 'RESOLVED' or 'DISMISSED' based on targetStatus, and records dismissalReason.
+// Returns the number of findings modified.
+func (r *Repository) ResolveFindingByTicketKey(ctx context.Context, platform, ticketKey, targetStatus, dismissalReason string) (int, error) {
+	if r == nil || r.client == nil {
+		return 0, nil
+	}
+
+	normStatus := strings.ToUpper(strings.TrimSpace(targetStatus))
+	if normStatus != "RESOLVED" && normStatus != "DISMISSED" && normStatus != "OPEN" {
+		normStatus = "RESOLVED"
+	}
+
+	var updatedCount int
+	err := r.client.ExecAsSystem(ctx, func(tx pgx.Tx) error {
+		// 1. Update matching code_findings via finding_tickets join
+		updateFindingsSQL := `
+			WITH updated_findings AS (
+				UPDATE code_findings cf
+				SET status = $1,
+				    dismissal_reason = CASE WHEN $1 = 'DISMISSED' THEN $4 ELSE cf.dismissal_reason END
+				FROM finding_tickets ft
+				WHERE cf.id = ft.finding_id
+				  AND cf.workspace_id = ft.workspace_id
+				  AND LOWER(ft.platform) = LOWER($2)
+				  AND (LOWER(ft.ticket_key) = LOWER($3) OR ft.ticket_key = $3)
+				RETURNING cf.id, cf.workspace_id, cf.fingerprint
+			)
+			SELECT count(*) FROM updated_findings;
+		`
+		if err := tx.QueryRow(ctx, updateFindingsSQL, normStatus, platform, ticketKey, dismissalReason).Scan(&updatedCount); err != nil {
+			return err
+		}
+
+		// 2. Also update corresponding tracked_issues if present
+		updateTrackedSQL := `
+			UPDATE tracked_issues ti
+			SET status = $1,
+			    updated_at = NOW(),
+			    resolved_at = CASE WHEN $1 = 'RESOLVED' THEN NOW() ELSE NULL END
+			FROM finding_tickets ft
+			JOIN code_findings cf ON cf.id = ft.finding_id AND cf.workspace_id = ft.workspace_id
+			WHERE ti.workspace_id = ft.workspace_id
+			  AND ti.fingerprint = cf.fingerprint
+			  AND LOWER(ft.platform) = LOWER($2)
+			  AND (LOWER(ft.ticket_key) = LOWER($3) OR ft.ticket_key = $3);
+		`
+		_, err := tx.Exec(ctx, updateTrackedSQL, normStatus, platform, ticketKey)
+		return err
+	})
+
+	return updatedCount, err
 }
 
 

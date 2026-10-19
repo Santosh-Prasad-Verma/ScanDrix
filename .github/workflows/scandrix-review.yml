@@ -1,0 +1,108 @@
+name: "ScanDrix Autonomous PR Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, develop]
+
+concurrency:
+  group: scandrix-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  review:
+    name: "ScanDrix: AST & Security PR Review"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history required for cross-file AST taint analysis
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build ScanDrix Headless Review Engine
+        run: |
+          go build -trimpath -ldflags="-s -w" -o /tmp/scandrix ./cmd/cli
+
+      - name: Run ScanDrix Autonomous Review
+        id: review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCANDRIX_TEAM_KEY: ${{ secrets.SCANDRIX_TEAM_KEY }}
+          SCANDRIX_BYOK_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SCANDRIX_BYOK_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          /tmp/scandrix ci run \
+            --target-branch origin/${{ github.base_ref }} \
+            --fail-on error \
+            --sarif scandrix-results.sarif \
+            --summary scandrix-summary.md \
+            || true
+
+      - name: Publish Review Summary to Job Summary
+        if: always()
+        run: |
+          if [ -f scandrix-summary.md ]; then
+            cat scandrix-summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Post or Update PR Comment
+        uses: actions/github-script@v7
+        if: always() && github.event.pull_request.number != null
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('scandrix-summary.md')) {
+              console.log('No review summary generated.');
+              return;
+            }
+
+            const summaryBody = fs.readFileSync('scandrix-summary.md', 'utf8');
+            const commentHeader = '### 🛡️ ScanDrix Autonomous Code Review';
+            const fullComment = `${commentHeader}\n\n${summaryBody}\n\n*Review generated deterministically via ScanDrix AST & Security Engine.*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c => c.body && c.body.includes(commentHeader));
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: fullComment,
+              });
+              console.log('Updated existing ScanDrix PR review comment.');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullComment,
+              });
+              console.log('Posted new ScanDrix PR review comment.');
+            }
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('scandrix-results.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: scandrix-results.sarif
+          category: scandrix-ast-security

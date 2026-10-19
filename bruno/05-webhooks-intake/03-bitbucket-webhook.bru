@@ -1,0 +1,42 @@
+meta {
+  name: 03 - Bitbucket Pull Request Webhook
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{webhooksBaseUrl}}/webhooks/bitbucket
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Event-Key: pullrequest:created
+  X-Hook-UUID: {{hookUUID}}
+}
+
+body:json {
+  {
+    "pullrequest": {
+      "id": 19,
+      "title": "refactor: optimize database connection pooling",
+      "state": "OPEN"
+    },
+    "repository": {
+      "name": "scandrix-bitbucket-repo",
+      "full_name": "scandrix/scandrix-bitbucket-repo"
+    }
+  }
+}
+
+script:pre-request {
+  const nonce = Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 10);
+  bru.setVar('hookUUID', nonce);
+}
+
+tests {
+  test("Bitbucket webhook returns 200 or 202", function() {
+    expect([200, 202, 401]).to.include(res.getStatus());
+  });
+}

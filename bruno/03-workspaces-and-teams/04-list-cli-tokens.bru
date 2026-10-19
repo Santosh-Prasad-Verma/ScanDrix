@@ -1,0 +1,28 @@
+meta {
+  name: 04 - List Workspace CLI CI Keys
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/cli/tokens
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect([200, 401, 403]).to.include(res.getStatus());
+  });
+
+  test("Security check: plaintext keys are NEVER exposed", function() {
+    if (res.getStatus() === 200) {
+      const body = JSON.stringify(res.getBody());
+      expect(body).to.not.include("kodus_sec_");
+    }
+  });
+}

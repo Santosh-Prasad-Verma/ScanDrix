@@ -25,7 +25,6 @@ import (
 )
 
 // BitbucketCloudService implements contracts.ICodeManagementService for Bitbucket Cloud (2.0 API).
-// Translates libs/platform/infrastructure/adapters/services/bitbucket/bitbucket-cloud.service.ts
 var _ contracts.ICodeManagementService = (*BitbucketCloudService)(nil)
 
 type BitbucketCloudService struct {

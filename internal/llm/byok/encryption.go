@@ -6,17 +6,33 @@
 package byok
 
 import (
+	"context"
 	"crypto/sha256"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/scandrix/backend/internal/security/kms"
 	"github.com/scandrix/backend/pkg/crypto"
 )
 
 var encryptionKeyOnce sync.Once
 var encryptionKey []byte
+var kmsEngineOnce sync.Once
+var kmsEngine *kms.KMSEnvelopeEngine
+
+func getKMSEnvelopeEngine() *kms.KMSEnvelopeEngine {
+	kmsEngineOnce.Do(func() {
+		k := GetEncryptionKey()
+		if len(k) > 0 {
+			if staticKMS, err := kms.NewStaticKeyKMS(k, "scandrix-byok-master-key"); err == nil {
+				kmsEngine = kms.NewKMSEnvelopeEngine(staticKMS)
+			}
+		}
+	})
+	return kmsEngine
+}
 
 // GetEncryptionKey resolves the 32-byte AES key from environment variables.
 // In production, panics if SCANDRIX_ENCRYPTION_KEY is not set.
@@ -24,6 +40,12 @@ var encryptionKey []byte
 func GetEncryptionKey() []byte {
 	encryptionKeyOnce.Do(func() {
 		keyStr := os.Getenv("SCANDRIX_ENCRYPTION_KEY")
+		if keyStr == "" {
+			keyStr = os.Getenv("SCANDRIX_MASTER_ENCRYPTION_KEY")
+		}
+		if keyStr == "" {
+			keyStr = os.Getenv("DATABASE_ENCRYPTION_KEY")
+		}
 		if keyStr == "" {
 			env := strings.ToLower(os.Getenv("APP_ENV"))
 			if env == "" || env == "development" || env == "test" {
@@ -49,12 +71,33 @@ func EncryptKey(plaintext string) (string, error) {
 	return crypto.EncryptStringAESGCM(GetEncryptionKey(), plaintext)
 }
 
+// EncryptKeyEnvelope encrypts a sensitive key using 2-tier KMS envelope encryption with ephemeral DEKs.
+func EncryptKeyEnvelope(plaintext string) (string, error) {
+	if plaintext == "" {
+		return "", nil
+	}
+	if engine := getKMSEnvelopeEngine(); engine != nil {
+		return engine.EncryptString(context.Background(), "scandrix-byok-master-key", plaintext)
+	}
+	return EncryptKey(plaintext)
+}
+
 // DecryptKey decrypts ciphertext into plaintext for immediate local execution.
+// Supports both 2-tier KMS envelope JSON (NIST SP 800-57) and AES-256-GCM base64 ciphertext.
 func DecryptKey(ciphertext string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
-	// If it doesn't look like base64 or is already a plaintext key (e.g. env var starting with sk- or similar)
+	trimmed := strings.TrimSpace(ciphertext)
+	// 1. Check for 2-tier KMS Envelope JSON
+	if strings.HasPrefix(trimmed, "{") {
+		if engine := getKMSEnvelopeEngine(); engine != nil {
+			if dec, err := engine.DecryptString(context.Background(), trimmed); err == nil && dec != "" {
+				return dec, nil
+			}
+		}
+	}
+	// 2. Standard AES-256-GCM base64
 	decrypted, err := crypto.DecryptStringAESGCM(GetEncryptionKey(), ciphertext)
 	if err != nil {
 		// Fallback: return as-is if raw unencrypted key was passed (e.g. from env)

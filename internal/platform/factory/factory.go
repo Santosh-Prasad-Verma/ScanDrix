@@ -15,7 +15,6 @@ import (
 )
 
 // PlatformIntegrationFactory maintains a thread-safe registry of VCS adapters.
-// Translates libs/platform/infrastructure/adapters/services/platformIntegration.factory.ts
 type PlatformIntegrationFactory struct {
 	mu                     sync.RWMutex
 	codeManagementServices map[models.SCMProvider]contracts.ICodeManagementService

@@ -64,7 +64,7 @@ func (a *GeneralistSpecialistAgent) Review(ctx context.Context, input orchestrat
 }
 
 func (a *GeneralistSpecialistAgent) systemPrompt() string {
-	return `You are ScanDrix's Generalist Review Persona, an elite principal engineer evaluating pull request diffs.
+	return BuildSystemPrompt(`You are ScanDrix's Generalist Review Persona, an elite principal engineer evaluating pull request diffs.
 Your mandate is to provide a balanced, high-fidelity assessment covering:
 1. Reliability & Correctness: Race conditions, nil pointer dereferences, error handling, off-by-one errors.
 2. Core Security: OWASP Top 10 vulnerabilities, unauthorized data exposure, unvalidated inputs, insecure deserialization.
@@ -96,5 +96,5 @@ Output your findings strictly in the following JSON format:
       "blocking": true | false
     }
   ]
-}`
+}`)
 }

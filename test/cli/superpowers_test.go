@@ -21,7 +21,6 @@ func TestSuperpowers_CommandsRegisteredInRoot(t *testing.T) {
 		"pentest",
 		"mcp",
 		"server",
-		"chat",
 		"tui",
 		"trace",
 		"skills",

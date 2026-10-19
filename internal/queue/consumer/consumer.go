@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scandrix/backend/internal/core/observability"
 	"github.com/scandrix/backend/internal/enterprise/license"
 	"github.com/scandrix/backend/internal/queue/relay"
 	"github.com/scandrix/backend/pkg/models"
@@ -28,6 +29,7 @@ type ReviewConsumer struct {
 	executor    ReviewExecutor
 	workerID    string
 	deadLetters []ReviewTaskPayload
+	sanitizer   *observability.SanitizationProcessor
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -45,6 +47,7 @@ func NewReviewConsumer(cfg ConsumerConfig, inbox *relay.InboxDeduplicator, execu
 		executor:    executor,
 		workerID:    fmt.Sprintf("worker-%s", uuid.New().String()[:8]),
 		deadLetters: make([]ReviewTaskPayload, 0),
+		sanitizer:   observability.NewSanitizationProcessor(),
 	}
 }
 
@@ -98,6 +101,9 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 			if skipErr != nil {
 				msg = skipErr.Error()
 			}
+			if c.sanitizer != nil {
+				msg = c.sanitizer.SanitizeString(msg)
+			}
 			return TaskExecutionResult{
 				TaskID:       task.TaskID,
 				Status:       TaskStatusSkipped,
@@ -106,6 +112,11 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 				ErrorMsg:     msg,
 				Timestamp:    time.Now().UTC(),
 			}
+		}
+
+		sanitizedErr := err.Error()
+		if c.sanitizer != nil {
+			sanitizedErr = c.sanitizer.SanitizeString(sanitizedErr)
 		}
 
 		// 4. Check if retries exhausted
@@ -123,7 +134,7 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 				Status:       TaskStatusDeadLetter,
 				AttemptCount: task.AttemptCount,
 				Duration:     time.Since(start),
-				ErrorMsg:     fmt.Sprintf("max retries (%d) exceeded: %v", c.cfg.MaxRetries, err),
+				ErrorMsg:     fmt.Sprintf("max retries (%d) exceeded: %s", c.cfg.MaxRetries, sanitizedErr),
 				Timestamp:    time.Now().UTC(),
 			}
 		}
@@ -138,7 +149,7 @@ func (c *ReviewConsumer) ProcessTask(ctx context.Context, task ReviewTaskPayload
 			Status:       TaskStatusRetry,
 			AttemptCount: task.AttemptCount,
 			Duration:     time.Since(start),
-			ErrorMsg:     err.Error(),
+			ErrorMsg:     sanitizedErr,
 			Timestamp:    time.Now().UTC(),
 		}
 	}

@@ -6,7 +6,6 @@ import (
 )
 
 // GenerateTwoFilesPatch generates a standard unified git diff between original and modified content.
-// Matches libs/platform/infrastructure/adapters/services/azureRepos/azureRepos.service.ts (_generateFileDiffForAzure).
 func GenerateTwoFilesPatch(oldPath, newPath, oldContent, newContent, baseSHA, targetSHA string) (string, int, int) {
 	if oldContent == "" && newContent == "" {
 		return "", 0, 0

@@ -27,53 +27,24 @@ func NewNotifier(webhookURL string) *Notifier {
 
 // PostReviewSummary formats findings and review metrics into Slack Block Kit cards.
 func (n *Notifier) PostReviewSummary(ctx context.Context, repoName string, prNumber int, prTitle string, findings []models.CodeFinding) error {
+	return n.PostInteractiveReviewSummary(ctx, repoName, prNumber, prTitle, "", findings, "")
+}
+
+// PostInteractiveReviewSummary formats findings into an interactive Slack Block Kit card with action buttons.
+func (n *Notifier) PostInteractiveReviewSummary(
+	ctx context.Context,
+	repoName string,
+	prNumber int,
+	prTitle string,
+	dashboardURL string,
+	findings []models.CodeFinding,
+	workspaceID string,
+) error {
 	if n.webhookURL == "" {
 		return nil // No-op if not configured
 	}
 
-	criticalCount := 0
-	highCount := 0
-	for _, f := range findings {
-		if f.Severity == models.SeverityCritical {
-			criticalCount++
-		} else if f.Severity == models.SeverityHigh {
-			highCount++
-		}
-	}
-
-	statusEmoji := "✅"
-	verdict := "Review Passed - No High/Critical Defects"
-	if criticalCount > 0 {
-		statusEmoji = "🚨"
-		verdict = fmt.Sprintf("Action Required: %d Critical Finding(s)", criticalCount)
-	} else if highCount > 0 {
-		statusEmoji = "⚠️"
-		verdict = fmt.Sprintf("Warning: %d High Severity Finding(s)", highCount)
-	}
-
-	blocks := []map[string]any{
-		{
-			"type": "header",
-			"text": map[string]string{
-				"type": "plain_text",
-				"text": fmt.Sprintf("%s Scandrix Code Review Completed", statusEmoji),
-			},
-		},
-		{
-			"type": "section",
-			"fields": []map[string]string{
-				{"type": "mrkdwn", "text": fmt.Sprintf("*Repository:*\n%s", repoName)},
-				{"type": "mrkdwn", "text": fmt.Sprintf("*Pull Request:*\n#%d - %s", prNumber, prTitle)},
-				{"type": "mrkdwn", "text": fmt.Sprintf("*Total Findings:*\n%d", len(findings))},
-				{"type": "mrkdwn", "text": fmt.Sprintf("*Verdict:*\n%s", verdict)},
-			},
-		},
-	}
-
-	payload := map[string]any{
-		"text":   fmt.Sprintf("Scandrix Review finished for %s #%d: %s", repoName, prNumber, verdict),
-		"blocks": blocks,
-	}
+	payload := BuildInteractiveReviewBlocks(repoName, prNumber, prTitle, dashboardURL, findings, workspaceID)
 
 	body, err := json.Marshal(payload)
 	if err != nil {

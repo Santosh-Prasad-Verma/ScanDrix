@@ -465,23 +465,30 @@ func (s *SCIMService) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if wsID != uuid.Nil {
 		orgID = &wsID
 	}
+	var createdID string
 	if s.repo != nil {
-		if _, err := s.repo.CreateUser(r.Context(), email, "scim-sso-managed", "member", orgID); err != nil {
+		createdUser, err := s.repo.CreateUser(r.Context(), email, "scim-sso-managed", "member", orgID)
+		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "mutability",
 				"failed to persist the provisioned user")
 			return
+		}
+		if createdUser != nil && createdUser.UUID != uuid.Nil {
+			createdID = createdUser.UUID.String()
 		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	newID := uuid.New().String()
-	input.ID = newID
+	if createdID == "" {
+		createdID = uuid.New().String()
+	}
+	input.ID = createdID
 	input.Schemas = []string{UserSchemaURN}
 	input.Meta.ResourceType = "User"
-	input.Meta.Location = "/scim/v2/Users/" + newID
-	s.users[newID] = input
+	input.Meta.Location = "/scim/v2/Users/" + createdID
+	s.users[createdID] = input
 
 	w.Header().Set("Content-Type", "application/scim+json")
 	w.WriteHeader(http.StatusCreated)
@@ -626,8 +633,37 @@ func (s *SCIMService) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 func (s *SCIMService) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
+	// If database repository is bound, resolve and deprovision from PostgreSQL so
+	// deletion succeeds across process restarts and multi-replica topologies (§8.3).
+	if s.repo != nil {
+		rec, err := s.repo.GetSCIMUserByID(r.Context(), s.workspaceFor(r), id)
+		if err != nil {
+			slog.Error("SCIM user read failed on delete", "workspace_id", s.workspaceFor(r).String(), "id", id, "error", err)
+			s.writeError(w, http.StatusServiceUnavailable, "mutability", "user directory is temporarily unavailable")
+			return
+		}
+		if rec == nil {
+			s.writeError(w, http.StatusNotFound, "", "User not found")
+			return
+		}
+
+		_ = s.repo.SetSCIMUserActive(r.Context(), s.workspaceFor(r), id, false)
+		if dbUser, err := s.repo.GetUserByEmail(r.Context(), rec.Email); err == nil && dbUser != nil {
+			_ = s.repo.InvalidateAllUserRefreshTokens(r.Context(), dbUser.UUID)
+			_ = s.repo.UpdateUserStatus(r.Context(), dbUser.UUID, "inactive")
+			slog.Info("SCIM deprovisioning (delete): user sessions revoked and account deactivated", "user_id", dbUser.UUID, "email", rec.Email)
+		}
+
+		s.mu.Lock()
+		delete(s.users, id)
+		s.mu.Unlock()
+
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	s.mu.Lock()
-	user, exists := s.users[id]
+	_, exists := s.users[id]
 	if exists {
 		delete(s.users, id)
 	}
@@ -636,19 +672,6 @@ func (s *SCIMService) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		s.writeError(w, http.StatusNotFound, "", "User not found")
 		return
-	}
-
-	// Deprovisioning Enforcement (§8.3): Delete user sessions and revoke all active refresh tokens
-	if s.repo != nil {
-		email := user.UserName
-		if len(user.Emails) > 0 && user.Emails[0].Value != "" {
-			email = user.Emails[0].Value
-		}
-		if dbUser, err := s.repo.GetUserByEmail(r.Context(), email); err == nil && dbUser != nil {
-			_ = s.repo.InvalidateAllUserRefreshTokens(r.Context(), dbUser.UUID)
-			_ = s.repo.UpdateUserStatus(r.Context(), dbUser.UUID, "inactive")
-			slog.Info("SCIM deprovisioning (delete): user sessions revoked and account deactivated", "user_id", dbUser.UUID, "email", email)
-		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

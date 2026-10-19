@@ -14,7 +14,6 @@ import (
 )
 
 // AzureReposRequestHelper handles low-level REST 7.0/7.1 communications with Azure DevOps Services and Azure DevOps Server.
-// Translates libs/platform/infrastructure/adapters/services/azureRepos/azure-repos-request-helper.ts
 type AzureReposRequestHelper struct {
 	httpClient *http.Client
 	defaultTimeout time.Duration

@@ -24,7 +24,7 @@ var RLS_TABLES = map[string]bool{
 	"materialized_dora_daily_rollups": true,
 	"revoked_access_tokens":           true,
 	"finding_feedback":                true, "finding_tickets": true, "integration_connections": true,
-	"kody_embedding_vectors": true, "notification_channels": true,
+	"notification_channels": true,
 	"organization_billing_seats": true, "organization_licenses": true,
 	"organization_parameters": true, "outbox_events": true, "parameters": true,
 	"platform_pull_requests": true, "pm_auto_ticket_configs": true,

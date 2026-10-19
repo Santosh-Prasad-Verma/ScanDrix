@@ -181,7 +181,8 @@ func (c *PullRequestController) handleGetExecutions(w http.ResponseWriter, r *ht
 
 	resp, err := c.repo.ListPullRequestExecutions(r.Context(), wsID, filter)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying pull requests: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying pull requests", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying pull requests"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -210,7 +211,8 @@ func (c *PullRequestController) handleGetDailyDigest(w http.ResponseWriter, r *h
 
 	digest, err := c.repo.GetPullRequestDailyDigest(r.Context(), wsID, teamID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying daily digest: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying daily digest", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying daily digest"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -245,7 +247,8 @@ func (c *PullRequestController) handleGetFacets(w http.ResponseWriter, r *http.R
 
 	facets, err := c.repo.GetPullRequestFacets(r.Context(), wsID, teamID, scope, userEmail)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying facets: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying facets", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying facets"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -274,7 +277,8 @@ func (c *PullRequestController) handleGetAwaiting(w http.ResponseWriter, r *http
 
 	awaiting, err := c.repo.GetAwaitingPullRequests(r.Context(), wsID, teamID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying awaiting pull requests: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying awaiting pull requests", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying awaiting pull requests"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -311,7 +315,8 @@ func (c *PullRequestController) handleGetAuthors(w http.ResponseWriter, r *http.
 
 	authors, err := c.repo.GetPullRequestAuthors(r.Context(), wsID, teamID, search, limit)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying authors: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying authors", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying authors"}`, http.StatusInternalServerError)
 		return
 	}
 

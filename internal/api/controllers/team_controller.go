@@ -287,7 +287,8 @@ func (c *TeamController) handleListTeams(w http.ResponseWriter, r *http.Request)
 		}
 		teams, err := c.listTeamsUC.ExecuteWithRole(r.Context(), wsID, userID, userRole)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to list teams", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to list teams"}`, http.StatusInternalServerError)
 			return
 		}
 		res := make([]dtos.TeamResponse, 0, len(teams))
@@ -348,7 +349,8 @@ func (c *TeamController) handleListWithIntegrations(w http.ResponseWriter, r *ht
 	if c.listTeamsWithIntegrationsUC != nil {
 		teams, err := c.listTeamsWithIntegrationsUC.Execute(r.Context(), wsID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to list teams with integrations", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed to list teams with integrations"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -372,7 +374,8 @@ func (c *TeamController) handleListTeamMembers(w http.ResponseWriter, r *http.Re
 	if c.getMembersUC != nil && wsID != uuid.Nil {
 		members, err := c.getMembersUC.Execute(r.Context(), wsID, teamID, false)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to list team members", "workspace_id", wsID, "team_id", teamID, "error", err)
+			http.Error(w, `{"error":"failed to list team members"}`, http.StatusInternalServerError)
 			return
 		}
 		res := make([]dtos.TeamMemberResponse, 0, len(members))
@@ -532,7 +535,8 @@ func (c *TeamController) handleRemoveTeamMember(w http.ResponseWriter, r *http.R
 
 	if c.deleteMemberUC != nil && wsID != uuid.Nil {
 		if err := c.deleteMemberUC.ExecuteByID(r.Context(), wsID, teamID, userID); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to delete team member", "workspace_id", wsID, "team_id", teamID, "user_id", userID, "error", err)
+			http.Error(w, `{"error":"failed to delete team member"}`, http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -666,7 +670,8 @@ func (c *TeamController) handleListTeamMembersGeneric(w http.ResponseWriter, r *
 	if c.getMembersUC != nil && wsID != uuid.Nil {
 		formattedMembers, err := c.getMembersUC.ExecuteFormatted(r.Context(), wsID, teamID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to get team members", "workspace_id", wsID, "team_id", teamID, "error", err)
+			http.Error(w, `{"error":"failed to get team members"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -733,7 +738,8 @@ func (c *TeamController) handleListTeamCLIKeys(w http.ResponseWriter, r *http.Re
 	if c.cliKeyService != nil {
 		allKeys, err := c.cliKeyService.ListByWorkspace(r.Context(), wsID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to list team CLI keys", "workspace_id", wsID, "team_id", teamID, "error", err)
+			http.Error(w, `{"error":"failed to list team CLI keys"}`, http.StatusInternalServerError)
 			return
 		}
 		res := make([]dtos.APIKeyResponse, 0, len(allKeys))
@@ -877,7 +883,8 @@ func (c *TeamController) handleRevokeTeamCLIKey(w http.ResponseWriter, r *http.R
 
 	if c.cliKeyService != nil {
 		if err := c.cliKeyService.Revoke(r.Context(), wsID, keyID); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed to revoke workspace CLI key", "workspace_id", wsID, "key_id", keyID, "error", err)
+			http.Error(w, `{"error":"failed to revoke workspace CLI key"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

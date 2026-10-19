@@ -1,0 +1,21 @@
+meta {
+  name: 02 - Webhooks Ingestion Health Check
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{webhooksBaseUrl}}/livez
+  body: none
+  auth: none
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response time is under 150ms", function() {
+    expect(res.getResponseTime()).to.be.below(150);
+  });
+}

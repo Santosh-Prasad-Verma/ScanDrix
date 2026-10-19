@@ -16,6 +16,7 @@ type AutomationRepository interface {
 	ListAutomationRules(ctx context.Context, wsID uuid.UUID) ([]automation.AutomationRule, error)
 	CreateAutomationRule(ctx context.Context, rule *automation.AutomationRule) error
 	DeleteAutomationRule(ctx context.Context, wsID, ruleID uuid.UUID) error
+	ToggleAutomationRule(ctx context.Context, wsID, ruleID uuid.UUID, enabled bool) error
 }
 
 // AutomationController manages team workflow rules.
@@ -38,6 +39,7 @@ func (c *AutomationController) Routes() chi.Router {
 	r.Get("/", c.handleListRules)
 	r.Post("/", c.handleCreateRule)
 	r.Delete("/{id}", c.handleDeleteRule)
+	r.Patch("/{id}/toggle", c.handleToggleRule)
 
 	return r
 }
@@ -121,5 +123,44 @@ func (c *AutomationController) handleDeleteRule(w http.ResponseWriter, r *http.R
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status": "deleted",
 		"id":     ruleID,
+	})
+}
+
+type ToggleRulePayload struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (c *AutomationController) handleToggleRule(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	ruleID, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid rule id"}`, http.StatusBadRequest)
+		return
+	}
+
+	var payload ToggleRulePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if c.repo != nil {
+		if err := c.repo.ToggleAutomationRule(r.Context(), wsID, ruleID, payload.Enabled); err != nil {
+			http.Error(w, `{"error":"failed toggling automation rule"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":  "updated",
+		"id":      ruleID,
+		"enabled": payload.Enabled,
 	})
 }

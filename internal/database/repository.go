@@ -40,6 +40,15 @@ func init() {
 	if raw == "" {
 		raw = os.Getenv("KMS_MASTER_KEY")
 	}
+	if raw == "" {
+		raw = os.Getenv("SCANDRIX_MASTER_ENCRYPTION_KEY")
+	}
+	if raw == "" {
+		raw = os.Getenv("DATABASE_ENCRYPTION_KEY")
+	}
+	if raw == "" {
+		raw = os.Getenv("SCANDRIX_ENCRYPTION_KEY")
+	}
 	if raw != "" {
 		tokenEncryptionKey = sha256.Sum256([]byte(raw))
 		if staticKMS, err := kms.NewStaticKeyKMS(tokenEncryptionKey[:], "scandrix-db-master-key"); err == nil {
@@ -93,11 +102,6 @@ func decryptStoredSecret(ctx context.Context, wsID uuid.UUID, cipherText string)
 	if dec, err := crypto.DecryptStringAESGCM(tokenEncryptionKey[:], cipherText); err == nil && dec != "" {
 		return dec
 	}
-	// 4. Fall back to legacy tenant key
-	legacyKey := deriveLegacyTenantIntegrationKey(wsID)
-	if dec, err := crypto.DecryptStringAESGCM(legacyKey, cipherText); err == nil && dec != "" {
-		return dec
-	}
 	return cipherText
 }
 
@@ -113,11 +117,6 @@ func deriveTenantIntegrationKey(wsID uuid.UUID) []byte {
 	mac := hmac.New(sha256.New, masterKey)
 	mac.Write([]byte("scandrix_integration_kdf_v2:" + wsID.String()))
 	return mac.Sum(nil)
-}
-
-func deriveLegacyTenantIntegrationKey(wsID uuid.UUID) []byte {
-	k := sha256.Sum256([]byte("scandrix_integration_kdf_v1:" + wsID.String()))
-	return k[:]
 }
 
 // Pool exposes the underlying connection pool for the few callers that need to

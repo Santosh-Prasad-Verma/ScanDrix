@@ -87,9 +87,11 @@ func init() {
 	RootCmd.AddCommand(subscribeCmd)
 	RootCmd.AddCommand(updateCmd)
 	RootCmd.AddCommand(schemaCmd)
+	RootCmd.AddCommand(botCmd)
+	RootCmd.AddCommand(datasetCmd)
+	RootCmd.AddCommand(warehouseCmd)
 
 	// ScanDrix Superpower subcommands
-	RootCmd.AddCommand(chatCmd)
 	RootCmd.AddCommand(tuiCmd)
 	RootCmd.AddCommand(scanCmd)
 	RootCmd.AddCommand(diffCmd)

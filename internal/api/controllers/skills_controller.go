@@ -46,7 +46,7 @@ func (c *SkillsController) Routes() chi.Router {
 	return r
 }
 
-// SkillMetaResponse matches SkillMetaResponseDto in apps/api/src/dtos/skills-response.dto.ts
+// SkillMetaResponse represents metadata for a review skill.
 type SkillMetaResponse struct {
 	Name         string                    `json:"name"`
 	Description  string                    `json:"description"`
@@ -55,7 +55,7 @@ type SkillMetaResponse struct {
 	RequiredMcps []agentSkills.RequiredMcp `json:"requiredMcps"`
 }
 
-// SkillInstructionsResponse matches SkillInstructionsResponseDto in apps/api/src/dtos/skills-response.dto.ts
+// SkillInstructionsResponse represents compiled instructions for an agent skill.
 type SkillInstructionsResponse struct {
 	Instructions string `json:"instructions"`
 }

@@ -50,6 +50,11 @@ type Config struct {
 	AppwriteProjectID string
 	AppwriteAPIKey    string
 
+	// Supabase Platform & Storage Fallback
+	SupabaseURL           string
+	SupabaseServiceKey    string
+	SupabaseStorageBucket string
+
 	// Security & Auth Secrets
 	JWTSecret                string
 	KMSMasterKey             string
@@ -77,6 +82,14 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
+	// Brevo Fallback Email Configuration
+	BrevoAPIKey       string
+	BrevoSMTPHost     string
+	BrevoSMTPPort     int
+	BrevoSMTPUsername string
+	BrevoSMTPPassword string
+	BrevoSMTPFrom     string
+
 	// Registration Anti-Abuse & Email Security
 	RequireEmailVerification bool
 	BlockedEmailDomains      []string
@@ -95,6 +108,17 @@ type Config struct {
 	ForgejoToken             string
 	ForgejoWebhookSecret     string
 	ForgejoBaseURL           string
+
+	// Project Management Webhooks (Jira & Linear)
+	JiraWebhookSecret   string
+	LinearWebhookSecret string
+
+	// Interactive Chatbot Bot Secrets (Slack & Microsoft Teams)
+	SlackBotToken      string
+	SlackSigningSecret string
+	TeamsAppID         string
+	TeamsAppPassword   string
+	TeamsWebhookSecret string
 
 	// AI Engine Credentials (BYOK / Enterprise Cloud)
 	AnthropicAPIKey  string
@@ -205,6 +229,17 @@ func Load() (*Config, error) {
 	smtpUser := os.Getenv("SMTP_USERNAME")
 	smtpPass := os.Getenv("SMTP_PASSWORD")
 	resendKey := strings.TrimSpace(os.Getenv("RESEND_API_KEY"))
+
+	brevoKey := strings.TrimSpace(os.Getenv("BREVO_API_KEY"))
+	brevoHost := strings.TrimSpace(getEnvOrDefault("BREVO_SMTP_HOST", "smtp-relay.brevo.com"))
+	brevoPort, _ := strconv.Atoi(getEnvOrDefault("BREVO_SMTP_PORT", "587"))
+	brevoUser := os.Getenv("BREVO_SMTP_USERNAME")
+	brevoPass := os.Getenv("BREVO_SMTP_PASSWORD")
+	if brevoPass == "" && brevoKey != "" {
+		brevoPass = brevoKey
+	}
+	brevoFrom := getEnvOrDefault("BREVO_SMTP_FROM", getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"))
+
 	if smtpHost == "" && resendKey != "" {
 		smtpHost = "smtp.resend.com"
 		if smtpUser == "" {
@@ -213,6 +248,11 @@ func Load() (*Config, error) {
 		if smtpPass == "" {
 			smtpPass = resendKey
 		}
+	} else if smtpHost == "" && brevoUser != "" && brevoPass != "" {
+		smtpHost = brevoHost
+		smtpPort = brevoPort
+		smtpUser = brevoUser
+		smtpPass = brevoPass
 	}
 
 	workerRole := strings.ToLower(getEnvOrDefault("WORKER_ROLE", "all"))
@@ -258,6 +298,9 @@ func Load() (*Config, error) {
 		AppwriteEndpoint:           getEnvOrDefault("APPWRITE_ENDPOINT", "https://sgp.cloud.appwrite.io/v1"),
 		AppwriteProjectID:          os.Getenv("APPWRITE_PROJECT_ID"),
 		AppwriteAPIKey:             os.Getenv("APPWRITE_API_KEY"),
+		SupabaseURL:                getEnvOrDefault("SUPABASE_URL", "https://etvgozbeoobhilmrpcle.supabase.co"),
+		SupabaseServiceKey:         firstNonEmptyEnv("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY", "SUPABASE_ANON_KEY"),
+		SupabaseStorageBucket:      getEnvOrDefault("SUPABASE_STORAGE_BUCKET", "scandrix-artifacts"),
 		GitHubToken:                os.Getenv("GITHUB_TOKEN"),
 		GitLabToken:                os.Getenv("GITLAB_TOKEN"),
 		GitHubWebhookSecret:        os.Getenv("GITHUB_WEBHOOK_SECRET"),
@@ -291,6 +334,12 @@ func Load() (*Config, error) {
 		SMTPUsername:               smtpUser,
 		SMTPPassword:               smtpPass,
 		SMTPFrom:                   getEnvOrDefault("SMTP_FROM", "no-reply@scandrix.dev"),
+		BrevoAPIKey:                brevoKey,
+		BrevoSMTPHost:              brevoHost,
+		BrevoSMTPPort:              brevoPort,
+		BrevoSMTPUsername:          brevoUser,
+		BrevoSMTPPassword:          brevoPass,
+		BrevoSMTPFrom:              brevoFrom,
 		RequireEmailVerification:   os.Getenv("REQUIRE_EMAIL_VERIFICATION") == "true",
 		BlockedEmailDomains:        parseCommaSeparated(os.Getenv("BLOCKED_EMAIL_DOMAINS")),
 		TurnstileSecretKey:         os.Getenv("TURNSTILE_SECRET_KEY"),
@@ -337,6 +386,13 @@ func Load() (*Config, error) {
 		RazorpayKeySecret:          os.Getenv("RAZORPAY_KEY_SECRET"),
 		RazorpayWebhookSecret:      os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
 		BillingWebhookSecret:       getBillingWebhookSecret(),
+		JiraWebhookSecret:          os.Getenv("JIRA_WEBHOOK_SECRET"),
+		LinearWebhookSecret:        os.Getenv("LINEAR_WEBHOOK_SECRET"),
+		SlackBotToken:              os.Getenv("SLACK_BOT_TOKEN"),
+		SlackSigningSecret:         getEnvOrDefault("SLACK_SIGNING_SECRET", os.Getenv("SLACK_WEBHOOK_SECRET")),
+		TeamsAppID:                 os.Getenv("TEAMS_APP_ID"),
+		TeamsAppPassword:           os.Getenv("TEAMS_APP_PASSWORD"),
+		TeamsWebhookSecret:         getEnvOrDefault("TEAMS_WEBHOOK_SECRET", os.Getenv("TEAMS_SIGNING_SECRET")),
 		CodeManagementSecret:       os.Getenv("CODE_MANAGEMENT_SECRET"),
 		CodeManagementWebhookToken: os.Getenv("CODE_MANAGEMENT_WEBHOOK_TOKEN"),
 		WorkerRole:                 workerRole,
@@ -411,6 +467,15 @@ func getEnvOrDefault(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 func getBillingWebhookSecret() string {

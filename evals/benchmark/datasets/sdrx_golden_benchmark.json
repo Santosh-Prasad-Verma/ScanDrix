@@ -1,0 +1,74 @@
+[
+  {
+    "id": "sdrx-case-001",
+    "repository": "scandrix/sample-go-service",
+    "pull_request_number": 42,
+    "language": "go",
+    "title": "Add user authentication and database lookup",
+    "diff_content": "@@ -15,6 +15,10 @@ func Authenticate(db *sql.DB, user, pass string) (*User, error) {\n+    query := fmt.Sprintf(\"SELECT * FROM users WHERE username = '%s'\", user)\n+    row := db.QueryRow(query)\n+    return parseUser(row)\n+}",
+    "annotated_defects": [
+      {
+        "defect_id": "defect-go-01",
+        "file_path": "auth/service.go",
+        "line_number": 16,
+        "category": "security",
+        "severity": "CRITICAL",
+        "description": "SQL Injection vulnerability via fmt.Sprintf parameter interpolation"
+      }
+    ]
+  },
+  {
+    "id": "sdrx-case-002",
+    "repository": "scandrix/sample-python-api",
+    "pull_request_number": 108,
+    "language": "python",
+    "title": "Optimize image upload handler",
+    "diff_content": "@@ -40,7 +40,9 @@ def upload_file(request):\n+    filename = request.GET.get('name')\n+    with open(f\"/var/uploads/{filename}\", \"wb\") as f:\n+        f.write(request.body)",
+    "annotated_defects": [
+      {
+        "defect_id": "defect-py-01",
+        "file_path": "api/views.py",
+        "line_number": 42,
+        "category": "security",
+        "severity": "HIGH",
+        "description": "Path Traversal vulnerability allowing arbitrary file overwrite via unvalidated filename"
+      }
+    ]
+  },
+  {
+    "id": "sdrx-case-003",
+    "repository": "scandrix/sample-typescript-web",
+    "pull_request_number": 87,
+    "language": "typescript",
+    "title": "Implement customer details drawer",
+    "diff_content": "@@ -25,6 +25,8 @@ export function CustomerDetails({ user }: Props) {\n+  const fullName = user.profile.firstName + ' ' + user.profile.lastName;\n+  return <div>{fullName}</div>;",
+    "annotated_defects": [
+      {
+        "defect_id": "defect-ts-01",
+        "file_path": "components/CustomerDetails.tsx",
+        "line_number": 26,
+        "category": "bug",
+        "severity": "MEDIUM",
+        "description": "Uncaught TypeError: Cannot read properties of undefined (reading firstName) when user.profile is null"
+      }
+    ]
+  },
+  {
+    "id": "sdrx-case-004",
+    "repository": "scandrix/sample-rust-worker",
+    "pull_request_number": 19,
+    "language": "rust",
+    "title": "Add concurrent task consumer",
+    "diff_content": "@@ -60,6 +60,9 @@ pub fn process_queue(queue: &Arc<Mutex<Vec<Task>>>) {\n+    let lock = queue.lock().unwrap();\n+    std::thread::spawn(move || {\n+        lock.push(new_task);\n+    });",
+    "annotated_defects": [
+      {
+        "defect_id": "defect-rs-01",
+        "file_path": "src/worker.rs",
+        "line_number": 62,
+        "category": "concurrency",
+        "severity": "HIGH",
+        "description": "Holding mutex lock guard across thread boundary causes lock contention and deadlock"
+      }
+    ]
+  }
+]

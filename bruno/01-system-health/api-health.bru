@@ -1,0 +1,26 @@
+meta {
+  name: 01 - API Gateway Health Check
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{apiBaseUrl}}/livez
+  body: none
+  auth: none
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response time is under 250ms", function() {
+    expect(res.getResponseTime()).to.be.below(250);
+  });
+
+  test("Service status reports healthy or ok", function() {
+    const data = res.getBody();
+    expect(data.status || data).to.be.ok;
+  });
+}

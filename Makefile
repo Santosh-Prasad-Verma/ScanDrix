@@ -1,4 +1,4 @@
-.PHONY: all build test test-race bench clean docker-up docker-down fmt lint run-api run-worker run-webhooks env-check
+.PHONY: all build test test-race bench clean docker-up docker-down fmt lint run-api run-worker run-webhooks env-check test-bruno
 
 BIN_DIR := ./bin
 APPS := api server webhooks worker cli mcp-manager ast-cli analytics-cli try migrate envcheck
@@ -60,3 +60,7 @@ lint:
 clean:
 	@echo "Cleaning binaries..."
 	rm -rf $(BIN_DIR)
+
+test-bruno:
+	@echo "Running Bruno API automated contract tests..."
+	cd bruno && npx --yes @usebruno/cli run --env local

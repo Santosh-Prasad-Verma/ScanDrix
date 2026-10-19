@@ -39,7 +39,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	slog.Info("Starting Scandrix Primary REST & Streaming API (apps/api equivalent)")
+	slog.Info("Starting ScanDrix Primary REST & Streaming API")
 
 	// ═══════════════════════════════════════════════════════════════
 	// 2. RUNTIME CONFIGURATION (.env loading and validation)
@@ -93,7 +93,15 @@ func main() {
 	if cacheClient != nil {
 		streamHub.SetRedisClient(cacheClient)
 	}
-	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	var primaryStorage storage.Driver
+	if cfg.AppwriteProjectID != "" && cfg.AppwriteAPIKey != "" {
+		primaryStorage = storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	}
+	var fallbackStorage storage.Driver
+	if cfg.SupabaseURL != "" && cfg.SupabaseServiceKey != "" {
+		fallbackStorage = storage.NewSupabaseStorageDriver(cfg.SupabaseURL, cfg.SupabaseServiceKey)
+	}
+	artifactStorage := storage.NewDualRailStorage(primaryStorage, fallbackStorage)
 
 	aiGatewayOpts := make([]llm.GatewayOption, 0)
 	if cfg.OpenAIBaseURL != "" {
@@ -179,7 +187,7 @@ func main() {
 
 	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint, aiGatewayOpts...)
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
-	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
+	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactStorage, evaluator)
 	orchestrator.SetStreamHub(streamHub)
 	scimService := scim.NewSCIMService(repo)
 	if cfg.SCIMBearerToken != "" {
@@ -302,6 +310,10 @@ func main() {
 		BitbucketWebhookSecret:   cfg.BitbucketWebhookSecret,
 		AzureDevOpsWebhookSecret: cfg.AzureDevOpsWebhookSecret,
 		ForgejoWebhookSecret:     cfg.ForgejoWebhookSecret,
+		JiraWebhookSecret:        cfg.JiraWebhookSecret,
+		LinearWebhookSecret:      cfg.LinearWebhookSecret,
+		SlackSigningSecret:       cfg.SlackSigningSecret,
+		TeamsWebhookSecret:       cfg.TeamsWebhookSecret,
 	})
 
 	server := &http.Server{

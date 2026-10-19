@@ -57,7 +57,7 @@ func (c *SystemController) Routes() chi.Router {
 	return r
 }
 
-// VersionStatus matches the wire contract defined in apps/api/src/services/version-check.service.ts
+// VersionStatus represents the system version and update status payload.
 type VersionStatus struct {
 	Unknown         bool   `json:"unknown,omitempty"`
 	Reason          string `json:"reason,omitempty"`

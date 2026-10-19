@@ -18,7 +18,6 @@ import (
 type ProviderType string
 
 const (
-	ProviderStripe   ProviderType = "stripe"
 	ProviderRazorpay ProviderType = "razorpay"
 	ProviderManual   ProviderType = "manual"
 )

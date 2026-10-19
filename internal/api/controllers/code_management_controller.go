@@ -60,7 +60,7 @@ func (c *CodeManagementController) SetOAuthService(svc *oauth.OAuthService) {
 	c.oauthService = svc
 }
 
-// WebRepositoryItem matches the frontend Repository type in apps/web/src/lib/services/codeManagement/types.ts
+// WebRepositoryItem represents a repository summary for the frontend dashboard.
 type WebRepositoryItem struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
@@ -76,7 +76,7 @@ type WebRepositoryItem struct {
 	LastActivityAt   string `json:"lastActivityAt,omitempty"`
 }
 
-// WebPullRequestItem matches the frontend PullRequest structure in apps/web/src/lib/services/codeManagement/hooks.ts
+// WebPullRequestItem represents a pull request item for the frontend dashboard.
 type WebPullRequestItem struct {
 	ID             string     `json:"id"`
 	PullNumber     int        `json:"pull_number"`

@@ -149,3 +149,31 @@ func TestVerifier_RollbackPreservesCleanSandbox(t *testing.T) {
 	// After execution, calc.go must be restored to original contents
 	assert.Equal(t, original, string(sb.files["calc.go"]))
 }
+
+func TestVerifyTestSuite_GoMod(t *testing.T) {
+	v := NewSuggestionVerifier()
+	sb := newMockSandbox()
+	sb.files["go.mod"] = []byte("module acme/test\n\ngo 1.22\n")
+	sb.exitCodes = []int{0}
+
+	res, err := v.VerifyTestSuite(context.Background(), sb)
+	assert.NoError(t, err)
+	assert.True(t, res.Verified)
+	assert.Equal(t, StatusPass, res.Status)
+	assert.Contains(t, sb.runCommands[0], "go test")
+}
+
+func TestVerifyTestSuite_Failure(t *testing.T) {
+	v := NewSuggestionVerifier()
+	sb := newMockSandbox()
+	sb.files["package.json"] = []byte("{\"name\": \"test\"}")
+	sb.exitCodes = []int{1}
+	sb.stderrs = []string{"Jest test suite failed"}
+
+	res, err := v.VerifyTestSuite(context.Background(), sb)
+	assert.NoError(t, err)
+	assert.False(t, res.Verified)
+	assert.Equal(t, StatusUnverifiedCompilationFailed, res.Status)
+	assert.Contains(t, res.ErrorMessage, "Jest test suite failed")
+}
+

@@ -124,3 +124,29 @@ func TestResendAPIKeyFallbackForSMTP(t *testing.T) {
 		t.Fatalf("expected SMTPPassword to be re_test_key_12345, got %s", cfg.SMTPPassword)
 	}
 }
+
+func TestBrevoFallbackForSMTP(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/db")
+	t.Setenv("JWT_SECRET", "a-sufficiently-long-test-secret-value")
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv("RESEND_API_KEY", "")
+	t.Setenv("BREVO_SMTP_USERNAME", "brevo-user@acme.io")
+	t.Setenv("BREVO_SMTP_PASSWORD", "brevo_master_key_999")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected config to load with Brevo fallback, got error: %v", err)
+	}
+	if cfg.SMTPHost != "smtp-relay.brevo.com" {
+		t.Fatalf("expected SMTPHost to be smtp-relay.brevo.com, got %s", cfg.SMTPHost)
+	}
+	if cfg.SMTPUsername != "brevo-user@acme.io" {
+		t.Fatalf("expected SMTPUsername to be brevo-user@acme.io, got %s", cfg.SMTPUsername)
+	}
+	if cfg.SMTPPassword != "brevo_master_key_999" {
+		t.Fatalf("expected SMTPPassword to be brevo_master_key_999, got %s", cfg.SMTPPassword)
+	}
+}
+

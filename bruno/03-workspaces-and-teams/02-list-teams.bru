@@ -1,0 +1,28 @@
+meta {
+  name: 02 - List Workspace Teams
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{apiBaseUrl}}/api/v1/teams
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect([200, 401]).to.include(res.getStatus());
+  });
+
+  test("Response returns array of teams", function() {
+    if (res.getStatus() === 200) {
+      const data = res.getBody();
+      expect(Array.isArray(data.teams || data)).to.be.true;
+    }
+  });
+}

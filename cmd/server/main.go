@@ -97,10 +97,18 @@ func main() {
 	if cacheClient != nil {
 		streamHub.SetRedisClient(cacheClient)
 	}
-	artifactClient := storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	var primaryStorage storage.Driver
+	if cfg.AppwriteProjectID != "" && cfg.AppwriteAPIKey != "" {
+		primaryStorage = storage.NewArtifactClient(cfg.AppwriteEndpoint, cfg.AppwriteProjectID, cfg.AppwriteAPIKey)
+	}
+	var fallbackStorage storage.Driver
+	if cfg.SupabaseURL != "" && cfg.SupabaseServiceKey != "" {
+		fallbackStorage = storage.NewSupabaseStorageDriver(cfg.SupabaseURL, cfg.SupabaseServiceKey)
+	}
+	artifactStorage := storage.NewDualRailStorage(primaryStorage, fallbackStorage)
 	aiGateway := llm.NewGateway(cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.GeminiAPIKey, cfg.LocalLLMEndpoint)
 	evaluator, _ := rules.NewEvaluator(rules.DefaultCatalog())
-	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactClient, evaluator)
+	orchestrator := review.NewOrchestrator(repo, aiGateway, artifactStorage, evaluator)
 	orchestrator.SetStreamHub(streamHub)
 
 	// Initialize Sandbox Subsystem & MicroVM Pool
@@ -243,6 +251,10 @@ func main() {
 		RequireEmailVerification: cfg.RequireEmailVerification,
 		BlockedEmailDomains:      cfg.BlockedEmailDomains,
 		TurnstileSecretKey:       cfg.TurnstileSecretKey,
+		JiraWebhookSecret:        cfg.JiraWebhookSecret,
+		LinearWebhookSecret:      cfg.LinearWebhookSecret,
+		SlackSigningSecret:       cfg.SlackSigningSecret,
+		TeamsWebhookSecret:       cfg.TeamsWebhookSecret,
 		SCMProviders:              scmProviders,
 	})
 

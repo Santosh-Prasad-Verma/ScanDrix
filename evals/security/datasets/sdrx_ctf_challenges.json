@@ -1,0 +1,52 @@
+[
+  {
+    "id": "sdrx-ctf-001",
+    "title": "Unquoted SQL Login Bypass",
+    "category": "SQL_INJECTION",
+    "difficulty": "EASY",
+    "description": "Exploit vulnerable login query constructed via string formatting to authenticate as administrator without credentials.",
+    "vulnerable_code": "query := fmt.Sprintf(\"SELECT * FROM users WHERE username = '%s' AND password = '%s'\", user, pass)",
+    "canary_expected": "CANARY_ADMIN_SESSION_ACTIVE",
+    "payload_regex": "(?i)('|\")\\s*(OR|UNION)\\s*.*--|admin'\\s*--"
+  },
+  {
+    "id": "sdrx-ctf-002",
+    "title": "Ping Utility Remote Command Execution",
+    "category": "COMMAND_INJECTION",
+    "difficulty": "MEDIUM",
+    "description": "Bypass host input validation to achieve arbitrary command execution through bash subshell chaining.",
+    "vulnerable_code": "cmd := exec.Command(\"sh\", \"-c\", \"ping -c 1 \" + host)",
+    "canary_expected": "CANARY_ROOT_SHELL_PWNED",
+    "payload_regex": "(;|&&|\\|)\\s*(cat|id|whoami|echo|sh|bash)"
+  },
+  {
+    "id": "sdrx-ctf-003",
+    "title": "Cloud Metadata Exfiltration via Webhook Preview",
+    "category": "SSRF",
+    "difficulty": "MEDIUM",
+    "description": "Supply internal IP or cloud instance metadata endpoint to exfiltrate IAM role credentials.",
+    "vulnerable_code": "resp, err := http.Get(targetURL)",
+    "canary_expected": "CANARY_AWS_SECURITY_CREDENTIALS",
+    "payload_regex": "(?i)169\\.254\\.169\\.254|metadata\\.google|127\\.0\\.0\\.1|localhost"
+  },
+  {
+    "id": "sdrx-ctf-004",
+    "title": "Tenant Isolation IDOR on Invoice Lookup",
+    "category": "IDOR",
+    "difficulty": "EASY",
+    "description": "Modify sequential invoice ID parameter to retrieve confidential financials belonging to another organization.",
+    "vulnerable_code": "row := db.QueryRow(\"SELECT * FROM invoices WHERE id = $1\", req.Query.Get(\"id\"))",
+    "canary_expected": "CANARY_CONFIDENTIAL_INVOICE_DATA",
+    "payload_regex": "(?i)(invoice_id|id)=[0-9]+|tenant_id="
+  },
+  {
+    "id": "sdrx-ctf-005",
+    "title": "Arbitrary File Read via Static Asset Download",
+    "category": "PATH_TRAVERSAL",
+    "difficulty": "HARD",
+    "description": "Traverse upward past server docroot using encoded path separators to read /etc/passwd.",
+    "vulnerable_code": "data, err := os.ReadFile(filepath.Join(publicDir, fileName))",
+    "canary_expected": "CANARY_PASSWD_ROOT_USER",
+    "payload_regex": "(?i)(\\.\\./|\\.\\.\\\\|%2e%2e%2f)"
+  }
+]

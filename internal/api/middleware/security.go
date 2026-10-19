@@ -541,3 +541,15 @@ func TierRateLimit(tl *TierAwareRateLimiter, resolver TierPlanResolver) func(htt
 		})
 	}
 }
+
+// RequestBodyLimit bounds the maximum allowed request body size to protect against memory exhaustion (P0 API Security).
+func RequestBodyLimit(maxBytes int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if maxBytes > 0 && r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

@@ -23,12 +23,15 @@ import (
 	"github.com/scandrix/backend/internal/provenance/intoto"
 	"github.com/scandrix/backend/internal/review/diff"
 	"github.com/scandrix/backend/internal/review/feedback"
+	"github.com/scandrix/backend/internal/review/grouping"
 	"github.com/scandrix/backend/internal/review/pipeline"
 	"github.com/scandrix/backend/internal/review/pipeline/stages"
 	"github.com/scandrix/backend/internal/review/priority"
+	"github.com/scandrix/backend/internal/review/suggestdiff"
 	"github.com/scandrix/backend/internal/rules"
 	"github.com/scandrix/backend/internal/sandbox/contracts"
 	"github.com/scandrix/backend/internal/sandbox/syntax"
+	"github.com/scandrix/backend/internal/sandbox/verifier"
 	"github.com/scandrix/backend/internal/storage"
 	"github.com/scandrix/backend/pkg/crypto"
 	"github.com/scandrix/backend/pkg/models"
@@ -46,7 +49,7 @@ type SCMPublisher interface {
 type Orchestrator struct {
 	repo            *database.Repository
 	llmGateway      *llm.Gateway
-	artifactClient  *storage.ArtifactClient
+	artifactClient  storage.Driver
 	rulesEvaluator  *rules.Evaluator
 	scmPublisher    SCMPublisher
 	platformAdapter platform.SCMAdapter
@@ -64,7 +67,7 @@ type Orchestrator struct {
 func NewOrchestrator(
 	repo *database.Repository,
 	llmGateway *llm.Gateway,
-	artifactClient *storage.ArtifactClient,
+	artifactClient storage.Driver,
 	rulesEvaluator *rules.Evaluator,
 ) *Orchestrator {
 	var fbService *feedback.SemanticFeedbackService
@@ -435,6 +438,13 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 		}
 
 		diffForLLM := task.RawDiff
+		var allFilePaths []string
+		for _, sf := range scoredFiles {
+			allFilePaths = append(allFilePaths, sf.FilePath)
+		}
+		est := grouping.EstimateReview(allFilePaths, len(diffForLLM))
+		slog.Info("Pre-flight review token estimation", "files", est.Files, "estimated_tokens", est.TotalTokens, "summary", est.String())
+
 		if len(diffForLLM) > MaxDiffBytesForLLM {
 			// Reassemble diff prioritizing high blast-radius files first
 			var b strings.Builder
@@ -541,6 +551,11 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 					sev = models.SeverityInfo
 				}
 
+				suggestedDiff := f.SuggestedDiff
+				if suggestedDiff == "" && f.Remediation != "" {
+					suggestedDiff = suggestdiff.RenderUnifiedDiff(f.Description, f.Remediation, f.FilePath)
+				}
+
 				allFindings = append(allFindings, models.CodeFinding{
 					ID:            uuid.New(),
 					ReviewID:      task.ReviewID,
@@ -553,12 +568,78 @@ func (o *Orchestrator) ProcessReview(ctx context.Context, task ExecutionTask) er
 					Title:         f.Title,
 					Description:   f.Description,
 					Remediation:   f.Remediation,
-					SuggestedDiff: f.SuggestedDiff,
+					SuggestedDiff: suggestedDiff,
 					Fingerprint:   crypto.FingerprintSHA256(f.FilePath + ":" + f.Title + ":" + f.Category),
 				})
 			}
 			slog.Info("AI synthesis completed", "ai_findings", len(aiResp.Findings))
 		}
+	}
+
+	// Step 3b: Closed-Loop Dynamic Verification in MicroVM Sandbox (Heavy Mode, E2B, & ScanDrix Dynamic PoC Verifier)
+	if sandboxHandle != nil && len(allFindings) > 0 {
+		sv := verifier.NewSuggestionVerifier()
+		ev := verifier.NewExploitVerifier()
+		var verifiedFindings []models.CodeFinding
+		for _, f := range allFindings {
+			if f.SuggestedDiff != "" && f.FilePath != "" && f.Remediation != "" {
+				res, err := sv.VerifyAndRepair(ctx, sandboxHandle, f.FilePath, f.Remediation, nil)
+				if err == nil && res != nil {
+					if res.Verified {
+						f.Description += "\n\n> 🛡️ **Verified in MicroVM Sandbox:** Compilation and syntax checks passed cleanly without regressions."
+
+						// ScanDrix dynamic exploit verification for security findings
+						if f.Category == "security" {
+							var vulnType verifier.VulnerabilityType
+							titleLower := strings.ToLower(f.Title)
+							switch {
+							case strings.Contains(titleLower, "sql"):
+								vulnType = verifier.VulnSQLInjection
+							case strings.Contains(titleLower, "command") || strings.Contains(titleLower, "exec"):
+								vulnType = verifier.VulnCommandInjection
+							case strings.Contains(titleLower, "path") || strings.Contains(titleLower, "traversal"):
+								vulnType = verifier.VulnPathTraversal
+							case strings.Contains(titleLower, "log") || strings.Contains(titleLower, "secret"):
+								vulnType = verifier.VulnInsecureLogging
+							case strings.Contains(titleLower, "ssrf"):
+								vulnType = verifier.VulnSSRF
+							}
+
+							if vulnType != "" {
+								finding := verifier.ExploitFinding{
+									ID:             f.ID.String(),
+									Type:           vulnType,
+									FilePath:       f.FilePath,
+									LineNumber:     f.StartLine,
+									VulnerableCode: f.Description,
+									SuggestedFix:   f.Remediation,
+									Description:    f.Title,
+								}
+								evReport, evErr := ev.VerifyExploitAndFix(ctx, sandboxHandle, finding)
+								if evErr == nil && evReport != nil && evReport.PostFixNeutralized {
+									f.Description += fmt.Sprintf("\n\n> 🎯 **ScanDrix Dynamic Exploit Verified:** Exploit neutralized in sandbox (Confidence: %.0f%%). %s", evReport.ConfidenceScore*100, evReport.Summary)
+								}
+							}
+						}
+
+						verifiedFindings = append(verifiedFindings, f)
+					} else {
+						slog.Warn("Dropping unverified code finding that broke compilation in sandbox",
+							"file", f.FilePath,
+							"status", res.Status,
+							"error", res.ErrorMessage,
+						)
+						// Discard hallucinated patches that fail compilation in the sandbox
+						continue
+					}
+				} else {
+					verifiedFindings = append(verifiedFindings, f)
+				}
+			} else {
+				verifiedFindings = append(verifiedFindings, f)
+			}
+		}
+		allFindings = verifiedFindings
 	}
 
 	// 7. ARTIFACT ARCHIVAL & RLS FINDINGS PERSISTENCE (Memory suppression & state updates)

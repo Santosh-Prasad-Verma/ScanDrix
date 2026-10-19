@@ -17,8 +17,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,7 +25,6 @@ import (
 
 // WebhookConfig contains provider webhook signing secrets.
 type WebhookConfig struct {
-	StripeSigningSecret   string        `json:"stripe_signing_secret"`
 	RazorpayWebhookSecret string        `json:"razorpay_webhook_secret"`
 	ScanDrixWebhookSecret string        `json:"scandrix_webhook_secret"`
 	TimestampTolerance    time.Duration `json:"timestamp_tolerance"`
@@ -40,7 +37,7 @@ func DefaultWebhookConfig() WebhookConfig {
 	}
 }
 
-// WebhookController receives and verifies external billing webhooks from Stripe and Razorpay.
+// WebhookController receives and verifies external billing webhooks from Razorpay and ScanDrix.
 type WebhookController struct {
 	dispatcher *HooksDispatcher
 	config     WebhookConfig
@@ -59,53 +56,8 @@ func NewWebhookController(dispatcher *HooksDispatcher, config WebhookConfig) *We
 
 // RegisterRoutes binds HTTP routes onto a Chi router.
 func (c *WebhookController) RegisterRoutes(r chi.Router) {
-	r.Post("/stripe", c.HandleStripeWebhook)
 	r.Post("/razorpay", c.HandleRazorpayWebhook)
 	r.Post("/scandrix", c.HandleScanDrixWebhook)
-}
-
-// HandleStripeWebhook handles Stripe event payloads with v1 HMAC-SHA256 signature verification.
-func (c *WebhookController) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-
-	sigHeader := r.Header.Get("Stripe-Signature")
-	if sigHeader == "" {
-		http.Error(w, "Missing Stripe-Signature header", http.StatusUnauthorized)
-		return
-	}
-
-	if err := c.verifyStripeSignature(rawBody, sigHeader); err != nil {
-		slog.Warn("Stripe signature verification failed", "error", err)
-		http.Error(w, "Unauthorized signature", http.StatusUnauthorized)
-		return
-	}
-
-	// Parse Stripe payload
-	var stripeEv struct {
-		ID   string          `json:"id"`
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(rawBody, &stripeEv); err != nil {
-		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
-		return
-	}
-
-	event := c.normalizeStripeEvent(stripeEv.ID, stripeEv.Type, rawBody)
-
-	// Respond 200 OK immediately to satisfy Stripe SLA
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": "received", "id": event.ID})
-
-	// Dispatch asynchronously
-	if c.dispatcher != nil {
-		_ = c.dispatcher.Dispatch(r.Context(), event)
-	}
 }
 
 // HandleRazorpayWebhook handles Razorpay event payloads with HMAC-SHA256 verification.
@@ -184,56 +136,6 @@ func (c *WebhookController) HandleScanDrixWebhook(w http.ResponseWriter, r *http
 	}
 }
 
-func (c *WebhookController) verifyStripeSignature(rawBody []byte, header string) error {
-	if c.config.StripeSigningSecret == "" {
-		return errors.New("stripe signing secret is not configured")
-	}
-
-	var timestampStr string
-	var signatures []string
-
-	pairs := strings.Split(header, ",")
-	for _, pair := range pairs {
-		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key, val := parts[0], parts[1]
-		if key == "t" {
-			timestampStr = val
-		} else if key == "v1" {
-			signatures = append(signatures, val)
-		}
-	}
-
-	if timestampStr == "" || len(signatures) == 0 {
-		return errors.New("incomplete Stripe-Signature header")
-	}
-
-	tsInt, err := strconv.ParseInt(timestampStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid timestamp format: %w", err)
-	}
-
-	eventTime := time.Unix(tsInt, 0)
-	if time.Since(eventTime).Abs() > c.config.TimestampTolerance {
-		return errors.New("stripe signature timestamp outside tolerance window")
-	}
-
-	signedPayload := []byte(fmt.Sprintf("%s.%s", timestampStr, string(rawBody)))
-	mac := hmac.New(sha256.New, []byte(c.config.StripeSigningSecret))
-	mac.Write(signedPayload)
-	expectedMAC := hex.EncodeToString(mac.Sum(nil))
-
-	for _, sig := range signatures {
-		if hmac.Equal([]byte(sig), []byte(expectedMAC)) {
-			return nil
-		}
-	}
-
-	return errors.New("no matching valid stripe signature")
-}
-
 func (c *WebhookController) verifyRazorpaySignature(rawBody []byte, signature string) error {
 	if c.config.RazorpayWebhookSecret == "" {
 		return errors.New("razorpay webhook secret is not configured")
@@ -254,51 +156,6 @@ func (c *WebhookController) verifyGenericSignature(rawBody []byte, signature str
 		return errors.New("invalid hmac signature")
 	}
 	return nil
-}
-
-func (c *WebhookController) normalizeStripeEvent(id, stripeType string, raw []byte) BillingWebhookEvent {
-	var evType BillingEventType
-	switch stripeType {
-	case "customer.subscription.updated":
-		evType = EventPlanChanged
-	case "customer.subscription.deleted":
-		evType = EventSubscriptionCancelled
-	case "invoice.payment_failed":
-		evType = EventPaymentFailed
-	case "invoice.payment_succeeded":
-		evType = EventInvoiceSucceeded
-	case "customer.subscription.trial_will_end":
-		evType = EventTrialExpiring
-	default:
-		evType = BillingEventType("billing." + stripeType)
-	}
-
-	// Try extracting organization_id from metadata if present
-	var parsed struct {
-		Data struct {
-			Object struct {
-				Metadata struct {
-					OrganizationID string `json:"organization_id"`
-					WorkspaceID    string `json:"workspace_id"`
-				} `json:"metadata"`
-			} `json:"object"`
-		} `json:"data"`
-	}
-	_ = json.Unmarshal(raw, &parsed)
-
-	orgID, _ := uuid.Parse(parsed.Data.Object.Metadata.OrganizationID)
-	if orgID == uuid.Nil {
-		orgID, _ = uuid.Parse(parsed.Data.Object.Metadata.WorkspaceID)
-	}
-
-	return BillingWebhookEvent{
-		ID:             id,
-		Provider:       ProviderStripe,
-		EventType:      evType,
-		OrganizationID: orgID,
-		Timestamp:      time.Now().UTC(),
-		RawPayload:     raw,
-	}
 }
 
 func (c *WebhookController) normalizeRazorpayEvent(rzpEvent string, raw []byte) BillingWebhookEvent {

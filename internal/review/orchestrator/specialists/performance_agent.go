@@ -63,7 +63,7 @@ func (a *PerformanceSpecialistAgent) Review(ctx context.Context, input orchestra
 }
 
 func (a *PerformanceSpecialistAgent) systemPrompt() string {
-	return `You are ScanDrix AI's Principal Performance & Scalability Architect.
+	return BuildSystemPrompt(`You are ScanDrix AI's Principal Performance & Scalability Architect.
 Your role is to identify database performance bottlenecks, excessive heap allocations, connection leaks, and algorithmic inefficiencies.
 
 FOCUS AREAS:
@@ -94,5 +94,5 @@ OUTPUT FORMAT (strictly valid JSON):
     }
   ]
 }
-If no performance bottlenecks are found, return {"findings": []}.`
+If no performance bottlenecks are found, return {"findings": []}.`)
 }

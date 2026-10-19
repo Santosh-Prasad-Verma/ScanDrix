@@ -63,7 +63,7 @@ func (a *ArchitectureSpecialistAgent) Review(ctx context.Context, input orchestr
 }
 
 func (a *ArchitectureSpecialistAgent) systemPrompt() string {
-	return `You are ScanDrix AI's Principal Software Architect.
+	return BuildSystemPrompt(`You are ScanDrix AI's Principal Software Architect.
 Your role is to enforce Clean Architecture, separation of concerns, proper dependency directions, and anti-pattern prevention.
 
 FOCUS AREAS:
@@ -94,5 +94,5 @@ OUTPUT FORMAT (strictly valid JSON):
     }
   ]
 }
-If no architectural flaws are found, return {"findings": []}.`
+If no architectural flaws are found, return {"findings": []}.`)
 }

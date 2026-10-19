@@ -524,6 +524,56 @@ type PullRequestExecutionFilter struct {
 	Author             string     `json:"author,omitempty"`
 }
 
+// ReviewWarningKind mirrors the pipeline's adaptive-fit countermeasure warning kinds.
+type ReviewWarningKind string
+
+const (
+	WarningPromptCompacted       ReviewWarningKind = "PROMPT_COMPACTED"
+	WarningCallgraphDropped      ReviewWarningKind = "CALLGRAPH_DROPPED"
+	WarningHunkHeadersOnly       ReviewWarningKind = "HUNK_HEADERS_ONLY"
+	WarningDiffTruncated         ReviewWarningKind = "DIFF_TRUNCATED"
+	WarningLowSignalFilesDropped ReviewWarningKind = "LOW_SIGNAL_FILES_DROPPED"
+	WarningHeavyPassesSkipped    ReviewWarningKind = "HEAVY_PASSES_SKIPPED"
+	WarningProviderFallback      ReviewWarningKind = "PROVIDER_FALLBACK"
+)
+
+// ReviewWarning conveys adaptive-fit countermeasure or provider failover details.
+type ReviewWarning struct {
+	Kind                ReviewWarningKind `json:"kind"`
+	Reason              string            `json:"reason"` // "small_context_window" or "provider_failover"
+	ContextWindowTokens int               `json:"contextWindowTokens"`
+	ModelName           string            `json:"modelName"`
+	Detail              string            `json:"detail,omitempty"`
+	AgentName           string            `json:"agentName,omitempty"`
+}
+
+// CodeReviewTimelineItem represents one stage in a review execution timeline.
+type CodeReviewTimelineItem struct {
+	UUID       string                 `json:"uuid"`
+	CreatedAt  string                 `json:"createdAt"`
+	UpdatedAt  string                 `json:"updatedAt"`
+	Status     string                 `json:"status"` // "success", "error", "in_progress", "skipped", "partial_error"
+	Message    string                 `json:"message"`
+	StageName  string                 `json:"stageName,omitempty"`
+	StageLabel string                 `json:"stageLabel,omitempty"`
+	DurationMs int64                  `json:"durationMs,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	FinishedAt *string                `json:"finishedAt,omitempty"`
+}
+
+// FirstSentSuggestion targets the first high-signal finding for direct deep-linking.
+type FirstSentSuggestion struct {
+	ID       string `json:"id"`
+	FilePath string `json:"filePath"`
+}
+
+// SuggestionsBreakdown details sent vs filtered vs failed review comments.
+type SuggestionsBreakdown struct {
+	Sent     int `json:"sent"`
+	Filtered int `json:"filtered"`
+	Failed   int `json:"failed"`
+}
+
 // EnrichedPullRequestExecution represents an enriched PR review run.
 type EnrichedPullRequestExecution struct {
 	UUID              uuid.UUID `json:"uuid"`
@@ -537,18 +587,29 @@ type EnrichedPullRequestExecution struct {
 	// CompletedAt is null while a review is still in flight. The table has no
 	// updated_at column, and completed_at was previously being scanned into this
 	// slot, which made every unfinished review fail to load.
-	CompletedAt        *time.Time    `json:"completed_at,omitempty"`
-	ExecutionTimeMs    int64         `json:"execution_time_ms"`
-	SuggestionsCount   int           `json:"suggestions_count"`
-	CriticalCount      int           `json:"critical_count"`
-	HighCount          int           `json:"high_count"`
-	MediumCount        int           `json:"medium_count"`
-	LowCount           int           `json:"low_count"`
-	NeedsAttention     bool          `json:"needs_attention"`
-	HasSentSuggestions bool          `json:"has_sent_suggestions"`
-	HeadSHA            string        `json:"head_sha,omitempty"`
-	BaseSHA            string        `json:"base_sha,omitempty"`
-	Findings           []CodeFinding `json:"findings,omitempty"`
+	CompletedAt        *time.Time               `json:"completed_at,omitempty"`
+	ExecutionTimeMs    int64                    `json:"execution_time_ms"`
+	SuggestionsCount   int                      `json:"suggestions_count"`
+	CriticalCount      int                      `json:"critical_count"`
+	HighCount          int                      `json:"high_count"`
+	MediumCount        int                      `json:"medium_count"`
+	LowCount           int                      `json:"low_count"`
+	NeedsAttention     bool                     `json:"needs_attention"`
+	HasSentSuggestions bool                     `json:"has_sent_suggestions"`
+	HeadSHA            string                   `json:"head_sha,omitempty"`
+	BaseSHA            string                   `json:"base_sha,omitempty"`
+	HeadBranchRef      string                   `json:"head_branch_ref,omitempty"`
+	BaseBranchRef      string                   `json:"base_branch_ref,omitempty"`
+	URL                string                   `json:"url,omitempty"`
+	Merged             bool                     `json:"merged"`
+	Heavy              bool                     `json:"heavy"`
+	IsDraft            bool                     `json:"is_draft"`
+	ErrorMessage       string                   `json:"error_message,omitempty"`
+	FirstSentFinding   *FirstSentSuggestion     `json:"first_sent_suggestion,omitempty"`
+	Timeline           []CodeReviewTimelineItem `json:"code_review_timeline,omitempty"`
+	ReviewWarnings     []ReviewWarning          `json:"review_warnings,omitempty"`
+	SuggestionsDetail  *SuggestionsBreakdown    `json:"suggestions_breakdown,omitempty"`
+	Findings           []CodeFinding            `json:"findings,omitempty"`
 }
 
 // PaginatedEnrichedPullRequests represents the paginated API response.
@@ -679,4 +740,27 @@ type ModelPriceInfo struct {
 	InputPrice1M  float64 `json:"input_price_1m"`
 	OutputPrice1M float64 `json:"output_price_1m"`
 	CachedInput1M float64 `json:"cached_input_1m"`
+}
+
+// PentestAuditReportRecord persists an autonomous penetration testing and compliance audit run.
+type PentestAuditReportRecord struct {
+	ID                uuid.UUID `json:"id" db:"id"`
+	WorkspaceID       uuid.UUID `json:"workspace_id" db:"workspace_id"`
+	TargetURI         string    `json:"target_uri" db:"target_uri"`
+	TargetType        string    `json:"target_type" db:"target_type"`
+	Mode              string    `json:"mode" db:"mode"`
+	PassAssessment    bool      `json:"pass_assessment" db:"pass_assessment"`
+	FindingsCount     int       `json:"findings_count" db:"findings_count"`
+	CriticalCount     int       `json:"critical_count" db:"critical_count"`
+	HighCount         int       `json:"high_count" db:"high_count"`
+	MediumCount       int       `json:"medium_count" db:"medium_count"`
+	LowCount          int       `json:"low_count" db:"low_count"`
+	DurationMs        int64     `json:"duration_ms" db:"duration_ms"`
+	ThreatModelDAG    []byte    `json:"threat_model_dag" db:"threat_model_dag"`
+	ComplianceMapping []byte    `json:"compliance_mapping" db:"compliance_mapping"`
+	AttackTree        []byte    `json:"attack_tree" db:"attack_tree"`
+	Summary           string    `json:"summary" db:"summary"`
+	ReportMarkdown    string    `json:"report_markdown" db:"report_markdown"`
+	CreatedAt         time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 }

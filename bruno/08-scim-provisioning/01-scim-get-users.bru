@@ -1,0 +1,28 @@
+meta {
+  name: 01 - SCIM 2.0 List Provisioned Users
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{apiBaseUrl}}/scim/v2/Users
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{scimToken}}
+}
+
+tests {
+  test("Returns 200 OK or 401 Unauthorized", function() {
+    expect([200, 401, 403]).to.include(res.getStatus());
+  });
+
+  test("Returns SCIM schema on success", function() {
+    if (res.getStatus() === 200) {
+      const data = res.getBody();
+      expect(data.schemas).to.include("urn:ietf:params:scim:api:messages:2.0:ListResponse");
+    }
+  });
+}

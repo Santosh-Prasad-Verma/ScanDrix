@@ -162,8 +162,8 @@ func TestRoutingRuleConfigGeneration(t *testing.T) {
 	if len(cfg.Events) < 20 {
 		t.Fatalf("expected at least 20 events in config, got %d", len(cfg.Events))
 	}
-	if len(cfg.Channels) != 5 {
-		t.Fatalf("expected 5 channels, got %d", len(cfg.Channels))
+	if len(cfg.Channels) != 6 {
+		t.Fatalf("expected 6 channels, got %d", len(cfg.Channels))
 	}
 	if len(cfg.Criticalities) != 4 {
 		t.Fatalf("expected 4 criticalities, got %d", len(cfg.Criticalities))

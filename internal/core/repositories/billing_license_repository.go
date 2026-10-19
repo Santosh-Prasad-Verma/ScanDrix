@@ -17,7 +17,7 @@ type BillingTransaction struct {
 	domain.TenantScopedEntity
 	AmountCents     int64   `json:"amount_cents" db:"amount_cents"`
 	Currency        string  `json:"currency" db:"currency"`
-	Provider        string  `json:"provider" db:"provider"`                 // "STRIPE", "ZOHO", "INVOICE"
+	Provider        string  `json:"provider" db:"provider"`                 // "RAZORPAY", "MANUAL", "INVOICE"
 	TransactionType string  `json:"transaction_type" db:"transaction_type"` // "SUBSCRIPTION", "SEATS_ADDON", "USAGE_OVERAGE"
 	Status          string  `json:"status" db:"status"`
 	InvoiceID       *string `json:"invoice_id,omitempty" db:"invoice_id"`

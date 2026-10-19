@@ -16,9 +16,12 @@ import (
 	"github.com/scandrix/backend/pkg/models"
 )
 
-// AuditRepository defines the data access contract for compliance audit logging (Clean Architecture).
+// AuditRepository defines the data access contract for compliance audit logging and pentest reporting (Clean Architecture).
 type AuditRepository interface {
 	ListAuditLogs(ctx context.Context, wsID uuid.UUID, limit int) ([]models.AuditLogRecord, error)
+	CreatePentestAuditReport(ctx context.Context, report *models.PentestAuditReportRecord) error
+	GetPentestAuditReport(ctx context.Context, wsID, reportID uuid.UUID) (*models.PentestAuditReportRecord, error)
+	ListPentestAuditReports(ctx context.Context, wsID uuid.UUID, limit, offset int) ([]models.PentestAuditReportRecord, error)
 }
 
 // AuditController handles compliance audit log queries and SIEM streaming exports.
@@ -44,6 +47,9 @@ func (c *AuditController) Routes() chi.Router {
 
 	r.Get("/", c.handleListAuditLogs)
 	r.Get("/export", c.handleExportSIEM)
+	r.Get("/pentest-reports", c.handleListPentestReports)
+	r.Post("/pentest-reports", c.handleCreatePentestReport)
+	r.Get("/pentest-reports/{reportId}", c.handleGetPentestReport)
 
 	return r
 }
@@ -164,3 +170,127 @@ func (c *AuditController) handleExportSIEM(w http.ResponseWriter, r *http.Reques
 		}
 	}
 }
+
+func (c *AuditController) handleListPentestReports(w http.ResponseWriter, r *http.Request) {
+	wsIDStr := chi.URLParam(r, "workspaceId")
+	wsID, err := uuid.Parse(wsIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid workspace id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctxWsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || ctxWsID != wsID {
+		http.Error(w, `{"error":"forbidden: workspace access denied"}`, http.StatusForbidden)
+		return
+	}
+
+	limit := 20
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if parsed, err := strconv.Atoi(lStr); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if parsed, err := strconv.Atoi(oStr); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"pentest reports unavailable: no data source"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	reports, err := c.repo.ListPentestAuditReports(r.Context(), wsID, limit, offset)
+	if err != nil {
+		slog.Error("Failed querying pentest audit reports", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed querying pentest audit reports"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if reports == nil {
+		reports = []models.PentestAuditReportRecord{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(reports)
+}
+
+func (c *AuditController) handleGetPentestReport(w http.ResponseWriter, r *http.Request) {
+	wsIDStr := chi.URLParam(r, "workspaceId")
+	wsID, err := uuid.Parse(wsIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid workspace id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctxWsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || ctxWsID != wsID {
+		http.Error(w, `{"error":"forbidden: workspace access denied"}`, http.StatusForbidden)
+		return
+	}
+
+	repIDStr := chi.URLParam(r, "reportId")
+	repID, err := uuid.Parse(repIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid report id"}`, http.StatusBadRequest)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"pentest reports unavailable: no data source"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	rep, err := c.repo.GetPentestAuditReport(r.Context(), wsID, repID)
+	if err != nil {
+		slog.Error("Failed retrieving pentest audit report", "workspace_id", wsID, "report_id", repID, "error", err)
+		http.Error(w, `{"error":"report not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rep)
+}
+
+func (c *AuditController) handleCreatePentestReport(w http.ResponseWriter, r *http.Request) {
+	wsIDStr := chi.URLParam(r, "workspaceId")
+	wsID, err := uuid.Parse(wsIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid workspace id"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctxWsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil || ctxWsID != wsID {
+		http.Error(w, `{"error":"forbidden: workspace access denied"}`, http.StatusForbidden)
+		return
+	}
+
+	if c.repo == nil {
+		http.Error(w, `{"error":"pentest reports unavailable: no data source"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req models.PentestAuditReportRecord
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Multi-tenant integrity: guarantee the report belongs to the authenticated workspace
+	req.WorkspaceID = wsID
+	if err := c.repo.CreatePentestAuditReport(r.Context(), &req); err != nil {
+		slog.Error("Failed creating pentest audit report", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed persisting pentest report"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(req)
+}
+

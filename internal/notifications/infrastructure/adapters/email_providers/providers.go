@@ -152,3 +152,39 @@ func (p *MemoryEmailProvider) Send(ctx context.Context, msg EmailMessage) error 
 	p.Sent = append(p.Sent, msg)
 	return nil
 }
+
+// DualRailEmailProvider wraps a primary provider (e.g. Resend) and fails over to a fallback (e.g. Brevo SMTP).
+type DualRailEmailProvider struct {
+	Primary  EmailProvider
+	Fallback EmailProvider
+}
+
+// NewDualRailEmailProvider initializes a dual-rail email provider.
+func NewDualRailEmailProvider(primary, fallback EmailProvider) *DualRailEmailProvider {
+	return &DualRailEmailProvider{
+		Primary:  primary,
+		Fallback: fallback,
+	}
+}
+
+// Send attempts to dispatch the email through the primary provider, failing over to fallback if primary fails.
+func (d *DualRailEmailProvider) Send(ctx context.Context, msg EmailMessage) error {
+	if d.Primary == nil && d.Fallback == nil {
+		return fmt.Errorf("no email provider configured")
+	}
+	if d.Primary == nil {
+		return d.Fallback.Send(ctx, msg)
+	}
+
+	err := d.Primary.Send(ctx, msg)
+	if err == nil {
+		return nil
+	}
+
+	if d.Fallback != nil {
+		return d.Fallback.Send(ctx, msg)
+	}
+
+	return err
+}
+

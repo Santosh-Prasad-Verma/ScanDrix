@@ -3,6 +3,7 @@ package consumer_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -361,3 +362,44 @@ func TestWorkerPoolResultsDeliveredBeforeStartRegression(t *testing.T) {
 		t.Fatalf("expected executor to run %d jobs, got %d", totalJobs, got)
 	}
 }
+
+func TestReviewConsumerErrorSanitization(t *testing.T) {
+	ctx := context.Background()
+	inbox := relay.NewInboxDeduplicator()
+
+	secretError := errors.New("failed git fetch with token ghp_123456789012345678901234567890123456 and Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotLeakThisSignature")
+	sensitiveExecutor := func(ctx context.Context, task consumer.ReviewTaskPayload) ([]models.CodeFinding, error) {
+		return nil, secretError
+	}
+
+	cfg := consumer.ConsumerConfig{
+		MaxRetries: 1,
+	}
+
+	c := consumer.NewReviewConsumer(cfg, inbox, sensitiveExecutor)
+	task := consumer.ReviewTaskPayload{
+		TaskID:            uuid.New(),
+		WorkspaceID:       uuid.New(),
+		Provider:          models.ProviderGitHub,
+		RepoNamespace:     "acme/secret-repo",
+		PullRequestNumber: 42,
+		AttemptCount:      0,
+	}
+
+	res := c.ProcessTask(ctx, task)
+	if res.Status != consumer.TaskStatusDeadLetter {
+		t.Fatalf("expected DEAD_LETTER on retry exhaustion, got %s", res.Status)
+	}
+
+	// Verify that raw sensitive tokens were scrubbed from ErrorMsg
+	if strings.Contains(res.ErrorMsg, "ghp_123456789012345678901234567890123456") {
+		t.Fatalf("ErrorMsg leaked sensitive GitHub token: %s", res.ErrorMsg)
+	}
+	if strings.Contains(res.ErrorMsg, "doNotLeakThisSignature") {
+		t.Fatalf("ErrorMsg leaked JWT signature: %s", res.ErrorMsg)
+	}
+	if !strings.Contains(res.ErrorMsg, "[REDACTED]") {
+		t.Fatalf("expected [REDACTED] in sanitized error message, got: %s", res.ErrorMsg)
+	}
+}
+

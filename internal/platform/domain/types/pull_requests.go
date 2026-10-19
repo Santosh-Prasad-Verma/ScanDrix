@@ -62,7 +62,6 @@ type PullRequestParticipant struct {
 }
 
 // PullRequest aggregates normalized metadata across all Git providers.
-// Matches libs/platform/domain/platformIntegrations/types/codeManagement/pullRequests.type.ts
 type PullRequest struct {
 	ID             string                     `json:"id"`
 	Number         int                        `json:"number"`

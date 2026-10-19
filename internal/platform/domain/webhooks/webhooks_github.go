@@ -8,7 +8,6 @@ package webhooks
 import "time"
 
 // WebhookGithubPullRequestAction captures all GitHub PR event actions.
-// Matches libs/platform/domain/platformIntegrations/types/webhooks/webhooks-github.type.ts
 type WebhookGithubPullRequestAction string
 
 const (

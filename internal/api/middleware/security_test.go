@@ -426,3 +426,38 @@ func TestCSRFNonCLIBypassesStillApply(t *testing.T) {
 		t.Errorf("bearer-authenticated CLI call should bypass CSRF, got %d", rec.Code)
 	}
 }
+
+func TestRequestBodyLimitMiddleware(t *testing.T) {
+	// Limit to 100 bytes
+	limit := int64(100)
+	handler := middleware.RequestBodyLimit(limit)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 200)
+		n, err := r.Body.Read(buf)
+		if err != nil && err.Error() == "http: request body too large" {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte("too large"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf[:n])
+	}))
+
+	// 1. Small payload under limit succeeds
+	smallPayload := strings.Repeat("a", 50)
+	reqSmall := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(smallPayload))
+	recSmall := httptest.NewRecorder()
+	handler.ServeHTTP(recSmall, reqSmall)
+	if recSmall.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for payload under limit, got %d", recSmall.Code)
+	}
+
+	// 2. Large payload over limit gets capped / rejected by MaxBytesReader
+	largePayload := strings.Repeat("b", 150)
+	reqLarge := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(largePayload))
+	recLarge := httptest.NewRecorder()
+	handler.ServeHTTP(recLarge, reqLarge)
+	if recLarge.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Payload Too Large on read over limit, got %d", recLarge.Code)
+	}
+}
+

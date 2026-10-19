@@ -85,6 +85,8 @@ func main() {
 	azureCtrl := controllers.NewAzureReposController(enqueueSvc, cfg.CodeManagementSecret, cfg.CodeManagementWebhookToken)
 	forgejoCtrl := controllers.NewForgejoController(enqueueSvc)
 	billingCtrl := controllers.NewBillingController(repo, cfg.BillingWebhookSecret)
+	pmCtrl := controllers.NewPMWebhooksController(repo, cfg.JiraWebhookSecret, cfg.LinearWebhookSecret)
+	botActionsCtrl := controllers.NewBotActionsController(repo, cfg.SlackSigningSecret, cfg.TeamsWebhookSecret)
 	healthCtrl := controllers.NewHealthController(repo, broker)
 
 	// ═══════════════════════════════════════════════════════════════
@@ -104,7 +106,7 @@ func main() {
 	r.Get("/readyz", healthCtrl.Check)
 
 	// ═══════════════════════════════════════════════════════════════
-	// 5. WEBHOOK CONTROLLER ENDPOINTS (GitHub, GitLab, Bitbucket, Azure, Forgejo, Billing)
+	// 5. WEBHOOK CONTROLLER ENDPOINTS (GitHub, GitLab, Bitbucket, Azure, Forgejo, Billing, Jira, Linear)
 	// ═══════════════════════════════════════════════════════════════
 
 	// Canonical Root Webhook Paths
@@ -114,6 +116,8 @@ func main() {
 	r.Post("/azure-repos/webhook", azureCtrl.HandleWebhook)
 	r.Post("/azure/webhook", azureCtrl.HandleWebhook)
 	r.Post("/forgejo/webhook", forgejoCtrl.HandleWebhook)
+	r.Post("/jira/webhook", pmCtrl.HandleJiraWebhook)
+	r.Post("/linear/webhook", pmCtrl.HandleLinearWebhook)
 
 	r.Route("/billing/webhook", func(br chi.Router) {
 		billingCtrl.RegisterRoutes(br)
@@ -133,6 +137,12 @@ func main() {
 		api.Post("/azure/webhook", azureCtrl.HandleWebhook)
 		api.Post("/forgejo", forgejoCtrl.HandleWebhook)
 		api.Post("/forgejo/webhook", forgejoCtrl.HandleWebhook)
+		api.Post("/jira", pmCtrl.HandleJiraWebhook)
+		api.Post("/jira/webhook", pmCtrl.HandleJiraWebhook)
+		api.Post("/linear", pmCtrl.HandleLinearWebhook)
+		api.Post("/linear/webhook", pmCtrl.HandleLinearWebhook)
+		api.Post("/slack/actions", botActionsCtrl.HandleSlackActions)
+		api.Post("/teams/actions", botActionsCtrl.HandleTeamsActions)
 		api.Route("/billing", func(br chi.Router) {
 			billingCtrl.RegisterRoutes(br)
 		})
@@ -147,6 +157,14 @@ func main() {
 	r.Post("/webhooks/azure-repos", azureCtrl.HandleWebhook)
 	r.Post("/webhooks/azure", azureCtrl.HandleWebhook)
 	r.Post("/webhooks/forgejo", forgejoCtrl.HandleWebhook)
+	r.Post("/webhooks/jira", pmCtrl.HandleJiraWebhook)
+	r.Post("/webhooks/linear", pmCtrl.HandleLinearWebhook)
+	r.Post("/webhooks/slack/actions", botActionsCtrl.HandleSlackActions)
+	r.Post("/notifications/slack/actions", botActionsCtrl.HandleSlackActions)
+	r.Post("/slack/actions", botActionsCtrl.HandleSlackActions)
+	r.Post("/webhooks/teams/actions", botActionsCtrl.HandleTeamsActions)
+	r.Post("/notifications/teams/actions", botActionsCtrl.HandleTeamsActions)
+	r.Post("/teams/actions", botActionsCtrl.HandleTeamsActions)
 	r.Post("/webhooks/ingest", multiIngestion.ServeHTTP)
 	r.Post("/webhooks/{provider}", multiIngestion.ServeHTTP)
 

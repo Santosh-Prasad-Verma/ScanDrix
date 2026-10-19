@@ -111,7 +111,10 @@ func (c *BillingController) HandleGenericWebhook(w http.ResponseWriter, r *http.
 	}
 
 	// Record billing event to outbox for worker processing
-	c.recordBillingOutbox(r.Context(), "billing.webhook_received", rawBody, uuid.Nil)
+	if err := c.recordBillingOutbox(r.Context(), "billing.webhook_received", rawBody, uuid.Nil); err != nil {
+		http.Error(w, "failed to record billing event", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
@@ -145,7 +148,10 @@ func (c *BillingController) HandlePaymentFailed(w http.ResponseWriter, r *http.R
 	}
 
 	wsID, _ := uuid.Parse(targetID)
-	c.recordBillingOutbox(r.Context(), "billing.payment_failed", rawBody, wsID)
+	if err := c.recordBillingOutbox(r.Context(), "billing.payment_failed", rawBody, wsID); err != nil {
+		http.Error(w, "failed to record billing event", http.StatusInternalServerError)
+		return
+	}
 
 	slog.Info("Recorded billing payment-failed notification", "target_id", targetID, "amount", body.Amount)
 	w.WriteHeader(http.StatusOK)
@@ -181,7 +187,10 @@ func (c *BillingController) HandleTrialExpiring(w http.ResponseWriter, r *http.R
 	}
 
 	wsID, _ := uuid.Parse(targetID)
-	c.recordBillingOutbox(r.Context(), "billing.trial_expiring", rawBody, wsID)
+	if err := c.recordBillingOutbox(r.Context(), "billing.trial_expiring", rawBody, wsID); err != nil {
+		http.Error(w, "failed to record billing event", http.StatusInternalServerError)
+		return
+	}
 
 	slog.Info("Recorded billing trial-expiring notification", "target_id", targetID, "days_remaining", body.DaysRemaining)
 	w.WriteHeader(http.StatusOK)
@@ -217,16 +226,19 @@ func (c *BillingController) HandlePlanChanged(w http.ResponseWriter, r *http.Req
 	}
 
 	wsID, _ := uuid.Parse(targetID)
-	c.recordBillingOutbox(r.Context(), "billing.plan_changed", rawBody, wsID)
+	if err := c.recordBillingOutbox(r.Context(), "billing.plan_changed", rawBody, wsID); err != nil {
+		http.Error(w, "failed to record billing event", http.StatusInternalServerError)
+		return
+	}
 
 	slog.Info("Recorded billing plan-changed notification", "target_id", targetID, "plan_type", body.PlanType)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (c *BillingController) recordBillingOutbox(ctx context.Context, eventType string, payload []byte, wsID uuid.UUID) {
+func (c *BillingController) recordBillingOutbox(ctx context.Context, eventType string, payload []byte, wsID uuid.UUID) error {
 	if c.repo == nil {
-		return
+		return nil
 	}
 	outboxRec := &models.OutboxRecord{
 		ID:          uuid.New(),
@@ -236,5 +248,9 @@ func (c *BillingController) recordBillingOutbox(ctx context.Context, eventType s
 		Status:      models.OutboxPending,
 		CreatedAt:   time.Now().UTC(),
 	}
-	_ = c.repo.IngestWebhookEventTx(ctx, nil, outboxRec)
+	if err := c.repo.IngestWebhookEventTx(ctx, nil, outboxRec); err != nil {
+		slog.Error("Failed recording billing outbox event", "event_type", eventType, "workspace_id", wsID, "error", err)
+		return err
+	}
+	return nil
 }

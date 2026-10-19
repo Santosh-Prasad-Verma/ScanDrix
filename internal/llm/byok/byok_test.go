@@ -7,6 +7,7 @@ package byok_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,76 @@ func TestResolveModelSlot(t *testing.T) {
 	defaultSlot := byok.ResolveDefaultSlot(cfg)
 	require.NotNil(t, defaultSlot)
 	assert.Equal(t, "model-1", defaultSlot.BYOKModelID)
+}
+
+func TestResolveModelSlot_EncryptedKeyDecryption(t *testing.T) {
+	rawKey := "sk-ant-live-real-api-key-999"
+	encKey, err := byok.EncryptKey(rawKey)
+	require.NoError(t, err)
+
+	rawSecret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	encSecret, err := byok.EncryptKey(rawSecret)
+	require.NoError(t, err)
+
+	cfg := &byok.BYOKConfig{
+		Version: 2,
+		Credentials: []byok.BYOKCredential{
+			{
+				ID:       "cred-enc",
+				Provider: "anthropic",
+				APIKey:   encKey,
+				Settings: map[string]any{
+					"awsSecretAccessKey": encSecret,
+				},
+			},
+		},
+		Models: []byok.BYOKModelConfig{
+			{
+				ID:           "model-enc",
+				CredentialID: "cred-enc",
+				Model:        "claude-3-7-sonnet",
+			},
+		},
+	}
+
+	slot := byok.ResolveModelSlot(cfg, "model-enc")
+	require.NotNil(t, slot)
+	assert.Equal(t, rawKey, slot.APIKey, "slot.APIKey must be decrypted into plaintext for provider execution")
+	assert.Equal(t, rawSecret, slot.AWSSecretAccessKey, "slot.AWSSecretAccessKey must be decrypted into plaintext")
+}
+
+func TestKMSEnvelopeEncryptionAndDecryption(t *testing.T) {
+	rawKey := "sk-proj-kms-envelope-secret-token-12345"
+	envJSON, err := byok.EncryptKeyEnvelope(rawKey)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(envJSON), "{"), "envelope must be JSON formatted")
+
+	// DecryptKey should seamlessly recognize and decrypt KMS envelope format
+	decrypted, err := byok.DecryptKey(envJSON)
+	require.NoError(t, err)
+	assert.Equal(t, rawKey, decrypted)
+
+	// ResolveModelSlot must also decrypt KMS envelope encrypted keys
+	cfg := &byok.BYOKConfig{
+		Version: 2,
+		Credentials: []byok.BYOKCredential{
+			{
+				ID:       "cred-kms",
+				Provider: "openai",
+				APIKey:   envJSON,
+			},
+		},
+		Models: []byok.BYOKModelConfig{
+			{
+				ID:           "model-kms",
+				CredentialID: "cred-kms",
+				Model:        "gpt-4o",
+			},
+		},
+	}
+	slot := byok.ResolveModelSlot(cfg, "model-kms")
+	require.NotNil(t, slot)
+	assert.Equal(t, rawKey, slot.APIKey)
 }
 
 func TestLimiterAcquireAndRelease(t *testing.T) {

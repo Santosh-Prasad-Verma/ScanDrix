@@ -8,9 +8,11 @@ package specialists
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/scandrix/backend/internal/review/orchestrator"
+	"github.com/scandrix/backend/internal/security/threatmodel"
 )
 
 // SecuritySpecialistAgent scrutinizes code diffs for vulnerabilities and injection vectors.
@@ -41,6 +43,30 @@ func (a *SecuritySpecialistAgent) Review(ctx context.Context, input orchestrator
 	sysPrompt := a.systemPrompt()
 	userPrompt := BuildSpecialistUserPrompt(input, "Application Security, CWE Taxonomy, Secrets Exposure, Injection, and Memory Safety")
 
+	fileMap := make(map[string]string)
+	for _, f := range input.ChangedFiles {
+		if f.IsBinary || f.IsVendored {
+			continue
+		}
+		if f.Content != "" {
+			fileMap[f.Filename] = f.Content
+		} else if f.Patch != "" {
+			fileMap[f.Filename] = f.Patch
+		}
+	}
+
+	threatReport := threatmodel.DeriveThreatModel(fileMap)
+	if threatReport != nil && len(threatReport.AttackSurface) > 0 {
+		var tmBuilder strings.Builder
+		tmBuilder.WriteString("\n<derived_threat_model_attack_surface>\n")
+		tmBuilder.WriteString(fmt.Sprintf("Overview: %s\n", threatReport.Overview))
+		for _, entry := range threatReport.AttackSurface {
+			tmBuilder.WriteString(fmt.Sprintf("- [%s] %s (Type: %s, Severity: %s, Category: %s)\n", entry.Location, entry.Handler, entry.Type, entry.Severity, entry.RiskCategory))
+		}
+		tmBuilder.WriteString("</derived_threat_model_attack_surface>\n")
+		userPrompt += tmBuilder.String()
+	}
+
 	raw, err := a.llm.GenerateResponse(ctx, sysPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("security specialist execution failed: %w", err)
@@ -63,7 +89,7 @@ func (a *SecuritySpecialistAgent) Review(ctx context.Context, input orchestrator
 }
 
 func (a *SecuritySpecialistAgent) systemPrompt() string {
-	return `You are ScanDrix AI's Principal Security Reviewer.
+	return BuildSystemPrompt(`You are ScanDrix AI's Principal Security Reviewer.
 Your role is to detect software security vulnerabilities, cryptographic defects, authentication/authorization bypasses, and injection risks.
 
 TAXONOMY & VULNERABILITY FOCUS:
@@ -95,5 +121,5 @@ OUTPUT FORMAT (strictly valid JSON):
     }
   ]
 }
-If no security vulnerabilities are found, return {"findings": []}.`
+If no security vulnerabilities are found, return {"findings": []}.`)
 }

@@ -220,7 +220,7 @@ func TestHooksDispatcher_SyncAndAsync(t *testing.T) {
 	ctx := context.Background()
 	ev := BillingWebhookEvent{
 		ID:             "evt_sync_1",
-		Provider:       ProviderStripe,
+		Provider:       ProviderRazorpay,
 		EventType:      EventPlanChanged,
 		OrganizationID: uuid.New(),
 		Timestamp:      time.Now().UTC(),
@@ -240,7 +240,7 @@ func TestHooksDispatcher_SyncAndAsync(t *testing.T) {
 	// Test async dispatch with new event
 	ev2 := BillingWebhookEvent{
 		ID:             "evt_async_2",
-		Provider:       ProviderStripe,
+		Provider:       ProviderRazorpay,
 		EventType:      EventPlanChanged,
 		OrganizationID: uuid.New(),
 		Timestamp:      time.Now().UTC(),
@@ -273,7 +273,7 @@ func TestHooksDispatcher_ErrorUnlocksRetry(t *testing.T) {
 	ctx := context.Background()
 	ev := BillingWebhookEvent{
 		ID:             "evt_retry_1",
-		Provider:       ProviderStripe,
+		Provider:       ProviderRazorpay,
 		EventType:      EventPaymentFailed,
 		OrganizationID: uuid.New(),
 		Timestamp:      time.Now().UTC(),

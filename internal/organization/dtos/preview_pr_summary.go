@@ -16,7 +16,6 @@ type PreviewPRSummaryRepositoryDTO struct {
 }
 
 // PreviewPRSummaryDTO represents review summary preview request payload.
-// Matches libs/organization/dtos/preview-pr-summary.dto.ts
 type PreviewPRSummaryDTO struct {
 	PRNumber                        string                        `json:"prNumber"`
 	Repository                      PreviewPRSummaryRepositoryDTO `json:"repository"`

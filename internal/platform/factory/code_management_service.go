@@ -21,7 +21,6 @@ import (
 
 // CodeManagementService coordinates multi-platform Git operations by dynamically routing
 // calls to the appropriate VCS adapter (GitHub, GitLab, Bitbucket, Azure DevOps, Forgejo).
-// Translates libs/platform/infrastructure/adapters/services/codeManagement.service.ts
 var _ contracts.ICodeManagementService = (*CodeManagementService)(nil)
 
 const (

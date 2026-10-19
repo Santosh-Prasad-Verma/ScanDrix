@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -123,7 +124,8 @@ func (c *SpendLimitController) handleGetStatus(w http.ResponseWriter, r *http.Re
 	if c.configService != nil {
 		eval, err := c.configService.Evaluate(r.Context(), orgID, teamID, time.Now().UTC())
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed evaluating spend limit status: %s"}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed evaluating spend limit status", "workspace_id", orgID, "error", err)
+			http.Error(w, `{"error":"failed evaluating spend limit status"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -161,7 +163,8 @@ func (c *SpendLimitController) handleGetStatus(w http.ResponseWriter, r *http.Re
 	wsUUID, _ := uuid.Parse(orgID)
 	evalStatus, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed evaluating spend limit status: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed evaluating spend limit status", "workspace_id", orgID, "error", err)
+		http.Error(w, `{"error":"failed evaluating spend limit status"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -179,7 +182,8 @@ func (c *SpendLimitController) handleGetConfig(w http.ResponseWriter, r *http.Re
 	if c.getConfigUseCase != nil {
 		view, err := c.getConfigUseCase.Execute(r.Context(), orgID, teamID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed getting spend limit config: %s"}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed getting spend limit config", "workspace_id", orgID, "error", err)
+			http.Error(w, `{"error":"failed getting spend limit config"}`, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -199,7 +203,8 @@ func (c *SpendLimitController) handleGetConfig(w http.ResponseWriter, r *http.Re
 	wsUUID, _ := uuid.Parse(orgID)
 	evalStatus, err := c.repo.GetSpendLimitStatus(r.Context(), wsUUID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed querying spend limit status: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed querying spend limit status", "workspace_id", orgID, "error", err)
+		http.Error(w, `{"error":"failed querying spend limit status"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -294,7 +299,8 @@ func (c *SpendLimitController) handleConfigureSpendLimit(w http.ResponseWriter, 
 
 	wsUUID, _ := uuid.Parse(orgID)
 	if err := c.repo.UpdateSpendLimit(r.Context(), wsUUID, req.LimitUSD); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed updating spend limit: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed updating spend limit", "workspace_id", orgID, "error", err)
+		http.Error(w, `{"error":"failed updating spend limit"}`, http.StatusInternalServerError)
 		return
 	}
 

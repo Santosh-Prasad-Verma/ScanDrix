@@ -27,13 +27,18 @@ func (r *Repository) InsertOutboxEvent(ctx context.Context, event *models.Outbox
 		event.ID = uuid.New()
 	}
 
-	return r.client.ExecWithTenant(ctx, event.WorkspaceID, func(tx pgx.Tx) error {
+	runner := func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, query,
 			event.ID, event.WorkspaceID, event.EventType, event.Payload,
 			models.OutboxPending, 0, event.CreatedAt,
 		)
 		return err
-	})
+	}
+
+	if event.WorkspaceID == uuid.Nil {
+		return r.client.ExecAsSystem(ctx, runner)
+	}
+	return r.client.ExecWithTenant(ctx, event.WorkspaceID, runner)
 }
 
 // IngestWebhookEventTx atomically creates the incoming pull request review record and the outbox event within a single tenant transaction.
@@ -229,6 +234,72 @@ func (r *Repository) GetOutboxMetrics(ctx context.Context, wsID uuid.UUID) (tota
 		return tx.QueryRow(ctx, query, wsID).Scan(&totalDelivered, &pending, &retrying, &dlq, &lastEventAt)
 	})
 	return totalDelivered, pending, retrying, dlq, lastEventAt, err
+}
+
+// ListOutboxEvents returns recent outbox records for a workspace.
+func (r *Repository) ListOutboxEvents(ctx context.Context, wsID uuid.UUID, limit int, status string) ([]models.OutboxRecord, error) {
+	if r == nil || r.client == nil {
+		return []models.OutboxRecord{}, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	query := `
+		SELECT id, workspace_id, event_type, payload, status, retry_count, COALESCE(last_error, ''), created_at, published_at
+		FROM outbox_events
+		WHERE workspace_id = $1 AND ($2 = '' OR status = $2)
+		ORDER BY created_at DESC
+		LIMIT $3;
+	`
+	var records []models.OutboxRecord
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, wsID, status, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rec models.OutboxRecord
+			var lastErr string
+			if err := rows.Scan(
+				&rec.ID, &rec.WorkspaceID, &rec.EventType, &rec.Payload,
+				&rec.Status, &rec.RetryCount, &lastErr, &rec.CreatedAt, &rec.PublishedAt,
+			); err != nil {
+				return err
+			}
+			rec.LastError = lastErr
+			records = append(records, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// RetrySingleOutboxEvent resets a specific outbox event back to PENDING for redelivery.
+func (r *Repository) RetrySingleOutboxEvent(ctx context.Context, wsID, eventID uuid.UUID) (bool, error) {
+	if r == nil || r.client == nil {
+		return true, nil
+	}
+	query := `
+		UPDATE outbox_events
+		SET status = 'PENDING', retry_count = 0, last_error = NULL
+		WHERE id = $1 AND workspace_id = $2;
+	`
+	var updated bool
+	err := r.client.ExecWithTenant(ctx, wsID, func(tx pgx.Tx) error {
+		cmdTag, err := tx.Exec(ctx, query, eventID, wsID)
+		if err != nil {
+			return err
+		}
+		updated = cmdTag.RowsAffected() > 0
+		return nil
+	})
+	return updated, err
 }
 
 // ClaimInboxMessage atomically claims a message in the database for processing.

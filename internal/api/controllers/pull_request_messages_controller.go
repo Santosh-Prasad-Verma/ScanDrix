@@ -3,7 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -76,7 +76,8 @@ func (c *PullRequestMessagesController) handleGetMessages(w http.ResponseWriter,
 
 	settings, err := c.repo.GetPullRequestMessages(r.Context(), wsID, repoID, directoryID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"failed fetching messages: %s"}`, err.Error()), http.StatusInternalServerError)
+		slog.Error("Failed fetching messages", "workspace_id", wsID, "error", err)
+		http.Error(w, `{"error":"failed fetching messages"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -139,7 +140,8 @@ func (c *PullRequestMessagesController) handleSaveMessages(w http.ResponseWriter
 
 	if c.repo != nil {
 		if err := c.repo.SavePullRequestMessages(r.Context(), wsID, &settings); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"failed saving message settings: %s"}`, err.Error()), http.StatusInternalServerError)
+			slog.Error("Failed saving message settings", "workspace_id", wsID, "error", err)
+			http.Error(w, `{"error":"failed saving message settings"}`, http.StatusInternalServerError)
 			return
 		}
 	}

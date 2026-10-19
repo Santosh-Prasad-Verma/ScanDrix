@@ -27,32 +27,24 @@ func NewNotifier(webhookURL string) *Notifier {
 
 // PostReviewSummary sends an Adaptive Card summarizing pull request review findings.
 func (n *Notifier) PostReviewSummary(ctx context.Context, repoName string, prNumber int, prTitle string, findings []models.CodeFinding) error {
+	return n.PostInteractiveReviewSummary(ctx, repoName, prNumber, prTitle, "", findings, "")
+}
+
+// PostInteractiveReviewSummary sends an Adaptive Card v1.5 with action execution buttons.
+func (n *Notifier) PostInteractiveReviewSummary(
+	ctx context.Context,
+	repoName string,
+	prNumber int,
+	prTitle string,
+	dashboardURL string,
+	findings []models.CodeFinding,
+	workspaceID string,
+) error {
 	if n.webhookURL == "" {
 		return nil
 	}
 
-	themeColor := "22c55e" // Green
-	if len(findings) > 0 {
-		themeColor = "ef4444" // Red
-	}
-
-	payload := map[string]any{
-		"@type":      "MessageCard",
-		"@context":   "http://schema.org/extensions",
-		"themeColor": themeColor,
-		"summary":    fmt.Sprintf("Scandrix Review Completed for %s #%d", repoName, prNumber),
-		"sections": []map[string]any{
-			{
-				"activityTitle":    fmt.Sprintf("Scandrix Code Review - %s #%d", repoName, prNumber),
-				"activitySubtitle": prTitle,
-				"facts": []map[string]string{
-					{"name": "Total Findings", "value": fmt.Sprintf("%d", len(findings))},
-					{"name": "Status", "value": "Completed"},
-				},
-				"markdown": true,
-			},
-		},
-	}
+	payload := BuildInteractiveTeamsCard(repoName, prNumber, prTitle, dashboardURL, findings, workspaceID)
 
 	body, err := json.Marshal(payload)
 	if err != nil {

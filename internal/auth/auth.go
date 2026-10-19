@@ -371,9 +371,13 @@ func extractAuthToken(r *http.Request) string {
 		return strings.TrimSpace(k)
 	}
 
-	// 5. Query parameter token (e.g. for SSE streams or WebSockets)
+	// 5. Query parameter token: strictly restricted to SSE streams and WebSocket handshakes
+	// where browser-native APIs (EventSource/WebSocket) cannot attach custom Authorization headers.
 	if q := r.URL.Query().Get("token"); q != "" {
-		return strings.TrimSpace(q)
+		p := strings.ToLower(r.URL.Path)
+		if strings.HasSuffix(p, "/events") || strings.HasSuffix(p, "/stream") || strings.HasSuffix(p, "/sse") || strings.HasSuffix(p, "/ws") || strings.Contains(p, "/events/") {
+			return strings.TrimSpace(q)
+		}
 	}
 
 	return ""

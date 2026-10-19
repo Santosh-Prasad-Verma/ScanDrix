@@ -104,7 +104,6 @@ var conclusionStateMap = map[CheckConclusion]string{
 }
 
 // ForgejoChecksService provides Forgejo / Gitea Commit Status operations.
-// Translates libs/platform/infrastructure/adapters/services/forgejo/forgejo-checks.service.ts
 type ForgejoChecksService struct {
 	baseURL    string
 	httpClient *http.Client

@@ -16,7 +16,6 @@ import (
 
 // BitbucketService dynamically delegates calls to either BitbucketCloudService or BitbucketServerService
 // depending on whether the integration points to Bitbucket Cloud (bitbucket.org) or Bitbucket Data Center / Server.
-// Translates libs/platform/infrastructure/adapters/services/bitbucket.service.ts
 var _ contracts.ICodeManagementService = (*BitbucketService)(nil)
 
 type BitbucketService struct {

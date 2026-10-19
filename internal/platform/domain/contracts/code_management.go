@@ -8,7 +8,6 @@ import (
 )
 
 // ICodeManagementService specifies the comprehensive interface for all Git hosting providers.
-// Matches libs/platform/domain/platformIntegrations/interfaces/code-management.interface.ts
 type ICodeManagementService interface {
 	// Provider identification
 	Provider() models.SCMProvider

@@ -25,7 +25,6 @@ import (
 )
 
 // BitbucketServerService implements contracts.ICodeManagementService for Bitbucket Data Center / Server (1.0 REST API).
-// Translates libs/platform/infrastructure/adapters/services/bitbucket/bitbucket-data-center.service.ts
 var _ contracts.ICodeManagementService = (*BitbucketServerService)(nil)
 
 type BitbucketServerService struct {

@@ -26,8 +26,9 @@ var (
 // HOOK PARENT COMMAND
 
 var hookCmd = &cobra.Command{
-	Use:   "hook",
-	Short: "Manage Git pre-commit and pre-push automated review guards",
+	Use:     "hook",
+	Aliases: []string{"hooks"},
+	Short:   "Manage Git pre-commit and pre-push automated review guards",
 	Long: `Install, inspect, or remove Git review hooks that automatically verify
 changesets before committing or pushing to remotes.`,
 }
@@ -38,8 +39,9 @@ var hookInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install pre-push and pre-commit review guards in .git/hooks",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Default to pre-push if neither explicitly set
+		// Default to both pre-commit and pre-push if neither explicitly set
 		if !hookPreCommit && !hookPrePush {
+			hookPreCommit = true
 			hookPrePush = true
 		}
 

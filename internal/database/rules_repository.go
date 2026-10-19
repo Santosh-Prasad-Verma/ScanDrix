@@ -106,6 +106,24 @@ func (r *Repository) DeleteAutomationRule(ctx context.Context, workspaceID, rule
 	})
 }
 
+// ToggleAutomationRule enables or disables an automation workflow rule.
+func (r *Repository) ToggleAutomationRule(ctx context.Context, workspaceID, ruleID uuid.UUID, enabled bool) error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+
+	query := `
+		UPDATE workflow_automations
+		SET enabled = $1, updated_at = $2
+		WHERE workspace_id = $3 AND id = $4
+	`
+	now := time.Now().UTC()
+	return r.client.ExecWithTenant(ctx, workspaceID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, enabled, now, workspaceID, ruleID)
+		return err
+	})
+}
+
 
 // CreateReviewRule registers a new custom Drixy review rule in PostgreSQL.
 func (r *Repository) CreateReviewRule(ctx context.Context, rule *models.ReviewRule) error {

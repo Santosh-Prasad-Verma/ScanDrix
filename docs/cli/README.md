@@ -75,7 +75,6 @@ ScanDrix CLI is engineered as a enterprise-grade, high-performance static analys
 
 | Superpower Command | Description |
 | :--- | :--- |
-| `scandrix chat` | Interactive autonomous AI terminal chat loop with live tool execution |
 | `scandrix tui` | Rich Bubbletea interactive cockpit with live diffs and inline fix triage |
 | `scandrix scan` | Multi-language AST security audits and semantic vulnerability scanning |
 | `scandrix diff` | Semantic diff inspector across working tree, branches, and commits |
@@ -155,8 +154,3 @@ Configuration is resolved hierarchically in order of precedence:
 4. **Global Developer Config** (`~/.scandrix/config.json`)
 5. **Secure Credentials Store** (`~/.scandrix/credentials.json` with `0600` permissions)
 
----
-
-## 📋 Implementation Plans & Design History
-All architectural extraction design docs and QA checklists are located in:
-- [`docs/cli/plans/`](cli/plans/)

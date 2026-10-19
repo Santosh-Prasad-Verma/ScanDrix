@@ -1,0 +1,17 @@
+meta {
+  name: 03 - Async Worker Pool Health Check
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{workerBaseUrl}}/livez
+  body: none
+  auth: none
+}
+
+tests {
+  test("Status code is 200 OK", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+}

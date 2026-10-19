@@ -145,15 +145,23 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve owning WorkspaceID for the repository namespace
-	if h.repo != nil && event.WorkspaceID == uuid.Nil {
+	// Resolve owning WorkspaceID and TrackedRepository for the repository namespace
+	var repoID uuid.UUID = uuid.Nil
+	if h.repo != nil {
 		targetRepo := event.RepoNamespace
 		if targetRepo == "" {
 			targetRepo = repo
 		}
 		if targetRepo != "" {
-			if wsID, err := h.repo.GetWorkspaceIDByRepoNamespace(r.Context(), string(provider), targetRepo); err == nil && wsID != uuid.Nil {
-				event.WorkspaceID = wsID
+			if tr, err := h.repo.GetTrackedRepositoryByNamespace(r.Context(), models.SCMProvider(provider), targetRepo); err == nil && tr != nil {
+				if event.WorkspaceID == uuid.Nil {
+					event.WorkspaceID = tr.WorkspaceID
+				}
+				repoID = tr.ID
+			} else if event.WorkspaceID == uuid.Nil {
+				if wsID, err := h.repo.GetWorkspaceIDByRepoNamespace(r.Context(), string(provider), targetRepo); err == nil && wsID != uuid.Nil {
+					event.WorkspaceID = wsID
+				}
 			}
 		}
 	}
@@ -179,11 +187,13 @@ func (h *IngestionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var initialReview *models.PullRequestReview
-		if event.PullRequestNumber > 0 {
+		// Only create initialReview if repository is tracked in tracked_repositories to satisfy foreign key constraint:
+		// pull_request_reviews.repository_id REFERENCES tracked_repositories(id) ON DELETE CASCADE
+		if event.PullRequestNumber > 0 && repoID != uuid.Nil {
 			initialReview = &models.PullRequestReview{
 				ID:             event.ID,
 				WorkspaceID:    event.WorkspaceID,
-				RepositoryID:   uuid.Nil,
+				RepositoryID:   repoID,
 				PullNumber:     event.PullRequestNumber,
 				Title:          fmt.Sprintf("PR #%d: %s", event.PullRequestNumber, event.RepoNamespace),
 				HeadSHA:        event.HeadSHA,

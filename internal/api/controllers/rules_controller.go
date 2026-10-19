@@ -17,6 +17,7 @@ import (
 	"github.com/scandrix/backend/internal/drixy"
 	"github.com/scandrix/backend/internal/llm"
 	"github.com/scandrix/backend/internal/rules"
+	"github.com/scandrix/backend/internal/rules/community"
 	"github.com/scandrix/backend/pkg/models"
 )
 
@@ -29,14 +30,18 @@ type RulesRepository interface {
 
 // RulesController manages security rules, database persistence, and Drixy AI rule synthesis.
 type RulesController struct {
-	evaluator  *rules.Evaluator
-	repo       RulesRepository
-	llmGateway *llm.Gateway
+	evaluator    *rules.Evaluator
+	repo         RulesRepository
+	llmGateway   *llm.Gateway
+	communitySvc *community.Service
 }
 
 // NewRulesController initializes the rules controller.
 func NewRulesController(evaluator *rules.Evaluator, repo ...RulesRepository) *RulesController {
-	c := &RulesController{evaluator: evaluator}
+	c := &RulesController{
+		evaluator:    evaluator,
+		communitySvc: community.NewService(),
+	}
 	if len(repo) > 0 && !isNilInterface(repo[0]) {
 		c.repo = repo[0]
 	}
@@ -61,6 +66,10 @@ func (c *RulesController) Routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Get("/catalog", c.handleGetCatalog)
+	r.Get("/community/packs", c.handleListCommunityPacks)
+	r.Get("/community/packs/{packID}", c.handleGetCommunityPack)
+	r.Post("/community/packs/{packID}/install", c.handleInstallCommunityPack)
+	r.Post("/community/import", c.handleImportCommunityPack)
 	r.Post("/test", c.handleTestRule)
 	r.Post("/test/batch", c.handleTestRuleBatch)
 	r.Post("/generate", c.handleGenerateRule)
@@ -415,3 +424,86 @@ Output ONLY valid JSON. No markdown fences, no conversational prose.`, drixy.Nam
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+func (c *RulesController) handleListCommunityPacks(w http.ResponseWriter, r *http.Request) {
+	search := r.URL.Query().Get("search")
+	category := r.URL.Query().Get("category")
+	tag := r.URL.Query().Get("tag")
+
+	packs := c.communitySvc.ListPacks(search, category, tag)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(packs)
+}
+
+func (c *RulesController) handleGetCommunityPack(w http.ResponseWriter, r *http.Request) {
+	packID := chi.URLParam(r, "packID")
+	pack, err := c.communitySvc.GetPack(packID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(pack)
+}
+
+func (c *RulesController) handleInstallCommunityPack(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+	if c.repo == nil {
+		http.Error(w, `{"error":"database repository not configured"}`, http.StatusInternalServerError)
+		return
+	}
+
+	packID := chi.URLParam(r, "packID")
+	count, err := c.communitySvc.InstallPack(r.Context(), wsID, packID, c.repo)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed installing rule pack: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         true,
+		"pack_id":         packID,
+		"installed_count": count,
+	})
+}
+
+func (c *RulesController) handleImportCommunityPack(w http.ResponseWriter, r *http.Request) {
+	wsID, err := auth.WorkspaceFromContext(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"missing workspace context"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		URL         string `json:"url"`
+		AutoInstall bool   `json:"auto_install"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(req.URL) == "" {
+		http.Error(w, `{"error":"url is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	pack, count, err := c.communitySvc.ImportAndInstall(r.Context(), wsID, req.URL, req.AutoInstall, c.repo)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed importing rule pack: %v"}`, err), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         true,
+		"pack":            pack,
+		"installed_count": count,
+	})
+}
+

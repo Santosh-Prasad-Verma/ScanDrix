@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/scandrix/backend/internal/pathguard"
@@ -43,7 +44,14 @@ func main() {
 	defer cancel()
 
 	fmt.Println("Connecting to PostgreSQL database...")
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolConfig, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		log.Fatalf("Failed to parse database configuration: %v", err)
+	}
+	// PgBouncer / Supabase pooler compatibility
+	poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		log.Fatalf("Failed to create connection pool: %v", err)
 	}

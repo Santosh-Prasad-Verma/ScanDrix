@@ -1,0 +1,54 @@
+meta {
+  name: 01 - Register New Account (Dynamic & Isolated)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{apiBaseUrl}}/api/v1/auth/register
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "email": "{{dynamicUserEmail}}",
+    "password": "{{dynamicUserPassword}}",
+    "workspace_name": "{{workspaceName}}"
+  }
+}
+
+script:pre-request {
+  const nonce = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+  const email = `test.operator.${nonce}@scandrix.internal`;
+  const password = "K9x#vL7$mQ2!wZ8*" + nonce;
+  
+  bru.setVar('dynamicUserEmail', email);
+  bru.setVar('dynamicUserPassword', password);
+}
+
+tests {
+  test("Registration returns 200 or 201", function() {
+    expect([200, 201]).to.include(res.getStatus());
+  });
+
+  test("Extract and dynamically store credentials", function() {
+    const data = res.getBody();
+    const token = data.accessToken || data.token || (data.data && data.data.accessToken);
+    if (token) {
+      bru.setVar('authToken', token);
+    }
+    const refreshToken = data.refreshToken || data.refresh_token || (data.data && data.data.refreshToken);
+    if (refreshToken) {
+      bru.setVar('refreshToken', refreshToken);
+    }
+    const wsId = data.workspace_id || (data.user && (data.user.workspace_id || data.user.WorkspaceID || data.user.organizationId || data.user.id));
+    if (wsId) {
+      bru.setVar('workspaceId', wsId);
+    }
+  });
+}

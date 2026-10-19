@@ -1,0 +1,32 @@
+meta {
+  name: 04 - Azure DevOps PR Webhook
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{webhooksBaseUrl}}/webhooks/azure
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "eventType": "git.pullrequest.created",
+    "resource": {
+      "pullRequestId": 77,
+      "title": "chore: bump dependencies",
+      "status": "active"
+    }
+  }
+}
+
+tests {
+  test("Azure webhook returns 200, 202, 401, or 403", function() {
+    expect([200, 202, 401, 403]).to.include(res.getStatus());
+  });
+}

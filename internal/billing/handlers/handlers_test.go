@@ -150,7 +150,7 @@ func TestPlanChangedHandler_Execution(t *testing.T) {
 
 	ev := billing.BillingWebhookEvent{
 		ID:             "evt_pc_1",
-		Provider:       billing.ProviderStripe,
+		Provider:       billing.ProviderRazorpay,
 		EventType:      billing.EventPlanChanged,
 		OrganizationID: orgID,
 		RawPayload:     raw,
@@ -184,7 +184,7 @@ func TestPaymentFailedAndDunningHandler(t *testing.T) {
 
 	ev := billing.BillingWebhookEvent{
 		ID:             "evt_pf_1",
-		Provider:       billing.ProviderStripe,
+		Provider:       billing.ProviderRazorpay,
 		EventType:      billing.EventPaymentFailed,
 		OrganizationID: orgID,
 		RawPayload:     raw,
@@ -217,7 +217,7 @@ func TestInvoiceSucceededHandler_ResetTokensAndResolveDunning(t *testing.T) {
 
 	ev := billing.BillingWebhookEvent{
 		ID:             "evt_inv_1",
-		Provider:       billing.ProviderStripe,
+		Provider:       billing.ProviderRazorpay,
 		EventType:      billing.EventInvoiceSucceeded,
 		OrganizationID: orgID,
 		RawPayload:     raw,
@@ -245,7 +245,7 @@ func TestTrialExpiringHandler_CountdownAndAutoDowngrade(t *testing.T) {
 
 	ev := billing.BillingWebhookEvent{
 		ID:             "evt_te_1",
-		Provider:       billing.ProviderStripe,
+		Provider:       billing.ProviderRazorpay,
 		EventType:      billing.EventTrialExpiring,
 		OrganizationID: orgID,
 		RawPayload:     raw,
@@ -285,7 +285,7 @@ func TestSubscriptionCancelledHandler_DowngradeAndSeatReclamation(t *testing.T) 
 
 	ev := billing.BillingWebhookEvent{
 		ID:             "evt_sc_1",
-		Provider:       billing.ProviderStripe,
+		Provider:       billing.ProviderRazorpay,
 		EventType:      billing.EventSubscriptionCancelled,
 		OrganizationID: orgID,
 		RawPayload:     raw,

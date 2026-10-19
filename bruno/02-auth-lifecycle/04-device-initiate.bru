@@ -1,0 +1,31 @@
+meta {
+  name: 04 - RFC 8628 CLI Device Initiate
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{apiBaseUrl}}/api/v1/auth/cli/device/initiate
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_id": "scandrix-cli"
+  }
+}
+
+tests {
+  test("Returns 200 OK with device codes", function() {
+    expect(res.getStatus()).to.equal(200);
+    const data = res.getBody();
+    expect(data.device_code).to.be.ok;
+    expect(data.user_code).to.be.ok;
+    bru.setVar('deviceCode', data.device_code);
+  });
+}

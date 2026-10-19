@@ -47,7 +47,7 @@ ScanDrix does not sell customer personal information or source code. We engage t
 * **Observability & Error Tracking**: Sentry, BetterStack.
 * **Transactional Communication**: Zoho Mail / Bookings.
 
-See our full [Subprocessors List](file:///home/tarun/Videos/kodus-ai/ScanDrix/docs/security/SUBPROCESSORS.md) for details.
+See our full [Subprocessors List](./SUBPROCESSORS.md) for details.
 
 ---
 
