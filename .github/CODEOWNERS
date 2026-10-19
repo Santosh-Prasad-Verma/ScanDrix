@@ -1,0 +1,16 @@
+# CODEOWNERS — ScanDrix backend
+#
+# ScanDrix is a monorepo-free project: this repository holds the Go engine,
+# its services, the CLI, the migrations and the infrastructure-as-code. The
+# two frontends live in their own repositories (ScanDrix-Dashboard and
+# ScanDrix-website) and are NOT covered by this file.
+#
+# One default owner is listed for the whole tree. Path-scoped rules are not
+# added until a second maintainer exists: today every scoped rule would
+# resolve to the same account, which makes the file look like a policy while
+# enforcing nothing.
+#
+# GitHub will not count the owner's own approval as a review, so branch
+# protection should require review from someone else once a second
+# maintainer is added to this repository.
+* @Santosh-Prasad-Verma

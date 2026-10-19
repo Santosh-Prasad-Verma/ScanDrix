@@ -55,6 +55,7 @@ jobs:
             type=semver,pattern={{version}}
 
       - name: Build and Push Multi-Arch Image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -65,3 +66,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # BuildKit attestations. `sbom` emits an SBOM and `provenance` emits
+          # a SLSA-style build provenance, both attached to the pushed image as
+          # referrers rather than as extra tags. Consumers can then verify what
+          # is inside an image and how it was built without trusting this
+          # repository's release notes. Both require the buildx driver set up
+          # above, which this workflow already installs.
+          sbom: true
+          provenance: true

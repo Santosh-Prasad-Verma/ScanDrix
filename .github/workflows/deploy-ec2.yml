@@ -4,7 +4,11 @@ on:
   push:
     branches: [ main ]
     paths-ignore:
-      - 'scandrix-website/**'
+      # Directory names are case-sensitive in Git path patterns. The website
+      # checkout is `ScanDrix-website` (capital S) and the dashboard checkout
+      # is `scandrix-dashboard` (lowercase s). The old `scandrix-website/**`
+      # pattern matched neither.
+      - 'ScanDrix-website/**'
       - 'scandrix-dashboard/**'
       - '**.md'
   workflow_dispatch:
@@ -49,7 +53,7 @@ jobs:
             --exclude '.env' \
             --exclude 'node_modules' \
             --exclude '.github' \
-            --exclude 'scandrix-website' \
+            --exclude 'ScanDrix-website' \
             --exclude 'scandrix-dashboard' \
             --exclude '.agents' \
             -e "ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no" \

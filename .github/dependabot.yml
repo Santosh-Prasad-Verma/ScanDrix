@@ -37,13 +37,9 @@ updates:
     labels:
       - "docker"
 
-  - package-ecosystem: "npm"
-    directory: "/scandrix-dashboard"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "frontend"
-      - "security"
+  # There is no `npm` ecosystem entry here. The dashboard and the website are
+  # separate repositories (Santosh-Prasad-Verma/ScanDrix-Dashboard and
+  # .../ScanDrix-website), so a `/scandrix-dashboard` directory does not exist
+  # in this repository and Dependabot could never open a PR against it. Each
+  # frontend carries its own .github/dependabot.yml.
 

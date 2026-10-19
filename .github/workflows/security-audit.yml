@@ -77,31 +77,11 @@ jobs:
         with:
           sarif_file: gosec-results.sarif
 
-  dashboard-audit:
-    name: "Dashboard Frontend Dependency Audit"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.9.0
-
-      - name: Audit Dashboard Dependencies
-        run: |
-          if [ -d "scandrix-dashboard" ]; then
-            cd scandrix-dashboard
-            pnpm audit --prod --audit-level=high
-          elif [ -f "package.json" ]; then
-            pnpm audit --prod --audit-level=high
-          else
-            echo "scandrix-dashboard is managed in its own repository (Santosh-Prasad-Verma/ScanDrix-Dashboard). Skipping local audit."
-          fi
+  # There is deliberately no frontend dependency-audit job in this workflow.
+  # The dashboard and the website are separate repositories, each with its own
+  # CI that runs `npm audit` against its own lockfile. The job that used to
+  # live here looked for a `scandrix-dashboard` directory, did not find one,
+  # and fell through to its else branch on every run -- a job that reported
+  # success while auditing nothing. It also invoked pnpm against a project
+  # that uses npm, so it could not have worked as written.
 

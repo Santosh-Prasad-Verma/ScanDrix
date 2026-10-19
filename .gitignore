@@ -8,8 +8,40 @@ build/
 *.so
 *.dylib
 *.test
-/scandrix-*
 /email_previews/
+
+# Root-level compiled binaries. These are named explicitly rather than with a
+# `/scandrix-*` glob: the glob also matched the sibling `scandrix-dashboard/`
+# checkout, which is a separate repository and must never be pulled into this
+# one. `go build` without -o writes the binary next to the package, so these
+# names have to stay listed as they are added under cmd/.
+/envcheck
+/scandrix-keygen
+/scandrix
+/scandrix-api
+/scandrix-server
+/scandrix-webhooks
+/scandrix-worker
+/scandrix-cli
+/scandrix-mcp-manager
+/scandrix-ast-cli
+/scandrix-analytics-cli
+/scandrix-try
+/scandrix-migrate
+/scandrix-devserver
+/scandrix-covmerge
+/scandrix-e2e-setup
+/scandrix-export-emails
+
+# Sibling repositories. ScanDrix-Dashboard and ScanDrix-website are separate
+# GitHub repositories with their own remotes and their own release cadence.
+# They are checked out alongside this repo for local development only, and
+# listing them here keeps `git add -A` from ever staging a nested repo.
+# NOTE: the old `/scandrix-*` pattern matched `scandrix-dashboard/` by accident
+# but NOT `ScanDrix-website/` (Git patterns are case-sensitive on Linux), so
+# the website checkout sat in `git status` as untracked. Both are now explicit.
+/scandrix-dashboard/
+/ScanDrix-website/
 
 # 2. Test Coverage & Go Profiling Artifacts
 *.out

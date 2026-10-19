@@ -1,0 +1,128 @@
+name: "ScanDrix Containers: Keyless Image Signing"
+
+# Signs the container images published to GHCR by docker-publish.yml.
+#
+# Why this is a separate workflow rather than a step inside docker-publish.yml:
+# keyless signing needs an OIDC token and a round trip to the Sigstore Fulcio
+# and Rekor services. If that round trip fails, a step inside the publish
+# workflow turns a successful image push into a red run, which trains people
+# to ignore red. Isolated here, a signing failure cannot block publishing --
+# the image is still on the registry, only the signature is missing, and the
+# failure is visible on its own.
+#
+# Note that production ECS does not consume these images. deploy-production.yml
+# builds from source and pushes to AWS ECR, and infra/terraform/ecs.tf points
+# the task definitions at the ECR repository URLs. GHCR is the distribution
+# channel for self-hosted and docker-compose installs, which is exactly where a
+# consumer needs to be able to verify what they pulled.
+
+on:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to sign, e.g. 1.2.3. Defaults to the published release version."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  # Required for keyless (OIDC) signing: the runner exchanges this token for
+  # a short-lived certificate from Fulcio.
+  id-token: write
+
+jobs:
+  sign:
+    name: "Sign ${{ matrix.service }} Image"
+    runs-on: ubuntu-latest
+    strategy:
+      # One service failing must not stop the others from being signed.
+      fail-fast: false
+      matrix:
+        service:
+          - api
+          - worker
+          - webhooks
+          - mcp-manager
+          - server
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Image Digest
+        id: digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.service }}
+          # Passed via env, never interpolated into the run: block. A tag
+          # containing shell metacharacters would otherwise be substituted
+          # before the shell parsed it.
+          RAW_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TAG="${RAW_TAG#v}"
+          case "$TAG" in
+            ""|*[!A-Za-z0-9._-]*)
+              echo "::error::image tag failed validation: '$TAG'"
+              exit 1
+              ;;
+          esac
+          if [ "${#TAG}" -gt 128 ]; then
+            echo "::error::image tag too long"
+            exit 1
+          fi
+
+          REF="${IMAGE}:${TAG}"
+          echo "Resolving digest for ${REF}"
+          # Sign by digest, never by tag: a tag is mutable and can be moved
+          # between the resolve and the sign, which would sign whatever
+          # happened to sit behind the tag at that moment.
+          DIGEST=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::error::could not resolve a digest for ${REF}. Is the image published?"
+            exit 1
+          fi
+          case "$DIGEST" in
+            sha256:*) ;;
+            *)
+              echo "::error::unexpected digest format: '$DIGEST'"
+              exit 1
+              ;;
+          esac
+
+          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "resolved=${IMAGE}@${DIGEST}"
+
+      - name: Sign Image (Keyless)
+        env:
+          TARGET: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes \
+            "$TARGET" \
+            --recursive
+
+      - name: Verify Signature
+        env:
+          TARGET: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify "$TARGET" \
+            --certificate-identity-regexp "https://github.com/Santosh-Prasad-Verma/ScanDrix/\.github/workflows/image-sign\.yml@.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
